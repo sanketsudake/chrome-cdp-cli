@@ -1,0 +1,9 @@
+# chrome-cdp build artifacts
+/chrome-cdp
+/cdp
+*.png
+*.pdf
+/dist/
+
+# local wayfinder planning tracker
+/.scratch/
