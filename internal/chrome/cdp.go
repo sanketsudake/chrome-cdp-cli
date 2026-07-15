@@ -1184,8 +1184,10 @@ func (c *CDP) Wait(ctx context.Context, id string, cond WaitCond) (map[string]an
 		action, what = waitText(cond.Text), "text:"+cond.Text
 	case cond.Stable:
 		action, what = waitStable(800*time.Millisecond), "stable"
+	case cond.Idle:
+		action, what = waitIdle(500*time.Millisecond), "idle"
 	default:
-		return nil, fmt.Errorf("wait needs one of --url, --visible, --gone, --text, --stable, --for")
+		return nil, fmt.Errorf("wait needs one of --url, --visible, --gone, --text, --stable, --idle, --for")
 	}
 	if err := c.run(ctx, id, action); err != nil {
 		return nil, err
@@ -1253,6 +1255,50 @@ func waitStable(window time.Duration) chromedp.Action {
 				} else if now.Sub(lastChange) >= window {
 					return nil
 				}
+			}
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-t.C:
+			}
+		}
+	})
+}
+
+// waitIdle returns once network activity has settled: no in-flight requests for
+// `window`. It tracks requestWillBeSent vs loadingFinished/Failed — for SPA
+// loads (Outlook, Workday) where "DOM loaded" ≠ "content rendered".
+func waitIdle(window time.Duration) chromedp.Action {
+	return chromedp.ActionFunc(func(ctx context.Context) error {
+		if err := network.Enable().Do(ctx); err != nil {
+			return err
+		}
+		var mu sync.Mutex
+		inflight := 0
+		lastZero := time.Now()
+		chromedp.ListenTarget(ctx, func(ev interface{}) {
+			mu.Lock()
+			defer mu.Unlock()
+			switch ev.(type) {
+			case *network.EventRequestWillBeSent:
+				inflight++
+			case *network.EventLoadingFinished, *network.EventLoadingFailed:
+				if inflight > 0 {
+					inflight--
+				}
+				if inflight == 0 {
+					lastZero = time.Now()
+				}
+			}
+		})
+		t := time.NewTicker(100 * time.Millisecond)
+		defer t.Stop()
+		for {
+			mu.Lock()
+			idle := inflight == 0 && time.Since(lastZero) >= window
+			mu.Unlock()
+			if idle {
+				return nil
 			}
 			select {
 			case <-ctx.Done():

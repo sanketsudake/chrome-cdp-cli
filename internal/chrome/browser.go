@@ -85,6 +85,7 @@ type WaitCond struct {
 	Gone    string
 	Text    string // until the accessibility tree contains this text (e.g. a "Success" toast)
 	Stable  bool   // until the accessibility tree stops changing (the page settled)
+	Idle    bool   // until network activity settles (no in-flight requests for a window)
 	Query   QueryOpts
 }
 
