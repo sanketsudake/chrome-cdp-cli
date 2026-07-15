@@ -29,6 +29,9 @@ func (StubBrowser) Click(context.Context, string, string, chrome.QueryOpts) (map
 func (StubBrowser) Type(context.Context, string, string, string, chrome.QueryOpts) (map[string]any, error) {
 	return map[string]any{"typed": true}, nil
 }
+func (StubBrowser) Select(context.Context, string, string, string, chrome.SelectOpts) (map[string]any, error) {
+	return map[string]any{"selected": true}, nil
+}
 func (StubBrowser) HTML(context.Context, string, string, bool, chrome.QueryOpts) (map[string]any, error) {
 	return map[string]any{"html": "<div></div>"}, nil
 }

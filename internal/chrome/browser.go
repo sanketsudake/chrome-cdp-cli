@@ -30,6 +30,27 @@ type QueryOpts struct {
 	Match string
 }
 
+// SelectOpts controls the `select` verb — choosing an option in a prompt /
+// combobox / cascade widget (Workday-style portal popups, or a native <select>).
+type SelectOpts struct {
+	// Query addresses the FIELD control (usually By=="name" with a Role like
+	// textbox/combobox to disambiguate a same-named column header from the input).
+	Query QueryOpts
+
+	// OptionMatch controls how each option segment is compared against rendered
+	// option text: "" / "contains" (default — Workday labels are verbose),
+	// "exact", or "regex".
+	OptionMatch string
+
+	// Filter is optional text typed into the prompt after it opens, to narrow a
+	// long option list before the option is clicked.
+	Filter string
+
+	// Sep splits Option into cascade levels (default ">"): e.g.
+	// "Project Plan Tasks > ShiftLeft: Qwiet" drills the category, then the leaf.
+	Sep string
+}
+
 // WaitCond is a condition for the `wait` verb: settle until the target URL
 // contains URL, or a selector becomes Visible / is Gone. Exactly one is set;
 // Query carries the selector options for Visible/Gone. A fixed --for duration is
@@ -51,6 +72,7 @@ type Browser interface {
 	Eval(ctx context.Context, targetID, expr string) (any, error)
 	Snapshot(ctx context.Context, targetID string) (any, error)
 	Click(ctx context.Context, targetID, selector string, q QueryOpts) (map[string]any, error)
+	Select(ctx context.Context, targetID, field, option string, opts SelectOpts) (map[string]any, error)
 	Type(ctx context.Context, targetID, selector, text string, q QueryOpts) (map[string]any, error)
 	HTML(ctx context.Context, targetID, selector string, inner bool, q QueryOpts) (map[string]any, error)
 	Text(ctx context.Context, targetID, selector string, q QueryOpts) (map[string]any, error)

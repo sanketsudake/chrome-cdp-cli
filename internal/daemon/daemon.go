@@ -157,6 +157,8 @@ func (s *server) dispatch(ctx context.Context, method string, args []json.RawMes
 		return b.Snapshot(ctx, argStr(args, 0))
 	case "Click":
 		return b.Click(ctx, argStr(args, 0), argStr(args, 1), argQ(args, 2))
+	case "Select":
+		return b.Select(ctx, argStr(args, 0), argStr(args, 1), argStr(args, 2), argSel(args, 3))
 	case "Type":
 		return b.Type(ctx, argStr(args, 0), argStr(args, 1), argStr(args, 2), argQ(args, 3))
 	case "HTML":
@@ -246,6 +248,13 @@ func argQ(a []json.RawMessage, i int) chrome.QueryOpts {
 }
 func argWait(a []json.RawMessage, i int) chrome.WaitCond {
 	var v chrome.WaitCond
+	if i < len(a) {
+		_ = json.Unmarshal(a[i], &v)
+	}
+	return v
+}
+func argSel(a []json.RawMessage, i int) chrome.SelectOpts {
+	var v chrome.SelectOpts
 	if i < len(a) {
 		_ = json.Unmarshal(a[i], &v)
 	}
@@ -366,6 +375,10 @@ func (r *remoteBrowser) Click(ctx context.Context, id, sel string, q chrome.Quer
 func (r *remoteBrowser) Type(ctx context.Context, id, sel, text string, q chrome.QueryOpts) (map[string]any, error) {
 	var out map[string]any
 	return out, r.c.call(ctx, "Type", &out, id, sel, text, q)
+}
+func (r *remoteBrowser) Select(ctx context.Context, id, field, option string, opts chrome.SelectOpts) (map[string]any, error) {
+	var out map[string]any
+	return out, r.c.call(ctx, "Select", &out, id, field, option, opts)
 }
 func (r *remoteBrowser) HTML(ctx context.Context, id, sel string, inner bool, q chrome.QueryOpts) (map[string]any, error) {
 	var out map[string]any

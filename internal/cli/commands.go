@@ -66,7 +66,7 @@ func (a *App) newRoot() *cobra.Command {
 	root.AddCommand(
 		a.cmdList(), a.cmdUse(), a.cmdNav(), a.cmdEval(), a.cmdSnap(),
 		a.cmdHTML(), a.cmdText(), a.cmdValue(),
-		a.cmdClick(), a.cmdType(), a.cmdAttr(), a.cmdScreenshot(), a.cmdPDF(),
+		a.cmdClick(), a.cmdType(), a.cmdSelect(), a.cmdAttr(), a.cmdScreenshot(), a.cmdPDF(),
 		a.cmdCookie(), a.cmdHeaders(), a.cmdEmulate(), a.cmdFrame(), a.cmdWait(), a.cmdRaw(),
 		a.cmdDoctor(), a.cmdDaemon(), a.cmdExitCodes(), a.cmdVersion(),
 	)
@@ -408,6 +408,38 @@ func (a *App) cmdType() *cobra.Command {
 			return b.Type(ctx, id, args[0], args[1], a.queryOpts())
 		}),
 	}
+}
+
+func (a *App) cmdSelect() *cobra.Command {
+	var filter, optMatch, sep string
+	c := &cobra.Command{
+		Use:   "select <field> <option>",
+		Short: "Choose an option in a prompt/combobox/cascade widget (drives Workday portal prompts)",
+		Long: "Choose an option in a prompt, combobox, cascade, or native <select>.\n\n" +
+			"The field is addressed by ARIA accessible name (default --by name; add --role\n" +
+			"textbox to disambiguate an input from a same-named column header). The option\n" +
+			"is matched by substring by default (--option-match), and a cascade path is\n" +
+			"given with '>' between levels, e.g.:\n\n" +
+			"  chrome-cdp select \"Time Type\" \"Project Plan Tasks > ShiftLeft: Qwiet\" --role textbox",
+		Args: cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			q := a.queryOpts()
+			// The field is addressed by accessible name unless the user chose another
+			// --by explicitly (select's whole point is name/role addressing).
+			if !cmd.Flags().Changed("by") {
+				q.By = "name"
+			}
+			opts := chrome.SelectOpts{Query: q, Filter: filter, OptionMatch: optMatch, Sep: sep}
+			a.runResolved("select", func(ctx context.Context, b chrome.Browser, id string) (any, error) {
+				return b.Select(ctx, id, args[0], args[1], opts)
+			})
+			return nil
+		},
+	}
+	c.Flags().StringVar(&filter, "filter", "", "type this text into the prompt to narrow options before selecting")
+	c.Flags().StringVar(&optMatch, "option-match", "", "option match mode: contains (default)|exact|regex")
+	c.Flags().StringVar(&sep, "sep", ">", "cascade path separator between option levels")
+	return c
 }
 
 func (a *App) cmdScreenshot() *cobra.Command {
