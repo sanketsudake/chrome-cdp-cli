@@ -175,9 +175,21 @@ func startBase(managed bool, alloc context.Context, allocCancel context.CancelFu
 	if err := chromedp.Run(base); err != nil {
 		baseCancel()
 		allocCancel()
-		return nil, &ConnectError{Code: "connection_failed", Message: fmt.Sprintf("%s: %v", what, err)}
+		return nil, &ConnectError{Code: "connection_failed", Message: connectFailMsg(managed, what, err)}
 	}
 	return newCDP(managed, alloc, allocCancel, base, baseCancel), nil
+}
+
+// connectFailMsg turns a raw allocator/dial failure into an actionable message.
+// The common attach case — "could not dial … deadline exceeded" — is almost
+// always Chrome holding a pending "Allow remote debugging?" consent prompt (or a
+// wedged DevTools endpoint), which a bare deadline error doesn't explain.
+func connectFailMsg(managed bool, what string, err error) string {
+	s := err.Error()
+	if !managed && (strings.Contains(s, "could not dial") || strings.Contains(s, "deadline exceeded")) {
+		return "cannot reach Chrome's debug endpoint — if Chrome is showing an \"Allow remote debugging?\" prompt, click Allow (it can be behind the window), then retry; if it stays unresponsive the endpoint is wedged: quit and reopen Chrome, re-enable chrome://inspect/#remote-debugging, and keep the daemon running so the consent is asked once, not per command"
+	}
+	return fmt.Sprintf("%s: %v", what, err)
 }
 
 // chromeRunning best-effort detects an already-running Chrome (so we instruct
