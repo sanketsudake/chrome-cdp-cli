@@ -74,3 +74,85 @@ func TestManagedChromeDrivesAPage(t *testing.T) {
 		t.Fatal("Frames returned no frames")
 	}
 }
+
+// Reproduces the Workday failure shape: a hidden element with the SAME
+// accessible name precedes the real, visible control. --by name must skip the
+// ignored (hidden) match and act on the visible one — where --by css (first
+// match + wait-visible) would stall on the hidden node.
+func TestAccessibleNameAddressing(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping live-Chrome integration in -short mode")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	b, err := launch(true, t.TempDir(), 0)
+	if err != nil {
+		t.Skipf("cannot launch a managed headless Chrome here: %v", err)
+	}
+	defer b.Close()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		fmt.Fprint(w, `<!doctype html><title>AX</title><body>
+<button aria-label="Request Absence" style="display:none">hidden-RA</button>
+<button style="position:absolute;left:-9999px">Skip to main content</button>
+<button aria-label="Request Absence" onclick="window.__ra=(window.__ra||0)+1">RA</button>
+<button aria-label="Dup">d1</button>
+<button aria-label="Dup">d2</button>
+</body>`)
+	}))
+	defer srv.Close()
+
+	tabs, err := b.List(ctx)
+	if err != nil || len(tabs) == 0 {
+		t.Fatalf("List: %v", err)
+	}
+	id := tabs[0].ID
+	if _, err := b.Navigate(ctx, id, srv.URL); err != nil {
+		t.Fatalf("Navigate: %v", err)
+	}
+
+	// --by name resolves the VISIBLE "Request Absence" (text "RA"), not the
+	// hidden display:none one that shares the name.
+	res, err := b.Text(ctx, id, "Request Absence", QueryOpts{By: "name"})
+	if err != nil {
+		t.Fatalf("Text --by name: %v", err)
+	}
+	if got := res["text"]; got != "RA" {
+		t.Errorf("--by name text = %q, want RA (the visible match)", got)
+	}
+
+	// Clicking by name activates the visible control (window.__ra becomes 1).
+	if _, err := b.Click(ctx, id, "Request Absence", QueryOpts{By: "name", Role: "button"}); err != nil {
+		t.Fatalf("Click --by name --role button: %v", err)
+	}
+	clicked, err := b.Eval(ctx, id, "window.__ra")
+	if err != nil {
+		t.Fatalf("Eval: %v", err)
+	}
+	if v := clicked.(map[string]any)["value"]; fmt.Sprintf("%v", v) != "1" {
+		t.Errorf("window.__ra = %v, want 1 (clicked the visible RA button)", v)
+	}
+
+	// --nth disambiguates duplicate accessible names.
+	for _, tc := range []struct {
+		nth  int
+		want string
+	}{{1, "d1"}, {2, "d2"}} {
+		r, err := b.Text(ctx, id, "Dup", QueryOpts{By: "name", Nth: tc.nth})
+		if err != nil {
+			t.Fatalf("Text --by name --nth %d: %v", tc.nth, err)
+		}
+		if r["text"] != tc.want {
+			t.Errorf("--nth %d text = %q, want %q", tc.nth, r["text"], tc.want)
+		}
+	}
+
+	// Contrast: --by css "button" (first match + wait-visible) stalls on the
+	// hidden-first button — the failure --by name fixes. Bounded so it's quick.
+	short, scancel := context.WithTimeout(ctx, 3*time.Second)
+	defer scancel()
+	if _, err := b.Text(short, id, "button", QueryOpts{By: "css"}); err == nil {
+		t.Error("expected --by css to stall on the hidden-first button, but it succeeded")
+	}
+}

@@ -10,11 +10,13 @@ import (
 	"path/filepath"
 	"runtime"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/chromedp/cdproto/accessibility"
 	"github.com/chromedp/cdproto/cdp"
+	"github.com/chromedp/cdproto/dom"
 	"github.com/chromedp/cdproto/emulation"
 	"github.com/chromedp/cdproto/network"
 	"github.com/chromedp/cdproto/page"
@@ -321,6 +323,17 @@ func axString(v *accessibility.Value) string {
 
 // queryOptions maps QueryOpts to chromedp query options (selector syntax + the
 // node state to wait for).
+func waitOption(wait string) chromedp.QueryOption {
+	switch wait {
+	case "ready":
+		return chromedp.NodeReady
+	case "enabled":
+		return chromedp.NodeEnabled
+	default:
+		return chromedp.NodeVisible
+	}
+}
+
 func queryOptions(q QueryOpts) []chromedp.QueryOption {
 	var opts []chromedp.QueryOption
 	by := q.By
@@ -340,26 +353,71 @@ func queryOptions(q QueryOpts) []chromedp.QueryOption {
 	default:
 		opts = append(opts, chromedp.ByQuery)
 	}
-	switch q.Wait {
-	case "ready":
-		opts = append(opts, chromedp.NodeReady)
-	case "enabled":
-		opts = append(opts, chromedp.NodeEnabled)
-	default:
-		opts = append(opts, chromedp.NodeVisible)
+	return append(opts, waitOption(q.Wait))
+}
+
+// query builds the chromedp query options for a selector. By=="name" resolves by
+// ARIA accessible name (the selector is the name); every other mode falls
+// through to queryOptions.
+func query(selector string, q QueryOpts) []chromedp.QueryOption {
+	if q.By == "name" {
+		return []chromedp.QueryOption{
+			chromedp.ByFunc(axNameQuery(selector, q.Role, q.Nth)),
+			waitOption(q.Wait),
+		}
 	}
-	return opts
+	return queryOptions(q)
+}
+
+// axNameQuery is a chromedp custom selector that resolves elements by their ARIA
+// accessible name. It reads the full accessibility tree (the same primitive as
+// `snap` — proven fast on large apps, and it crosses frames + shadow DOM),
+// matches non-ignored nodes by name (and optional role) — so a hidden first
+// match never stalls the wait — and returns the Nth (1-based) match, or all
+// exposed matches when Nth is 0. (Accessibility.queryAXTree was tried first but
+// recomputes the whole subtree per poll and times out on huge DOMs like Workday.)
+func axNameQuery(name, role string, nth int) func(context.Context, *cdp.Node) ([]cdp.NodeID, error) {
+	want := strings.TrimSpace(name)
+	return func(ctx context.Context, _ *cdp.Node) ([]cdp.NodeID, error) {
+		nodes, err := accessibility.GetFullAXTree().Do(ctx)
+		if err != nil {
+			return nil, err
+		}
+		var backend []cdp.BackendNodeID
+		for _, n := range nodes {
+			if n.Ignored || n.BackendDOMNodeID == 0 {
+				continue // ignored = not exposed to accessibility (hidden) -> skip
+			}
+			if strings.TrimSpace(axString(n.Name)) != want {
+				continue
+			}
+			if role != "" && axString(n.Role) != role {
+				continue
+			}
+			backend = append(backend, n.BackendDOMNodeID)
+		}
+		if nth > 0 {
+			if nth > len(backend) {
+				return nil, nil // not enough matches (yet) — let chromedp retry/timeout
+			}
+			backend = backend[nth-1 : nth]
+		}
+		if len(backend) == 0 {
+			return nil, nil
+		}
+		return dom.PushNodesByBackendIDsToFrontend(backend).Do(ctx)
+	}
 }
 
 func (c *CDP) Click(ctx context.Context, id, selector string, q QueryOpts) (map[string]any, error) {
-	if err := c.run(ctx, id, chromedp.Click(selector, queryOptions(q)...)); err != nil {
+	if err := c.run(ctx, id, chromedp.Click(selector, query(selector, q)...)); err != nil {
 		return nil, err
 	}
 	return map[string]any{"clicked": selector}, nil
 }
 
 func (c *CDP) Type(ctx context.Context, id, selector, text string, q QueryOpts) (map[string]any, error) {
-	if err := c.run(ctx, id, chromedp.SendKeys(selector, text, queryOptions(q)...)); err != nil {
+	if err := c.run(ctx, id, chromedp.SendKeys(selector, text, query(selector, q)...)); err != nil {
 		return nil, err
 	}
 	return map[string]any{"typed": selector}, nil
@@ -373,9 +431,9 @@ func (c *CDP) HTML(ctx context.Context, id, selector string, inner bool, q Query
 	var html string
 	var action chromedp.Action
 	if inner {
-		action = chromedp.InnerHTML(sel, &html, queryOptions(q)...)
+		action = chromedp.InnerHTML(sel, &html, query(sel, q)...)
 	} else {
-		action = chromedp.OuterHTML(sel, &html, queryOptions(q)...)
+		action = chromedp.OuterHTML(sel, &html, query(sel, q)...)
 	}
 	if err := c.run(ctx, id, action); err != nil {
 		return nil, err
@@ -385,7 +443,7 @@ func (c *CDP) HTML(ctx context.Context, id, selector string, inner bool, q Query
 
 func (c *CDP) Text(ctx context.Context, id, selector string, q QueryOpts) (map[string]any, error) {
 	var text string
-	if err := c.run(ctx, id, chromedp.Text(selector, &text, queryOptions(q)...)); err != nil {
+	if err := c.run(ctx, id, chromedp.Text(selector, &text, query(selector, q)...)); err != nil {
 		return nil, err
 	}
 	return map[string]any{"text": text}, nil
@@ -393,7 +451,7 @@ func (c *CDP) Text(ctx context.Context, id, selector string, q QueryOpts) (map[s
 
 func (c *CDP) Value(ctx context.Context, id, selector string, q QueryOpts) (map[string]any, error) {
 	var val string
-	if err := c.run(ctx, id, chromedp.Value(selector, &val, queryOptions(q)...)); err != nil {
+	if err := c.run(ctx, id, chromedp.Value(selector, &val, query(selector, q)...)); err != nil {
 		return nil, err
 	}
 	return map[string]any{"value": val}, nil
@@ -481,7 +539,7 @@ func (c *CDP) CookieClear(ctx context.Context, id string) (map[string]any, error
 func (c *CDP) AttrGet(ctx context.Context, id, selector, name string, q QueryOpts) (map[string]any, error) {
 	var val string
 	var ok bool
-	if err := c.run(ctx, id, chromedp.AttributeValue(selector, name, &val, &ok, queryOptions(q)...)); err != nil {
+	if err := c.run(ctx, id, chromedp.AttributeValue(selector, name, &val, &ok, query(selector, q)...)); err != nil {
 		return nil, err
 	}
 	return map[string]any{"name": name, "value": val, "present": ok}, nil
@@ -489,21 +547,21 @@ func (c *CDP) AttrGet(ctx context.Context, id, selector, name string, q QueryOpt
 
 func (c *CDP) AttrList(ctx context.Context, id, selector string, q QueryOpts) (map[string]any, error) {
 	var attrs map[string]string
-	if err := c.run(ctx, id, chromedp.Attributes(selector, &attrs, queryOptions(q)...)); err != nil {
+	if err := c.run(ctx, id, chromedp.Attributes(selector, &attrs, query(selector, q)...)); err != nil {
 		return nil, err
 	}
 	return map[string]any{"attributes": attrs}, nil
 }
 
 func (c *CDP) AttrSet(ctx context.Context, id, selector, name, value string, q QueryOpts) (map[string]any, error) {
-	if err := c.run(ctx, id, chromedp.SetAttributeValue(selector, name, value, queryOptions(q)...)); err != nil {
+	if err := c.run(ctx, id, chromedp.SetAttributeValue(selector, name, value, query(selector, q)...)); err != nil {
 		return nil, err
 	}
 	return map[string]any{"set": name}, nil
 }
 
 func (c *CDP) AttrRemove(ctx context.Context, id, selector, name string, q QueryOpts) (map[string]any, error) {
-	if err := c.run(ctx, id, chromedp.RemoveAttribute(selector, name, queryOptions(q)...)); err != nil {
+	if err := c.run(ctx, id, chromedp.RemoveAttribute(selector, name, query(selector, q)...)); err != nil {
 		return nil, err
 	}
 	return map[string]any{"removed": name}, nil

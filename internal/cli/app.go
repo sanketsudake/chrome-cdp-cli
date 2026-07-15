@@ -32,6 +32,8 @@ type App struct {
 	port       int
 	byFlag     string
 	waitFlag   string
+	roleFlag   string
+	nthFlag    int
 	noWait     bool
 	pierce     bool
 	noDaemon   bool
@@ -156,7 +158,7 @@ func (a *App) ctx() (context.Context, context.CancelFunc) {
 
 // queryOpts builds the selector-syntax / wait / pierce options from the flags.
 func (a *App) queryOpts() chrome.QueryOpts {
-	return chrome.QueryOpts{By: a.byFlag, Wait: a.waitFlag, Pierce: a.pierce}
+	return chrome.QueryOpts{By: a.byFlag, Wait: a.waitFlag, Pierce: a.pierce, Role: a.roleFlag, Nth: a.nthFlag}
 }
 
 // Close tears down a Browser that this App lazily connected (no-op for an

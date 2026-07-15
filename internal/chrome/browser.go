@@ -13,9 +13,15 @@ import (
 // QueryOpts controls how a selector is interpreted (By), what state to wait for
 // (Wait), and whether to pierce shadow DOM / iframes (Pierce).
 type QueryOpts struct {
-	By     string // css (default) | id | search | jspath | css-all
+	By     string // css (default) | id | search | jspath | css-all | name
 	Wait   string // visible (default) | ready | enabled
 	Pierce bool   // reach into shadow DOM / iframes (via DevTools search)
+
+	// Accessible-name addressing (By == "name"): the selector is the ARIA
+	// accessible name; Role optionally constrains the ARIA role, and Nth picks
+	// the 1-based match among the visible candidates (0 = first).
+	Role string
+	Nth  int
 }
 
 // Browser is the set of Chrome operations the CLI commands need. The real
