@@ -37,7 +37,7 @@ func TestElementRefAddressing(t *testing.T) {
 		t.Fatalf("Navigate: %v", err)
 	}
 
-	snap, err := b.Snapshot(ctx, id)
+	snap, err := b.Snapshot(ctx, id, SnapOpts{})
 	if err != nil {
 		t.Fatalf("Snapshot: %v", err)
 	}

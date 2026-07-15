@@ -51,6 +51,15 @@ type SelectOpts struct {
 	Sep string
 }
 
+// SnapOpts filters an accessibility snapshot server-side, so a read returns just
+// the relevant nodes instead of the whole tree. Alerts/focused stay page-wide.
+type SnapOpts struct {
+	Role   string // only nodes with this ARIA role
+	Grep   string // only nodes whose accessible name matches this regex
+	Region string // only nodes within the subtree of a container whose name contains this
+	Dedupe bool   // collapse identical role+name (keep first) — for virtualized grids
+}
+
 // ScrollOpts controls the `scroll` verb:
 //   - Into: scroll Selector into view.
 //   - otherwise: scroll by (Dx, Dy) pixels — Selector's scroll box, or the window
@@ -83,9 +92,10 @@ type WaitCond struct {
 // implementation is CDP (chromedp-backed); tests use a fake.
 type Browser interface {
 	List(ctx context.Context) ([]target.Info, error)
+	Open(ctx context.Context, url string) (map[string]any, error)
 	Navigate(ctx context.Context, targetID, url string) (map[string]any, error)
 	Eval(ctx context.Context, targetID, expr string) (any, error)
-	Snapshot(ctx context.Context, targetID string) (any, error)
+	Snapshot(ctx context.Context, targetID string, opts SnapOpts) (any, error)
 	Click(ctx context.Context, targetID, selector string, q QueryOpts) (map[string]any, error)
 	Select(ctx context.Context, targetID, field, option string, opts SelectOpts) (map[string]any, error)
 	Grid(ctx context.Context, targetID, selector string, q QueryOpts) (any, error)

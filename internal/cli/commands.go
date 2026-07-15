@@ -65,7 +65,7 @@ func (a *App) newRoot() *cobra.Command {
 	pf.BoolVar(&a.noInput, "no-input", false, "never prompt (the CLI is non-interactive already)")
 
 	root.AddCommand(
-		a.cmdList(), a.cmdUse(), a.cmdNav(), a.cmdEval(), a.cmdSnap(),
+		a.cmdList(), a.cmdOpen(), a.cmdUse(), a.cmdNav(), a.cmdEval(), a.cmdSnap(),
 		a.cmdHTML(), a.cmdText(), a.cmdValue(),
 		a.cmdClick(), a.cmdType(), a.cmdFill(), a.cmdSelect(), a.cmdGrid(), a.cmdScroll(), a.cmdAttr(), a.cmdScreenshot(), a.cmdPDF(),
 		a.cmdCookie(), a.cmdHeaders(), a.cmdEmulate(), a.cmdFrame(), a.cmdWait(), a.cmdRaw(),
@@ -120,8 +120,9 @@ func classifyActionErr(err error) string {
 }
 
 func (a *App) cmdList() *cobra.Command {
-	return &cobra.Command{
-		Use: "list", Aliases: []string{"ls"}, Short: "List open tabs",
+	var urlSub, titleSub string
+	c := &cobra.Command{
+		Use: "list", Aliases: []string{"ls"}, Short: "List open tabs (--url/--title filter by substring)",
 		RunE: func(*cobra.Command, []string) error {
 			ctx, cancel := a.ctx()
 			defer cancel()
@@ -135,14 +136,25 @@ func (a *App) cmdList() *cobra.Command {
 				a.emitErr("list", "connection_failed", err.Error(), nil)
 				return nil
 			}
-			rows := make([]tabRow, len(tabs))
+			// The 1-based idx reflects position in the FULL tab list, so it stays a
+			// stable @N target even when a filter is applied.
+			rows := []tabRow{}
 			for i, t := range tabs {
-				rows[i] = tabRow{Idx: i + 1, ID: t.ID, Title: t.Title, URL: t.URL}
+				if urlSub != "" && !strings.Contains(strings.ToLower(t.URL), strings.ToLower(urlSub)) {
+					continue
+				}
+				if titleSub != "" && !strings.Contains(strings.ToLower(t.Title), strings.ToLower(titleSub)) {
+					continue
+				}
+				rows = append(rows, tabRow{Idx: i + 1, ID: t.ID, Title: t.Title, URL: t.URL})
 			}
 			a.emitOK("list", nil, map[string]any{"tabs": rows})
 			return nil
 		},
 	}
+	c.Flags().StringVar(&urlSub, "url", "", "only tabs whose URL contains this substring")
+	c.Flags().StringVar(&titleSub, "title", "", "only tabs whose title contains this substring")
+	return c
 }
 
 func (a *App) cmdUse() *cobra.Command {
@@ -175,6 +187,33 @@ func (a *App) cmdUse() *cobra.Command {
 	}
 }
 
+func (a *App) cmdOpen() *cobra.Command {
+	return &cobra.Command{
+		Use: "open <url>", Short: "Open a new tab at a URL and make it the current tab", Args: cobra.ExactArgs(1),
+		RunE: func(_ *cobra.Command, args []string) error {
+			ctx, cancel := a.ctx()
+			defer cancel()
+			b, berr := a.getBrowser(ctx)
+			if berr != nil {
+				a.emitErr("open", berr.Code, berr.Message, nil)
+				return nil
+			}
+			res, err := b.Open(ctx, args[0])
+			if err != nil {
+				a.emitErr("open", classifyActionErr(err), err.Error(), nil)
+				return nil
+			}
+			// Make the new tab the sticky current target, like `use`, so the next
+			// command acts on it without a --target.
+			if id, _ := res["id"].(string); id != "" && a.stickySet != nil {
+				_ = a.stickySet(a.connOpts(), id)
+			}
+			a.emitOK("open", nil, res)
+			return nil
+		},
+	}
+}
+
 func (a *App) cmdNav() *cobra.Command {
 	return &cobra.Command{
 		Use: "nav <url>", Short: "Navigate the target tab and wait for load", Args: cobra.ExactArgs(1),
@@ -194,12 +233,19 @@ func (a *App) cmdEval() *cobra.Command {
 }
 
 func (a *App) cmdSnap() *cobra.Command {
-	return &cobra.Command{
-		Use: "snap", Short: "Accessibility-tree snapshot of the target tab",
+	var role, grep, region string
+	var dedupe bool
+	c := &cobra.Command{
+		Use: "snap", Short: "Accessibility-tree snapshot (filter with --role/--grep/--region/--dedupe)",
 		RunE: a.targetAction("snap", func(ctx context.Context, b chrome.Browser, id string, _ []string) (any, error) {
-			return b.Snapshot(ctx, id)
+			return b.Snapshot(ctx, id, chrome.SnapOpts{Role: role, Grep: grep, Region: region, Dedupe: dedupe})
 		}),
 	}
+	c.Flags().StringVar(&role, "role", "", "only nodes with this ARIA role (button|link|textbox|…)")
+	c.Flags().StringVar(&grep, "grep", "", "only nodes whose accessible name matches this regex")
+	c.Flags().StringVar(&region, "region", "", "only nodes within a container whose name contains this")
+	c.Flags().BoolVar(&dedupe, "dedupe", false, "collapse identical role+name (for virtualized grids)")
+	return c
 }
 
 func (a *App) cmdHTML() *cobra.Command {

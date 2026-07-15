@@ -149,12 +149,14 @@ func (s *server) dispatch(ctx context.Context, method string, args []json.RawMes
 		return info, nil
 	case "List":
 		return b.List(ctx)
+	case "Open":
+		return b.Open(ctx, argStr(args, 0))
 	case "Navigate":
 		return b.Navigate(ctx, argStr(args, 0), argStr(args, 1))
 	case "Eval":
 		return b.Eval(ctx, argStr(args, 0), argStr(args, 1))
 	case "Snapshot":
-		return b.Snapshot(ctx, argStr(args, 0))
+		return b.Snapshot(ctx, argStr(args, 0), argSnap(args, 1))
 	case "Click":
 		return b.Click(ctx, argStr(args, 0), argStr(args, 1), argQ(args, 2))
 	case "Select":
@@ -275,6 +277,13 @@ func argScroll(a []json.RawMessage, i int) chrome.ScrollOpts {
 	}
 	return v
 }
+func argSnap(a []json.RawMessage, i int) chrome.SnapOpts {
+	var v chrome.SnapOpts
+	if i < len(a) {
+		_ = json.Unmarshal(a[i], &v)
+	}
+	return v
+}
 func argMap(a []json.RawMessage, i int) map[string]string {
 	var v map[string]string
 	if i < len(a) {
@@ -371,6 +380,10 @@ func (r *remoteBrowser) List(ctx context.Context) ([]target.Info, error) {
 	var out []target.Info
 	return out, r.c.call(ctx, "List", &out)
 }
+func (r *remoteBrowser) Open(ctx context.Context, url string) (map[string]any, error) {
+	var out map[string]any
+	return out, r.c.call(ctx, "Open", &out, url)
+}
 func (r *remoteBrowser) Navigate(ctx context.Context, id, url string) (map[string]any, error) {
 	var out map[string]any
 	return out, r.c.call(ctx, "Navigate", &out, id, url)
@@ -379,9 +392,9 @@ func (r *remoteBrowser) Eval(ctx context.Context, id, expr string) (any, error) 
 	var out any
 	return out, r.c.call(ctx, "Eval", &out, id, expr)
 }
-func (r *remoteBrowser) Snapshot(ctx context.Context, id string) (any, error) {
+func (r *remoteBrowser) Snapshot(ctx context.Context, id string, opts chrome.SnapOpts) (any, error) {
 	var out any
-	return out, r.c.call(ctx, "Snapshot", &out, id)
+	return out, r.c.call(ctx, "Snapshot", &out, id, opts)
 }
 func (r *remoteBrowser) Click(ctx context.Context, id, sel string, q chrome.QueryOpts) (map[string]any, error) {
 	var out map[string]any

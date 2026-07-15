@@ -281,6 +281,26 @@ func (c *CDP) run(ctx context.Context, id string, actions ...chromedp.Action) er
 	return chromedp.Run(rc, actions...)
 }
 
+// Open creates a new tab at url (browser-level Target.createTarget, which
+// navigates it) and returns the new tab's id — replacing a raw
+// Target.createTarget for the common "start from a fresh tab on X" case.
+func (c *CDP) Open(ctx context.Context, url string) (map[string]any, error) {
+	var tid cdptarget.ID
+	rc, cancel := deadline(ctx, c.base)
+	defer cancel()
+	err := chromedp.Run(rc, chromedp.ActionFunc(func(actx context.Context) error {
+		cc := chromedp.FromContext(actx)
+		bctx := cdp.WithExecutor(actx, cc.Browser)
+		var e error
+		tid, e = cdptarget.CreateTarget(url).Do(bctx)
+		return e
+	}))
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{"id": tid.String(), "url": url}, nil
+}
+
 func (c *CDP) Navigate(ctx context.Context, id, url string) (map[string]any, error) {
 	var loc string
 	if err := c.run(ctx, id, chromedp.Navigate(url), chromedp.Location(&loc)); err != nil {
@@ -299,7 +319,14 @@ func (c *CDP) Eval(ctx context.Context, id, expr string) (any, error) {
 	return map[string]any{"value": v}, nil
 }
 
-func (c *CDP) Snapshot(ctx context.Context, id string) (any, error) {
+func (c *CDP) Snapshot(ctx context.Context, id string, opts SnapOpts) (any, error) {
+	var re *regexp.Regexp
+	if opts.Grep != "" {
+		var rerr error
+		if re, rerr = regexp.Compile(opts.Grep); rerr != nil {
+			return nil, fmt.Errorf("--grep is not a valid regex: %w", rerr)
+		}
+	}
 	var nodes []*accessibility.Node
 	err := c.run(ctx, id, chromedp.ActionFunc(func(actx context.Context) error {
 		var e error
@@ -320,13 +347,26 @@ func (c *CDP) Snapshot(ctx context.Context, id string) (any, error) {
 	for _, n := range nodes {
 		byID[n.NodeID] = n
 	}
+	// --region scopes the node list to the subtree of the first container whose
+	// name contains the given text (alerts/focused stay page-wide).
+	var inRegion map[accessibility.NodeID]bool
+	if opts.Region != "" {
+		if rn := findRegion(nodes, opts.Region); rn != nil {
+			inRegion = map[accessibility.NodeID]bool{}
+			markSubtree(byID, rn, inRegion)
+		} else {
+			inRegion = map[accessibility.NodeID]bool{} // region not found -> nothing
+		}
+	}
 	out := make([]axNode, 0, len(nodes))
 	var alerts []string        // aria-live / role=alert|status text — the toasts/notifications
 	var focused map[string]any // the currently-focused element
+	seen := map[string]bool{}
 	for _, n := range nodes {
 		role, name := axString(n.Role), axString(n.Name)
 		// A live region's text is usually in child StaticText nodes, not its own
 		// name — walk the subtree so toasts ("Success! Event approved") surface.
+		// Computed over the FULL tree, before any --role/--grep/--region filter.
 		if role == "alert" || role == "status" || axLive(n) {
 			if txt := axSubtreeText(byID, n); txt != "" {
 				alerts = append(alerts, txt)
@@ -337,6 +377,22 @@ func (c *CDP) Snapshot(ctx context.Context, id string) (any, error) {
 		}
 		if role == "" && name == "" {
 			continue
+		}
+		if opts.Role != "" && role != opts.Role {
+			continue
+		}
+		if re != nil && !re.MatchString(name) {
+			continue
+		}
+		if inRegion != nil && !inRegion[n.NodeID] {
+			continue
+		}
+		if opts.Dedupe {
+			key := role + "\x00" + name
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
 		}
 		// A stable element ref (the CDP backend node id) that `--by ref` resolves
 		// without re-querying by name — the same node keeps the same ref across
@@ -355,6 +411,32 @@ func (c *CDP) Snapshot(ctx context.Context, id string) (any, error) {
 		res["focused"] = focused
 	}
 	return res, nil
+}
+
+// findRegion returns the first exposed node whose accessible name contains sub
+// (case-insensitive) — the container that --region scopes to.
+func findRegion(nodes []*accessibility.Node, sub string) *accessibility.Node {
+	want := strings.ToLower(strings.TrimSpace(sub))
+	for _, n := range nodes {
+		if n.Ignored {
+			continue
+		}
+		if strings.Contains(strings.ToLower(axString(n.Name)), want) {
+			return n
+		}
+	}
+	return nil
+}
+
+// markSubtree records a node and all its descendants in set.
+func markSubtree(byID map[accessibility.NodeID]*accessibility.Node, n *accessibility.Node, set map[accessibility.NodeID]bool) {
+	if n == nil || set[n.NodeID] {
+		return
+	}
+	set[n.NodeID] = true
+	for _, c := range n.ChildIDs {
+		markSubtree(byID, byID[c], set)
+	}
 }
 
 // axStates returns the active ARIA states of a node (focused, expanded, checked,

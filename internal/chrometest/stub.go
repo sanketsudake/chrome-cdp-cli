@@ -16,13 +16,18 @@ import (
 type StubBrowser struct{}
 
 func (StubBrowser) List(context.Context) ([]target.Info, error) { return nil, nil }
+func (StubBrowser) Open(_ context.Context, url string) (map[string]any, error) {
+	return map[string]any{"id": "newtab", "url": url}, nil
+}
 func (StubBrowser) Navigate(context.Context, string, string) (map[string]any, error) {
 	return map[string]any{"url": "https://example.com/", "status": 200}, nil
 }
 func (StubBrowser) Eval(context.Context, string, string) (any, error) {
 	return map[string]any{"value": 2}, nil
 }
-func (StubBrowser) Snapshot(context.Context, string) (any, error) { return map[string]any{}, nil }
+func (StubBrowser) Snapshot(context.Context, string, chrome.SnapOpts) (any, error) {
+	return map[string]any{}, nil
+}
 func (StubBrowser) Click(context.Context, string, string, chrome.QueryOpts) (map[string]any, error) {
 	return map[string]any{"clicked": true}, nil
 }

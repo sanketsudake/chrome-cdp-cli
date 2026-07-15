@@ -219,7 +219,7 @@ func TestSnapStateAndAlerts(t *testing.T) {
 		t.Fatalf("Navigate: %v", err)
 	}
 
-	got, err := b.Snapshot(ctx, id)
+	got, err := b.Snapshot(ctx, id, SnapOpts{})
 	if err != nil {
 		t.Fatalf("Snapshot: %v", err)
 	}
