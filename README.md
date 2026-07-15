@@ -109,6 +109,11 @@ Every `--json` command emits one envelope:
 
 Failures use the same envelope with `"ok": false` and an `error{code,message,…}`, plus a nonzero exit code: `0` ok · `1` generic · `2` usage · `3` connection · `4` target/timeout · `5` cdp · `6` daemon.
 
+## Skills
+
+An [Agent Skill](https://docs.claude.com/en/docs/claude-code/skills) that teaches an AI agent to drive this CLI ships in [`skills/drive-chrome-cdp`](skills/drive-chrome-cdp/SKILL.md) — the `list → use → snap → act → verify` loop, `--by` addressing, the `select` verb, `session` batching, and the output contract, in one reference.
+See [`skills/README.md`](skills/README.md).
+
 ## Configure
 
 Persist the flags you'd otherwise retype in an optional TOML file at `$XDG_CONFIG_HOME/chrome-cdp/config.toml` (usually `~/.config/chrome-cdp/config.toml`).
