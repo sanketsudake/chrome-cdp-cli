@@ -44,6 +44,7 @@ func (a *App) newRoot() *cobra.Command {
 	pf.StringVar(&a.targetFlag, "target", "", "tab to act on (idprefix | url:<s> | title:<s> | @N)")
 	pf.DurationVar(&a.timeout, "timeout", 30*time.Second, "max time to wait for the command")
 	pf.BoolVar(&a.noLaunch, "no-launch", false, "don't auto-launch a fallback Chrome")
+	pf.BoolVar(&a.noDaemon, "no-daemon", false, "connect directly instead of via the shared daemon")
 	pf.StringVar(&a.profileDir, "profile-dir", "", "managed-launch Chrome profile dir (else $CHROME_CDP_PROFILE or ~/.cache/chrome-cdp/profile)")
 	pf.IntVar(&a.port, "port", 0, "explicit Chrome debug port to attach to / launch with (0 = auto)")
 	pf.StringVar(&a.byFlag, "by", "css", "selector syntax: css|id|search|jspath|css-all")
@@ -578,17 +579,47 @@ func (a *App) cmdDoctor() *cobra.Command {
 
 func (a *App) cmdDaemon() *cobra.Command {
 	daemon := &cobra.Command{Use: "daemon", Short: "Manage the background CDP connection"}
-	report := func(state string) func(*cobra.Command, []string) error {
-		return func(*cobra.Command, []string) error {
-			a.emitOK("daemon", nil, map[string]any{"mode": "direct-connect", "state": state,
-				"note": "shared daemon not yet implemented — commands connect per invocation"})
-			return nil
+	emit := func(res map[string]any, err error) {
+		if err != nil {
+			a.emitErr("daemon", result.CodeDaemon, err.Error(), nil)
+			return
 		}
+		a.emitOK("daemon", nil, res)
 	}
 	daemon.AddCommand(
-		&cobra.Command{Use: "status", Short: "Show daemon state", RunE: report("n/a")},
-		&cobra.Command{Use: "start", Short: "Start the daemon", RunE: report("noop")},
-		&cobra.Command{Use: "stop", Short: "Stop the daemon", RunE: report("noop")},
+		&cobra.Command{
+			Use: "start", Short: "Start (or reuse) the background daemon",
+			RunE: func(*cobra.Command, []string) error {
+				if a.daemonStart == nil {
+					a.emitErr("daemon", result.CodeDaemon, "daemon control unavailable", nil)
+					return nil
+				}
+				emit(a.daemonStart(a.connOpts()))
+				return nil
+			},
+		},
+		&cobra.Command{
+			Use: "stop", Short: "Stop the background daemon",
+			RunE: func(*cobra.Command, []string) error {
+				if a.daemonStop == nil {
+					a.emitErr("daemon", result.CodeDaemon, "daemon control unavailable", nil)
+					return nil
+				}
+				emit(a.daemonStop())
+				return nil
+			},
+		},
+		&cobra.Command{
+			Use: "status", Short: "Show whether the daemon is running",
+			RunE: func(*cobra.Command, []string) error {
+				if a.daemonStatus == nil {
+					a.emitOK("daemon", nil, map[string]any{"mode": "direct-connect"})
+					return nil
+				}
+				emit(a.daemonStatus())
+				return nil
+			},
+		},
 	)
 	return daemon
 }

@@ -18,6 +18,8 @@ go build -o chrome-cdp ./cmd/chrome-cdp
 
 `chrome-cdp` attaches to your real Chrome via the one-time **`chrome://inspect/#remote-debugging`** toggle (it reads Chrome's `DevToolsActivePort` file and connects the WebSocket directly — the classic `--remote-debugging-port` no longer works on the default profile since Chrome M136). If no debug-enabled Chrome is found, it launches a managed Chrome on a dedicated profile alongside your real one.
 
+A background **daemon** holds the CDP connection, so Chrome's "Allow debugging?" prompt appears once per session (not once per command) and subsequent commands are a fast socket round-trip. It starts lazily on first use and idles out after 30 minutes; manage it with `chrome-cdp daemon start|stop|status`, or bypass it with `--no-daemon`.
+
 ```sh
 chrome-cdp doctor    # check the connection and get the exact fix if it's not ready
 ```

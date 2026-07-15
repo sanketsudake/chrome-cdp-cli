@@ -33,6 +33,7 @@ type App struct {
 	waitFlag   string
 	noWait     bool
 	pierce     bool
+	noDaemon   bool
 	quiet      bool
 	verbose    bool
 	noColor    bool
@@ -43,7 +44,12 @@ type App struct {
 	setCurrent    func(string) error
 
 	// lazy Browser connector (nil in tests, where browser is injected directly)
-	connect func(ctx context.Context, noLaunch bool, profileDir string, port int) (chrome.Browser, error)
+	connect func(ctx context.Context, o ConnOpts) (chrome.Browser, error)
+
+	// daemon control (nil in tests / direct-connect mode)
+	daemonStart  func(ConnOpts) (map[string]any, error)
+	daemonStop   func() (map[string]any, error)
+	daemonStatus func() (map[string]any, error)
 
 	start    time.Time
 	exitCode int
@@ -61,10 +67,28 @@ func (a *App) WithStickyTarget(get func() string, set func(string) error) *App {
 	return a
 }
 
+// ConnOpts are the connection-related flags handed to the connector.
+type ConnOpts struct {
+	NoLaunch   bool
+	ProfileDir string
+	Port       int
+	NoDaemon   bool
+}
+
+func (a *App) connOpts() ConnOpts {
+	return ConnOpts{NoLaunch: a.noLaunch, ProfileDir: a.profileDir, Port: a.port, NoDaemon: a.noDaemon}
+}
+
 // WithConnector wires a lazy Browser connector (used by main()); it is invoked
 // only when a command actually needs Chrome.
-func (a *App) WithConnector(fn func(ctx context.Context, noLaunch bool, profileDir string, port int) (chrome.Browser, error)) *App {
+func (a *App) WithConnector(fn func(ctx context.Context, o ConnOpts) (chrome.Browser, error)) *App {
 	a.connect = fn
+	return a
+}
+
+// WithDaemonCtl wires the daemon start/stop/status operations (used by main()).
+func (a *App) WithDaemonCtl(start func(ConnOpts) (map[string]any, error), stop, status func() (map[string]any, error)) *App {
+	a.daemonStart, a.daemonStop, a.daemonStatus = start, stop, status
 	return a
 }
 
@@ -76,7 +100,7 @@ func (a *App) getBrowser(ctx context.Context) (chrome.Browser, *result.Err) {
 	if a.connect == nil {
 		return nil, &result.Err{Code: "connection_failed", Message: "no browser configured"}
 	}
-	b, err := a.connect(ctx, a.noLaunch, a.profileDir, a.port)
+	b, err := a.connect(ctx, a.connOpts())
 	if err != nil {
 		code := "connection_failed"
 		var ce *chrome.ConnectError

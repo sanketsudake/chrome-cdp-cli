@@ -5,57 +5,104 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strconv"
+	"time"
 
 	"github.com/sanketsudake/chrome-cdp-cli/internal/browser"
 	"github.com/sanketsudake/chrome-cdp-cli/internal/chrome"
 	"github.com/sanketsudake/chrome-cdp-cli/internal/cli"
+	"github.com/sanketsudake/chrome-cdp-cli/internal/daemon"
 	"github.com/sanketsudake/chrome-cdp-cli/internal/state"
 )
 
 func main() {
-	// Resolve the DevToolsActivePort path once and reuse it for both the state
-	// key and the connection (so discovery doesn't run twice per invocation).
 	portFile := browser.FindPortFile("")
+
+	// Hidden daemon mode: `chrome-cdp __daemon <socket>` holds the CDP
+	// connection and serves commands; its connection options come from env.
+	if len(os.Args) >= 3 && os.Args[1] == "__daemon" {
+		opts := chrome.Options{
+			PortFile:   os.Getenv("CHROME_CDP_PORT_FILE"),
+			ProfileDir: os.Getenv("CHROME_CDP_PROFILE"),
+			Port:       atoi(os.Getenv("CHROME_CDP_PORT")),
+			NoLaunch:   os.Getenv("CHROME_CDP_NO_LAUNCH") == "1",
+		}
+		if err := daemon.RunDaemon(os.Args[2], opts, 30*time.Minute); err != nil {
+			fmt.Fprintln(os.Stderr, "chrome-cdp daemon:", err)
+			os.Exit(1)
+		}
+		os.Exit(0)
+	}
+
+	key := endpointKey(portFile)
+	sock := daemon.SocketPath(key)
+	exe, _ := os.Executable()
 
 	app := cli.New(nil, os.Stdout, os.Stderr)
 
-	// Lazy state: only build the store when a command actually reads or writes
-	// the sticky target, keyed by the endpoint so distinct Chromes don't share it.
-	var st *state.Store
-	store := func() *state.Store {
-		if st == nil {
-			st, _ = state.New(endpointKey(portFile))
-		}
-		return st
+	if st, err := state.New(key); err == nil {
+		app.WithStickyTarget(st.CurrentTarget, st.SetCurrentTarget)
 	}
-	app.WithStickyTarget(
-		func() string {
-			if s := store(); s != nil {
-				return s.CurrentTarget()
-			}
-			return ""
-		},
-		func(v string) error {
-			s := store()
-			if s == nil {
-				return fmt.Errorf("sticky-target state store is unavailable")
-			}
-			return s.SetCurrentTarget(v)
-		},
-	)
-	app.WithConnector(func(ctx context.Context, noLaunch bool, profileDir string, port int) (chrome.Browser, error) {
-		return chrome.Connect(ctx, chrome.Options{PortFile: portFile, NoLaunch: noLaunch, ProfileDir: profileDir, Port: port})
+
+	daemonEnv := func(o cli.ConnOpts) []string {
+		env := os.Environ()
+		if portFile != "" {
+			env = append(env, "CHROME_CDP_PORT_FILE="+portFile)
+		}
+		if o.ProfileDir != "" {
+			env = append(env, "CHROME_CDP_PROFILE="+o.ProfileDir)
+		}
+		if o.Port != 0 {
+			env = append(env, "CHROME_CDP_PORT="+strconv.Itoa(o.Port))
+		}
+		if o.NoLaunch {
+			env = append(env, "CHROME_CDP_NO_LAUNCH=1")
+		}
+		return env
+	}
+
+	app.WithConnector(func(ctx context.Context, o cli.ConnOpts) (chrome.Browser, error) {
+		if o.NoDaemon {
+			return chrome.Connect(ctx, chrome.Options{PortFile: portFile, NoLaunch: o.NoLaunch, ProfileDir: o.ProfileDir, Port: o.Port})
+		}
+		client, err := daemon.Ensure(sock, exe, daemonEnv(o))
+		if err != nil {
+			return nil, err
+		}
+		return daemon.Remote(client), nil
 	})
 
-	// os.Exit skips deferred calls, so tear the browser down explicitly first
-	// (closes a managed Chrome; a no-op for an attached real Chrome).
+	app.WithDaemonCtl(
+		func(o cli.ConnOpts) (map[string]any, error) {
+			if _, err := daemon.Ensure(sock, exe, daemonEnv(o)); err != nil {
+				return nil, err
+			}
+			return map[string]any{"started": true, "socket": sock}, nil
+		},
+		func() (map[string]any, error) {
+			c := daemon.TryConnect(sock)
+			if c == nil {
+				return map[string]any{"running": false}, nil
+			}
+			if err := c.Stop(); err != nil {
+				return nil, err
+			}
+			return map[string]any{"stopped": true}, nil
+		},
+		func() (map[string]any, error) {
+			return map[string]any{"running": daemon.TryConnect(sock) != nil, "socket": sock}, nil
+		},
+	)
+
 	code := app.Execute(os.Args[1:]...)
 	app.Close()
 	os.Exit(code)
 }
 
-// endpointKey identifies the debug endpoint (host:port) so the sticky current
-// target is keyed to the actual Chrome instance, not a fixed port.
+func atoi(s string) int { n, _ := strconv.Atoi(s); return n }
+
+// endpointKey identifies the debug endpoint (host:port) so the daemon socket and
+// sticky target are keyed to the actual Chrome instance, not a fixed port.
 func endpointKey(portFile string) string {
 	if portFile != "" {
 		if ws, err := browser.WSURLFromPortFile(portFile); err == nil {
