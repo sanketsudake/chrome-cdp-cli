@@ -9,6 +9,7 @@
 # Every key is optional; omit any you don't want to override.
 
 # Output + connection defaults
+# target = "url:github" # default tab when neither --target nor `use` is set
 # json = false          # emit the machine-readable JSON envelope by default
 # timeout = "30s"       # max time to wait per command (Go duration string)
 # no_launch = false     # never auto-launch a managed fallback Chrome

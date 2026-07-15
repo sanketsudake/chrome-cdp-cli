@@ -2,87 +2,28 @@ package daemon
 
 import (
 	"context"
-	"encoding/json"
 	"net"
 	"path/filepath"
 	"testing"
 	"time"
 
-	"github.com/sanketsudake/chrome-cdp-cli/internal/chrome"
+	"github.com/sanketsudake/chrome-cdp-cli/internal/chrometest"
 	"github.com/sanketsudake/chrome-cdp-cli/internal/target"
 )
 
-// fakeBrowser is a minimal chrome.Browser for exercising the RPC transport.
-type fakeBrowser struct{}
+// fakeBrowser exercises the RPC transport; it embeds the shared stub and
+// overrides only the methods the round-trip tests assert on.
+type fakeBrowser struct{ chrometest.StubBrowser }
 
 func (fakeBrowser) List(context.Context) ([]target.Info, error) {
 	return []target.Info{{ID: "aa11", Title: "A", URL: "u"}}, nil
 }
-func (fakeBrowser) Navigate(context.Context, string, string) (map[string]any, error) {
-	return map[string]any{"url": "x"}, nil
-}
 func (fakeBrowser) Eval(context.Context, string, string) (any, error) {
 	return map[string]any{"value": 42}, nil
 }
-func (fakeBrowser) Snapshot(context.Context, string) (any, error) { return map[string]any{}, nil }
-func (fakeBrowser) Click(context.Context, string, string, chrome.QueryOpts) (map[string]any, error) {
-	return map[string]any{}, nil
-}
-func (fakeBrowser) Type(context.Context, string, string, string, chrome.QueryOpts) (map[string]any, error) {
-	return map[string]any{}, nil
-}
-func (fakeBrowser) HTML(context.Context, string, string, bool, chrome.QueryOpts) (map[string]any, error) {
-	return map[string]any{}, nil
-}
-func (fakeBrowser) Text(context.Context, string, string, chrome.QueryOpts) (map[string]any, error) {
-	return map[string]any{}, nil
-}
-func (fakeBrowser) Value(context.Context, string, string, chrome.QueryOpts) (map[string]any, error) {
-	return map[string]any{}, nil
-}
-func (fakeBrowser) AttrGet(context.Context, string, string, string, chrome.QueryOpts) (map[string]any, error) {
-	return map[string]any{}, nil
-}
-func (fakeBrowser) AttrList(context.Context, string, string, chrome.QueryOpts) (map[string]any, error) {
-	return map[string]any{}, nil
-}
-func (fakeBrowser) AttrSet(context.Context, string, string, string, string, chrome.QueryOpts) (map[string]any, error) {
-	return map[string]any{}, nil
-}
-func (fakeBrowser) AttrRemove(context.Context, string, string, string, chrome.QueryOpts) (map[string]any, error) {
-	return map[string]any{}, nil
-}
-func (fakeBrowser) SetHeaders(context.Context, string, map[string]string) (map[string]any, error) {
-	return map[string]any{}, nil
-}
-func (fakeBrowser) EmulateViewport(context.Context, string, int64, int64) (map[string]any, error) {
-	return map[string]any{}, nil
-}
-func (fakeBrowser) EmulateGeo(context.Context, string, float64, float64) (map[string]any, error) {
-	return map[string]any{}, nil
-}
-func (fakeBrowser) EmulateReset(context.Context, string) (map[string]any, error) {
-	return map[string]any{}, nil
-}
-func (fakeBrowser) Frames(context.Context, string) (any, error) { return map[string]any{}, nil }
 func (fakeBrowser) Screenshot(context.Context, string) ([]byte, error) {
 	return []byte("PNG"), nil
 }
-func (fakeBrowser) PDF(context.Context, string) ([]byte, error)     { return []byte("PDF"), nil }
-func (fakeBrowser) CookieList(context.Context, string) (any, error) { return map[string]any{}, nil }
-func (fakeBrowser) CookieClear(context.Context, string) (map[string]any, error) {
-	return map[string]any{}, nil
-}
-func (fakeBrowser) CookieSet(context.Context, string, string, string, string, string) (map[string]any, error) {
-	return map[string]any{}, nil
-}
-func (fakeBrowser) CookieDelete(context.Context, string, string) (map[string]any, error) {
-	return map[string]any{}, nil
-}
-func (fakeBrowser) Raw(context.Context, string, string, json.RawMessage) (any, error) {
-	return map[string]any{"ok": true}, nil
-}
-func (fakeBrowser) Close() error { return nil }
 
 func serveTemp(t *testing.T) *Client {
 	t.Helper()

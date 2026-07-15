@@ -98,7 +98,7 @@ func TestUsePersistsResolvedID(t *testing.T) {
 	var persisted string
 	var out, errb bytes.Buffer
 	app := New(b, &out, &errb)
-	app.WithStickyTarget(func() string { return "" }, func(s string) error { persisted = s; return nil })
+	app.WithStickyTarget(func(ConnOpts) string { return "" }, func(_ ConnOpts, s string) error { persisted = s; return nil })
 	if code := app.Execute("use", "@2", "--json"); code != 0 {
 		t.Fatalf("exit = %d, want 0", code)
 	}

@@ -44,17 +44,19 @@ type App struct {
 	// WithDefaults); read once when the flags are registered.
 	defaults config.Defaults
 
-	// injected sticky-target source (nil in tests => no current target)
-	currentTarget func() string
-	setCurrent    func(string) error
+	// injected sticky-target store, keyed lazily by the connection so distinct
+	// endpoints (--port) don't share a current target (nil in tests).
+	stickyGet func(ConnOpts) string
+	stickySet func(ConnOpts, string) error
 
 	// lazy Browser connector (nil in tests, where browser is injected directly)
 	connect func(ctx context.Context, o ConnOpts) (chrome.Browser, error)
 
-	// daemon control (nil in tests / direct-connect mode)
+	// daemon control (nil in tests / direct-connect mode); each takes the
+	// connection options so it addresses the right per-endpoint daemon.
 	daemonStart  func(ConnOpts) (map[string]any, error)
-	daemonStop   func() (map[string]any, error)
-	daemonStatus func() (map[string]any, error)
+	daemonStop   func(ConnOpts) (map[string]any, error)
+	daemonStatus func(ConnOpts) (map[string]any, error)
 
 	start    time.Time
 	exitCode int
@@ -73,9 +75,10 @@ func (a *App) WithDefaults(d config.Defaults) *App {
 	return a
 }
 
-// WithStickyTarget wires the persisted current-target source (used by main()).
-func (a *App) WithStickyTarget(get func() string, set func(string) error) *App {
-	a.currentTarget, a.setCurrent = get, set
+// WithStickyTarget wires the persisted current-target store (used by main()).
+// get/set take the connection options so the store is keyed per endpoint.
+func (a *App) WithStickyTarget(get func(ConnOpts) string, set func(ConnOpts, string) error) *App {
+	a.stickyGet, a.stickySet = get, set
 	return a
 }
 
@@ -99,7 +102,7 @@ func (a *App) WithConnector(fn func(ctx context.Context, o ConnOpts) (chrome.Bro
 }
 
 // WithDaemonCtl wires the daemon start/stop/status operations (used by main()).
-func (a *App) WithDaemonCtl(start func(ConnOpts) (map[string]any, error), stop, status func() (map[string]any, error)) *App {
+func (a *App) WithDaemonCtl(start, stop, status func(ConnOpts) (map[string]any, error)) *App {
 	a.daemonStart, a.daemonStop, a.daemonStatus = start, stop, status
 	return a
 }
@@ -165,8 +168,8 @@ func (a *App) Close() {
 }
 
 func (a *App) sticky() string {
-	if a.currentTarget != nil {
-		return a.currentTarget()
+	if a.stickyGet != nil {
+		return a.stickyGet(a.connOpts())
 	}
 	return ""
 }
@@ -174,9 +177,14 @@ func (a *App) sticky() string {
 // resolveTarget maps --target (or the sticky current target) to a concrete tab
 // and returns the connected Browser to act on it with.
 func (a *App) resolveTarget(ctx context.Context) (*result.TargetInfo, chrome.Browser, *result.Err) {
+	// Precedence: explicit --target > sticky current target (set by `use`) >
+	// a persisted config/env default target.
 	spec := a.targetFlag
 	if spec == "" {
 		spec = a.sticky()
+	}
+	if spec == "" {
+		spec = a.defaults.Target
 	}
 	// Validate a target was given BEFORE connecting, so a forgotten --target
 	// never launches or touches Chrome.

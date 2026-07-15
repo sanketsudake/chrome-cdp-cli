@@ -114,7 +114,13 @@ func (s *server) dispatch(ctx context.Context, method string, args []json.RawMes
 	b := s.b
 	switch method {
 	case "__status":
-		return map[string]any{"connected": true}, nil
+		// Best-effort: report the tabs the daemon can currently see. A List
+		// failure just omits them rather than failing the status call.
+		info := map[string]any{"connected": true}
+		if tabs, err := b.List(ctx); err == nil {
+			info["targets"] = tabs
+		}
+		return info, nil
 	case "__stop":
 		close(s.stopCh)
 		return map[string]any{"stopped": true}, nil
@@ -173,6 +179,11 @@ func (s *server) dispatch(ctx context.Context, method string, args []json.RawMes
 	}
 }
 
+// The arg decoders return the zero value for a missing or malformed argument.
+// This is safe because both ends of the protocol are the same binary: the
+// remoteBrowser marshals exactly the positional args each method expects, so a
+// decode can only fail on a genuine internal mismatch, where a zero value (and
+// the resulting Chrome-side error) is an acceptable fail-soft.
 func argStr(a []json.RawMessage, i int) string {
 	var v string
 	if i < len(a) {
@@ -260,13 +271,19 @@ func (c *Client) call(method string, out any, args ...any) error {
 // Status pings the daemon; nil error means it's alive.
 func (c *Client) Status() error { return c.call("__status", nil) }
 
+// StatusInfo returns the daemon's status payload: {connected, targets}.
+func (c *Client) StatusInfo() (map[string]any, error) {
+	var out map[string]any
+	return out, c.call("__status", &out)
+}
+
 // Stop asks the daemon to shut down.
 func (c *Client) Stop() error { return c.call("__stop", nil) }
 
 // remoteBrowser implements chrome.Browser by RPC to the daemon.
 type remoteBrowser struct{ c *Client }
 
-// Remote returns a chrome.Browser backed by the daemon at sockPath.
+// Remote returns a chrome.Browser backed by the given daemon Client.
 func Remote(c *Client) chrome.Browser { return &remoteBrowser{c: c} }
 
 func (r *remoteBrowser) List(context.Context) ([]target.Info, error) {

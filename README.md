@@ -70,9 +70,10 @@ Persist the flags you'd otherwise retype in an optional TOML file at `$XDG_CONFI
 See [`config.example.toml`](config.example.toml) for the full set of keys.
 
 ```toml
-json = true         # default to machine-readable output
+json = true            # default to machine-readable output
 timeout = "10s"
-by = "search"       # default selector syntax
+by = "search"          # default selector syntax
+target = "url:github"  # default tab when neither --target nor `use` is set
 no_daemon = false
 ```
 

@@ -64,6 +64,22 @@ no_color = true
 	}
 }
 
+func TestConfigTarget(t *testing.T) {
+	p := writeConfig(t, "target = \"url:github\"\n")
+	d, err := ResolveFrom(p, noEnv)
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if d.Target != "url:github" {
+		t.Errorf("config target = %q, want url:github", d.Target)
+	}
+	// CHROME_CDP_TARGET overrides the file.
+	d, _ = ResolveFrom(p, envFrom(map[string]string{"CHROME_CDP_TARGET": "@2"}))
+	if d.Target != "@2" {
+		t.Errorf("env target should win, got %q", d.Target)
+	}
+}
+
 func TestEnvOverridesConfig(t *testing.T) {
 	p := writeConfig(t, `
 timeout = "5s"

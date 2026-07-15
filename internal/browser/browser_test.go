@@ -73,3 +73,31 @@ func TestDecideConnection(t *testing.T) {
 		})
 	}
 }
+
+func TestEndpointKey(t *testing.T) {
+	// An explicit port yields a distinct, port-specific key (no collisions).
+	if k := EndpointKey("", 9333); k != "127.0.0.1:9333" {
+		t.Errorf("explicit port key = %q, want 127.0.0.1:9333", k)
+	}
+	if EndpointKey("", 9333) == EndpointKey("", 9444) {
+		t.Error("distinct --port values must not share an endpoint key")
+	}
+
+	// With no port and no port file, the key is the stable default.
+	if k := EndpointKey("", 0); k != "default" {
+		t.Errorf("no port / no file key = %q, want default", k)
+	}
+
+	// With a port file and no explicit port, the key comes from the file.
+	pf := filepath.Join(t.TempDir(), "DevToolsActivePort")
+	if err := os.WriteFile(pf, []byte("9222\n/devtools/browser/abc\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if k := EndpointKey(pf, 0); k != "127.0.0.1:9222" {
+		t.Errorf("port-file key = %q, want 127.0.0.1:9222", k)
+	}
+	// An explicit port still overrides the file.
+	if k := EndpointKey(pf, 9333); k != "127.0.0.1:9333" {
+		t.Errorf("explicit port should override the file, got %q", k)
+	}
+}

@@ -4,6 +4,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"maps"
 	"os"
 	"strconv"
 	"time"
@@ -22,11 +23,14 @@ func main() {
 	// Hidden daemon mode: `chrome-cdp __daemon <socket>` holds the CDP
 	// connection and serves commands; its connection options come from env.
 	if len(os.Args) >= 3 && os.Args[1] == "__daemon" {
+		// The parent handed us a fully-resolved environment; parse it the same
+		// way the CLI does (config.FromEnv), not with a second ad-hoc contract.
+		env := config.FromEnv()
 		opts := chrome.Options{
 			PortFile:   os.Getenv("CHROME_CDP_PORT_FILE"),
-			ProfileDir: os.Getenv("CHROME_CDP_PROFILE"),
-			Port:       atoi(os.Getenv("CHROME_CDP_PORT")),
-			NoLaunch:   os.Getenv("CHROME_CDP_NO_LAUNCH") == "1",
+			ProfileDir: env.ProfileDir,
+			Port:       env.Port,
+			NoLaunch:   env.NoLaunch,
 		}
 		if err := daemon.RunDaemon(os.Args[2], opts, 30*time.Minute); err != nil {
 			fmt.Fprintln(os.Stderr, "chrome-cdp daemon:", err)
@@ -35,9 +39,17 @@ func main() {
 		os.Exit(0)
 	}
 
-	key := endpointKey(portFile)
-	sock := daemon.SocketPath(key)
 	exe, _ := os.Executable()
+
+	// The endpoint key (and thus the daemon socket + sticky-state file) depends
+	// on the effective --port, which isn't known until cobra parses flags, so it
+	// must be computed per command from the connection options — not once here.
+	socketFor := func(o cli.ConnOpts) string {
+		return daemon.SocketPath(browser.EndpointKey(portFile, o.Port))
+	}
+	stateFor := func(o cli.ConnOpts) (*state.Store, error) {
+		return state.New(browser.EndpointKey(portFile, o.Port))
+	}
 
 	// Resolve persistent defaults (config file + CHROME_CDP_* env); a malformed
 	// config is a warning, not fatal — the CLI runs on built-ins + env.
@@ -48,9 +60,22 @@ func main() {
 
 	app := cli.New(nil, os.Stdout, os.Stderr).WithDefaults(defs)
 
-	if st, err := state.New(key); err == nil {
-		app.WithStickyTarget(st.CurrentTarget, st.SetCurrentTarget)
-	}
+	app.WithStickyTarget(
+		func(o cli.ConnOpts) string {
+			st, err := stateFor(o)
+			if err != nil {
+				return ""
+			}
+			return st.CurrentTarget()
+		},
+		func(o cli.ConnOpts, spec string) error {
+			st, err := stateFor(o)
+			if err != nil {
+				return err
+			}
+			return st.SetCurrentTarget(spec)
+		},
+	)
 
 	daemonEnv := func(o cli.ConnOpts) []string {
 		env := os.Environ()
@@ -73,7 +98,7 @@ func main() {
 		if o.NoDaemon {
 			return chrome.Connect(ctx, chrome.Options{PortFile: portFile, NoLaunch: o.NoLaunch, ProfileDir: o.ProfileDir, Port: o.Port})
 		}
-		client, err := daemon.Ensure(sock, exe, daemonEnv(o))
+		client, err := daemon.Ensure(socketFor(o), exe, daemonEnv(o))
 		if err != nil {
 			return nil, err
 		}
@@ -82,13 +107,14 @@ func main() {
 
 	app.WithDaemonCtl(
 		func(o cli.ConnOpts) (map[string]any, error) {
+			sock := socketFor(o)
 			if _, err := daemon.Ensure(sock, exe, daemonEnv(o)); err != nil {
 				return nil, err
 			}
-			return map[string]any{"started": true, "socket": sock}, nil
+			return map[string]any{"started": true, "socket": sock, "endpoint": browser.EndpointKey(portFile, o.Port)}, nil
 		},
-		func() (map[string]any, error) {
-			c := daemon.TryConnect(sock)
+		func(o cli.ConnOpts) (map[string]any, error) {
+			c := daemon.TryConnect(socketFor(o))
 			if c == nil {
 				return map[string]any{"running": false}, nil
 			}
@@ -97,8 +123,8 @@ func main() {
 			}
 			return map[string]any{"stopped": true}, nil
 		},
-		func() (map[string]any, error) {
-			return map[string]any{"running": daemon.TryConnect(sock) != nil, "socket": sock}, nil
+		func(o cli.ConnOpts) (map[string]any, error) {
+			return daemonStatus(socketFor(o), browser.EndpointKey(portFile, o.Port))
 		},
 	)
 
@@ -107,17 +133,18 @@ func main() {
 	os.Exit(code)
 }
 
-func atoi(s string) int { n, _ := strconv.Atoi(s); return n }
-
-// endpointKey identifies the debug endpoint (host:port) so the daemon socket and
-// sticky target are keyed to the actual Chrome instance, not a fixed port.
-func endpointKey(portFile string) string {
-	if portFile != "" {
-		if ws, err := browser.WSURLFromPortFile(portFile); err == nil {
-			if hp, ok := browser.HostPort(ws); ok {
-				return hp
-			}
-		}
+// daemonStatus reports whether the daemon for this endpoint is running and, when
+// it is, what it's attached to (the live tab list, best-effort).
+func daemonStatus(sock, endpoint string) (map[string]any, error) {
+	res := map[string]any{"socket": sock, "endpoint": endpoint}
+	c := daemon.TryConnect(sock)
+	if c == nil {
+		res["running"] = false
+		return res, nil
 	}
-	return "default"
+	res["running"] = true
+	if info, err := c.StatusInfo(); err == nil {
+		maps.Copy(res, info)
+	}
+	return res, nil
 }

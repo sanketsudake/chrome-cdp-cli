@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net"
 	"os"
@@ -12,6 +13,7 @@ import (
 	"time"
 
 	"github.com/sanketsudake/chrome-cdp-cli/internal/chrome"
+	"github.com/sanketsudake/chrome-cdp-cli/internal/result"
 )
 
 // SocketPath returns the daemon socket path for an endpoint key, under the XDG
@@ -45,6 +47,39 @@ func sanitize(s string) string {
 	}, s)
 }
 
+// connectErr is the JSON payload written to the .err sidecar so the daemon's
+// connect failure crosses the process boundary with its stable code intact.
+type connectErr struct {
+	Code    string `json:"code,omitempty"`
+	Message string `json:"message"`
+}
+
+// encodeConnectErr serializes a connect failure, preserving a *chrome.ConnectError's
+// code so Ensure can reconstruct it.
+func encodeConnectErr(err error) []byte {
+	e := connectErr{Message: err.Error()}
+	var ce *chrome.ConnectError
+	if errors.As(err, &ce) {
+		e.Code = ce.Code
+	}
+	b, _ := json.Marshal(e)
+	return b
+}
+
+// decodeConnectErr reconstructs a connect failure from the sidecar. With a code
+// present it returns a *chrome.ConnectError so callers recover the stable code;
+// otherwise (including a legacy pre-JSON payload) it surfaces the raw message.
+func decodeConnectErr(data []byte) error {
+	var e connectErr
+	if err := json.Unmarshal(data, &e); err != nil || e.Message == "" {
+		return errors.New(strings.TrimSpace(string(data)))
+	}
+	if e.Code != "" {
+		return &chrome.ConnectError{Code: e.Code, Message: e.Message}
+	}
+	return errors.New(e.Message)
+}
+
 // TryConnect returns a Client if a daemon is already listening on sockPath.
 func TryConnect(sockPath string) *Client {
 	conn, err := net.DialTimeout("unix", sockPath, 500*time.Millisecond)
@@ -61,13 +96,14 @@ func Ensure(sockPath, exePath string, env []string) (*Client, error) {
 	if c := TryConnect(sockPath); c != nil {
 		return c, nil
 	}
-	_ = os.Remove(sockPath) // clear a stale socket file
+	_ = os.Remove(sockPath)          // clear a stale socket file
+	_ = os.Remove(sockPath + ".err") // and a stale error, so we only read THIS spawn's
 
 	cmd := exec.Command(exePath, "__daemon", sockPath)
 	cmd.Env = env
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true} // detach into its own session
 	if err := cmd.Start(); err != nil {
-		return nil, err
+		return nil, &chrome.ConnectError{Code: result.CodeDaemon, Message: "cannot start daemon: " + err.Error()}
 	}
 	_ = cmd.Process.Release()
 
@@ -76,12 +112,13 @@ func Ensure(sockPath, exePath string, env []string) (*Client, error) {
 		if c := TryConnect(sockPath); c != nil {
 			return c, nil
 		}
-		// The daemon writes its connect error here before exiting.
+		// The daemon writes its connect error here before exiting; decode it so
+		// the specific code (e.g. not_debug_enabled) survives the process boundary.
 		if data, e := os.ReadFile(sockPath + ".err"); e == nil && len(data) > 0 {
-			return nil, errors.New(strings.TrimSpace(string(data)))
+			return nil, decodeConnectErr(data)
 		}
 	}
-	return nil, errors.New("daemon did not start within 10s — did you click Allow in Chrome?")
+	return nil, &chrome.ConnectError{Code: result.CodeDaemon, Message: "daemon did not start within 10s — did you click Allow in Chrome?"}
 }
 
 // RunDaemon connects Chrome and serves sockPath until idle or stopped. Used by
@@ -89,8 +126,8 @@ func Ensure(sockPath, exePath string, env []string) (*Client, error) {
 func RunDaemon(sockPath string, opts chrome.Options, idle time.Duration) error {
 	b, err := chrome.Connect(context.Background(), opts)
 	if err != nil {
-		// Leave the reason for Ensure to surface, then exit.
-		_ = os.WriteFile(sockPath+".err", []byte(err.Error()), 0o600)
+		// Leave the reason (with its code) for Ensure to surface, then exit.
+		_ = os.WriteFile(sockPath+".err", encodeConnectErr(err), 0o600)
 		return err
 	}
 	_ = os.Remove(sockPath + ".err")

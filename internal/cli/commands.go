@@ -121,13 +121,13 @@ func (a *App) cmdUse() *cobra.Command {
 				a.emitErr("use", rerr.Code, rerr.Message, nil)
 				return nil
 			}
-			if a.setCurrent == nil {
+			if a.stickySet == nil {
 				a.emitErr("use", "generic", "cannot set the current tab: sticky-target state is unavailable", nil)
 				return nil
 			}
 			// Persist the RESOLVED id, not the spec: an ephemeral form like @N
 			// must not be re-resolved against a later, reordered tab list.
-			if err := a.setCurrent(tgt.ID); err != nil {
+			if err := a.stickySet(a.connOpts(), tgt.ID); err != nil {
 				a.emitErr("use", "generic", "cannot persist the current tab: "+err.Error(), nil)
 				return nil
 			}
@@ -346,21 +346,13 @@ func (a *App) cmdFrame() *cobra.Command {
 	return frame
 }
 
-// runResolved resolves the target and runs a pre-bound action, then emits.
+// runResolved resolves the target and runs a pre-bound action (one whose args
+// were already parsed by the caller), then emits. It shares targetAction's
+// resolve→run→classify→emit core, ignoring the unused cobra args.
 func (a *App) runResolved(command string, fn func(ctx context.Context, b chrome.Browser, id string) (any, error)) {
-	ctx, cancel := a.ctx()
-	defer cancel()
-	tgt, b, rerr := a.resolveTarget(ctx)
-	if rerr != nil {
-		a.emitErr(command, rerr.Code, rerr.Message, nil)
-		return
-	}
-	res, err := fn(ctx, b, tgt.ID)
-	if err != nil {
-		a.emitErr(command, classifyActionErr(err), err.Error(), nil)
-		return
-	}
-	a.emitOK(command, tgt, res)
+	_ = a.targetAction(command, func(ctx context.Context, b chrome.Browser, id string, _ []string) (any, error) {
+		return fn(ctx, b, id)
+	})(nil, nil)
 }
 
 func (a *App) cmdClick() *cobra.Command {
@@ -609,7 +601,7 @@ func (a *App) cmdDaemon() *cobra.Command {
 					a.emitErr("daemon", result.CodeDaemon, "daemon control unavailable", nil)
 					return nil
 				}
-				emit(a.daemonStop())
+				emit(a.daemonStop(a.connOpts()))
 				return nil
 			},
 		},
@@ -620,7 +612,7 @@ func (a *App) cmdDaemon() *cobra.Command {
 					a.emitOK("daemon", nil, map[string]any{"mode": "direct-connect"})
 					return nil
 				}
-				emit(a.daemonStatus())
+				emit(a.daemonStatus(a.connOpts()))
 				return nil
 			},
 		},

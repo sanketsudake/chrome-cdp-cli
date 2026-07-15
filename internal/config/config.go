@@ -20,6 +20,7 @@ type Defaults struct {
 	Timeout    time.Duration
 	By         string
 	Wait       string
+	Target     string
 	Port       int
 	ProfileDir string
 	NoLaunch   bool
@@ -40,6 +41,7 @@ type file struct {
 	Timeout    *string `toml:"timeout"`
 	By         *string `toml:"by"`
 	Wait       *string `toml:"wait"`
+	Target     *string `toml:"target"`
 	Port       *int    `toml:"port"`
 	ProfileDir *string `toml:"profile_dir"`
 	NoLaunch   *bool   `toml:"no_launch"`
@@ -79,6 +81,15 @@ func ResolveFrom(path string, getenv func(string) string) (Defaults, error) {
 	return d, err
 }
 
+// FromEnv returns the built-in defaults overlaid with CHROME_CDP_* env vars only
+// (no config file). The daemon subprocess uses it: the parent already folded the
+// config file into the environment it hands down, so parsing stays in one place.
+func FromEnv() Defaults {
+	d := Builtin()
+	applyEnv(&d, os.Getenv)
+	return d
+}
+
 // applyFile overlays a config file onto d. A missing file is not an error; a
 // present-but-malformed file is (returned so the caller can warn), and d is
 // left at its built-in values in that case.
@@ -104,6 +115,9 @@ func applyFile(d *Defaults, path string) error {
 	}
 	if f.Wait != nil {
 		d.Wait = *f.Wait
+	}
+	if f.Target != nil {
+		d.Target = *f.Target
 	}
 	if f.Port != nil {
 		d.Port = *f.Port
@@ -138,6 +152,9 @@ func applyEnv(d *Defaults, getenv func(string) string) {
 	}
 	if v := getenv("CHROME_CDP_WAIT"); v != "" {
 		d.Wait = v
+	}
+	if v := getenv("CHROME_CDP_TARGET"); v != "" {
+		d.Target = v
 	}
 	if v := getenv("CHROME_CDP_PORT"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil {

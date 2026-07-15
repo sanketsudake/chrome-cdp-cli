@@ -77,6 +77,25 @@ func FindPortFile(override string) string {
 	return ""
 }
 
+// EndpointKey identifies the debug endpoint a command targets, so the daemon
+// socket and sticky state are keyed to the actual Chrome instance rather than a
+// fixed port. An explicit --port wins (distinct ports get distinct keys);
+// otherwise the key comes from the discovered DevToolsActivePort file, falling
+// back to "default".
+func EndpointKey(portFile string, port int) string {
+	if port != 0 {
+		return fmt.Sprintf("127.0.0.1:%d", port)
+	}
+	if portFile != "" {
+		if ws, err := WSURLFromPortFile(portFile); err == nil {
+			if hp, ok := HostPort(ws); ok {
+				return hp
+			}
+		}
+	}
+	return "default"
+}
+
 // HostPort extracts the host:port authority from a ws:// URL.
 func HostPort(wsURL string) (string, bool) {
 	_, rest, ok := strings.Cut(wsURL, "://")
