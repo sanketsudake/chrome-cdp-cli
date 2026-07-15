@@ -20,10 +20,12 @@ import (
 )
 
 // Request is a Browser method call. Args are the positional arguments (after
-// ctx) as JSON.
+// ctx) as JSON. TimeoutMs carries the client's remaining deadline so the daemon
+// bounds the action instead of running (and blocking the client) forever.
 type Request struct {
-	Method string            `json:"method"`
-	Args   []json.RawMessage `json:"args,omitempty"`
+	Method    string            `json:"method"`
+	Args      []json.RawMessage `json:"args,omitempty"`
+	TimeoutMs int64             `json:"timeout_ms,omitempty"`
 }
 
 // Response is the method result (or an error string).
@@ -39,7 +41,10 @@ type server struct {
 	mu       sync.Mutex
 	activity chan struct{} // activity pings, to reset the idle timer
 	stopCh   chan struct{}
+	stopOnce sync.Once
 }
+
+func (s *server) stop() { s.stopOnce.Do(func() { close(s.stopCh) }) }
 
 // Serve accepts connections on ln and dispatches each to b until an idle period
 // of `idle` elapses or a stop request arrives.
@@ -92,10 +97,31 @@ func (s *server) handle(conn net.Conn) {
 	if err := json.NewDecoder(conn).Decode(&req); err != nil {
 		return
 	}
-	s.mu.Lock()
-	res, err := s.dispatch(context.Background(), req.Method, req.Args)
-	s.mu.Unlock()
 
+	// __stop must respond even while a slow action holds the mutex, so it never
+	// waits on dispatch.
+	if req.Method == "__stop" {
+		s.stop()
+		reply(conn, map[string]any{"stopped": true}, nil)
+		return
+	}
+
+	// Bound the action by the client's remaining deadline, so a slow/hung action
+	// returns a clean error (and frees the mutex) instead of blocking forever.
+	ctx := context.Background()
+	if req.TimeoutMs > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, time.Duration(req.TimeoutMs)*time.Millisecond)
+		defer cancel()
+	}
+	s.mu.Lock()
+	res, err := s.dispatch(ctx, req.Method, req.Args)
+	s.mu.Unlock()
+	reply(conn, res, err)
+}
+
+// reply writes a Response for a dispatch result to conn.
+func reply(conn net.Conn, res any, err error) {
 	resp := Response{}
 	if err != nil {
 		resp.Error = err.Error()
@@ -121,9 +147,6 @@ func (s *server) dispatch(ctx context.Context, method string, args []json.RawMes
 			info["targets"] = tabs
 		}
 		return info, nil
-	case "__stop":
-		close(s.stopCh)
-		return map[string]any{"stopped": true}, nil
 	case "List":
 		return b.List(ctx)
 	case "Navigate":
@@ -238,7 +261,7 @@ type Client struct {
 	path string
 }
 
-func (c *Client) call(method string, out any, args ...any) error {
+func (c *Client) call(ctx context.Context, method string, out any, args ...any) error {
 	raw := make([]json.RawMessage, len(args))
 	for i, a := range args {
 		b, err := json.Marshal(a)
@@ -247,12 +270,27 @@ func (c *Client) call(method string, out any, args ...any) error {
 		}
 		raw[i] = b
 	}
+
+	// Hand the daemon our remaining deadline so a slow action fails cleanly
+	// there rather than blocking us; a socket deadline (the action deadline plus
+	// grace for its response, or a default cap) keeps a wedged daemon from
+	// hanging us indefinitely.
+	var timeoutMs int64
+	sockDeadline := time.Now().Add(30 * time.Second)
+	if dl, ok := ctx.Deadline(); ok {
+		if timeoutMs = time.Until(dl).Milliseconds(); timeoutMs <= 0 {
+			return context.DeadlineExceeded
+		}
+		sockDeadline = dl.Add(2 * time.Second)
+	}
+
 	conn, err := net.Dial("unix", c.path)
 	if err != nil {
 		return err
 	}
 	defer conn.Close()
-	if err := json.NewEncoder(conn).Encode(Request{Method: method, Args: raw}); err != nil {
+	_ = conn.SetDeadline(sockDeadline)
+	if err := json.NewEncoder(conn).Encode(Request{Method: method, Args: raw, TimeoutMs: timeoutMs}); err != nil {
 		return err
 	}
 	var resp Response
@@ -269,16 +307,26 @@ func (c *Client) call(method string, out any, args ...any) error {
 }
 
 // Status pings the daemon; nil error means it's alive.
-func (c *Client) Status() error { return c.call("__status", nil) }
+func (c *Client) Status() error {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	return c.call(ctx, "__status", nil)
+}
 
 // StatusInfo returns the daemon's status payload: {connected, targets}.
 func (c *Client) StatusInfo() (map[string]any, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
 	var out map[string]any
-	return out, c.call("__status", &out)
+	return out, c.call(ctx, "__status", &out)
 }
 
 // Stop asks the daemon to shut down.
-func (c *Client) Stop() error { return c.call("__stop", nil) }
+func (c *Client) Stop() error {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	return c.call(ctx, "__stop", nil)
+}
 
 // remoteBrowser implements chrome.Browser by RPC to the daemon.
 type remoteBrowser struct{ c *Client }
@@ -286,105 +334,105 @@ type remoteBrowser struct{ c *Client }
 // Remote returns a chrome.Browser backed by the given daemon Client.
 func Remote(c *Client) chrome.Browser { return &remoteBrowser{c: c} }
 
-func (r *remoteBrowser) List(context.Context) ([]target.Info, error) {
+func (r *remoteBrowser) List(ctx context.Context) ([]target.Info, error) {
 	var out []target.Info
-	return out, r.c.call("List", &out)
+	return out, r.c.call(ctx, "List", &out)
 }
-func (r *remoteBrowser) Navigate(_ context.Context, id, url string) (map[string]any, error) {
+func (r *remoteBrowser) Navigate(ctx context.Context, id, url string) (map[string]any, error) {
 	var out map[string]any
-	return out, r.c.call("Navigate", &out, id, url)
+	return out, r.c.call(ctx, "Navigate", &out, id, url)
 }
-func (r *remoteBrowser) Eval(_ context.Context, id, expr string) (any, error) {
+func (r *remoteBrowser) Eval(ctx context.Context, id, expr string) (any, error) {
 	var out any
-	return out, r.c.call("Eval", &out, id, expr)
+	return out, r.c.call(ctx, "Eval", &out, id, expr)
 }
-func (r *remoteBrowser) Snapshot(_ context.Context, id string) (any, error) {
+func (r *remoteBrowser) Snapshot(ctx context.Context, id string) (any, error) {
 	var out any
-	return out, r.c.call("Snapshot", &out, id)
+	return out, r.c.call(ctx, "Snapshot", &out, id)
 }
-func (r *remoteBrowser) Click(_ context.Context, id, sel string, q chrome.QueryOpts) (map[string]any, error) {
+func (r *remoteBrowser) Click(ctx context.Context, id, sel string, q chrome.QueryOpts) (map[string]any, error) {
 	var out map[string]any
-	return out, r.c.call("Click", &out, id, sel, q)
+	return out, r.c.call(ctx, "Click", &out, id, sel, q)
 }
-func (r *remoteBrowser) Type(_ context.Context, id, sel, text string, q chrome.QueryOpts) (map[string]any, error) {
+func (r *remoteBrowser) Type(ctx context.Context, id, sel, text string, q chrome.QueryOpts) (map[string]any, error) {
 	var out map[string]any
-	return out, r.c.call("Type", &out, id, sel, text, q)
+	return out, r.c.call(ctx, "Type", &out, id, sel, text, q)
 }
-func (r *remoteBrowser) HTML(_ context.Context, id, sel string, inner bool, q chrome.QueryOpts) (map[string]any, error) {
+func (r *remoteBrowser) HTML(ctx context.Context, id, sel string, inner bool, q chrome.QueryOpts) (map[string]any, error) {
 	var out map[string]any
-	return out, r.c.call("HTML", &out, id, sel, inner, q)
+	return out, r.c.call(ctx, "HTML", &out, id, sel, inner, q)
 }
-func (r *remoteBrowser) Text(_ context.Context, id, sel string, q chrome.QueryOpts) (map[string]any, error) {
+func (r *remoteBrowser) Text(ctx context.Context, id, sel string, q chrome.QueryOpts) (map[string]any, error) {
 	var out map[string]any
-	return out, r.c.call("Text", &out, id, sel, q)
+	return out, r.c.call(ctx, "Text", &out, id, sel, q)
 }
-func (r *remoteBrowser) Value(_ context.Context, id, sel string, q chrome.QueryOpts) (map[string]any, error) {
+func (r *remoteBrowser) Value(ctx context.Context, id, sel string, q chrome.QueryOpts) (map[string]any, error) {
 	var out map[string]any
-	return out, r.c.call("Value", &out, id, sel, q)
+	return out, r.c.call(ctx, "Value", &out, id, sel, q)
 }
-func (r *remoteBrowser) AttrGet(_ context.Context, id, sel, name string, q chrome.QueryOpts) (map[string]any, error) {
+func (r *remoteBrowser) AttrGet(ctx context.Context, id, sel, name string, q chrome.QueryOpts) (map[string]any, error) {
 	var out map[string]any
-	return out, r.c.call("AttrGet", &out, id, sel, name, q)
+	return out, r.c.call(ctx, "AttrGet", &out, id, sel, name, q)
 }
-func (r *remoteBrowser) AttrList(_ context.Context, id, sel string, q chrome.QueryOpts) (map[string]any, error) {
+func (r *remoteBrowser) AttrList(ctx context.Context, id, sel string, q chrome.QueryOpts) (map[string]any, error) {
 	var out map[string]any
-	return out, r.c.call("AttrList", &out, id, sel, q)
+	return out, r.c.call(ctx, "AttrList", &out, id, sel, q)
 }
-func (r *remoteBrowser) AttrSet(_ context.Context, id, sel, name, value string, q chrome.QueryOpts) (map[string]any, error) {
+func (r *remoteBrowser) AttrSet(ctx context.Context, id, sel, name, value string, q chrome.QueryOpts) (map[string]any, error) {
 	var out map[string]any
-	return out, r.c.call("AttrSet", &out, id, sel, name, value, q)
+	return out, r.c.call(ctx, "AttrSet", &out, id, sel, name, value, q)
 }
-func (r *remoteBrowser) AttrRemove(_ context.Context, id, sel, name string, q chrome.QueryOpts) (map[string]any, error) {
+func (r *remoteBrowser) AttrRemove(ctx context.Context, id, sel, name string, q chrome.QueryOpts) (map[string]any, error) {
 	var out map[string]any
-	return out, r.c.call("AttrRemove", &out, id, sel, name, q)
+	return out, r.c.call(ctx, "AttrRemove", &out, id, sel, name, q)
 }
-func (r *remoteBrowser) SetHeaders(_ context.Context, id string, h map[string]string) (map[string]any, error) {
+func (r *remoteBrowser) SetHeaders(ctx context.Context, id string, h map[string]string) (map[string]any, error) {
 	var out map[string]any
-	return out, r.c.call("SetHeaders", &out, id, h)
+	return out, r.c.call(ctx, "SetHeaders", &out, id, h)
 }
-func (r *remoteBrowser) EmulateViewport(_ context.Context, id string, w, h int64) (map[string]any, error) {
+func (r *remoteBrowser) EmulateViewport(ctx context.Context, id string, w, h int64) (map[string]any, error) {
 	var out map[string]any
-	return out, r.c.call("EmulateViewport", &out, id, w, h)
+	return out, r.c.call(ctx, "EmulateViewport", &out, id, w, h)
 }
-func (r *remoteBrowser) EmulateGeo(_ context.Context, id string, lat, lon float64) (map[string]any, error) {
+func (r *remoteBrowser) EmulateGeo(ctx context.Context, id string, lat, lon float64) (map[string]any, error) {
 	var out map[string]any
-	return out, r.c.call("EmulateGeo", &out, id, lat, lon)
+	return out, r.c.call(ctx, "EmulateGeo", &out, id, lat, lon)
 }
-func (r *remoteBrowser) EmulateReset(_ context.Context, id string) (map[string]any, error) {
+func (r *remoteBrowser) EmulateReset(ctx context.Context, id string) (map[string]any, error) {
 	var out map[string]any
-	return out, r.c.call("EmulateReset", &out, id)
+	return out, r.c.call(ctx, "EmulateReset", &out, id)
 }
-func (r *remoteBrowser) Frames(_ context.Context, id string) (any, error) {
+func (r *remoteBrowser) Frames(ctx context.Context, id string) (any, error) {
 	var out any
-	return out, r.c.call("Frames", &out, id)
+	return out, r.c.call(ctx, "Frames", &out, id)
 }
-func (r *remoteBrowser) Screenshot(_ context.Context, id string) ([]byte, error) {
+func (r *remoteBrowser) Screenshot(ctx context.Context, id string) ([]byte, error) {
 	var out []byte
-	return out, r.c.call("Screenshot", &out, id)
+	return out, r.c.call(ctx, "Screenshot", &out, id)
 }
-func (r *remoteBrowser) PDF(_ context.Context, id string) ([]byte, error) {
+func (r *remoteBrowser) PDF(ctx context.Context, id string) ([]byte, error) {
 	var out []byte
-	return out, r.c.call("PDF", &out, id)
+	return out, r.c.call(ctx, "PDF", &out, id)
 }
-func (r *remoteBrowser) CookieList(_ context.Context, id string) (any, error) {
+func (r *remoteBrowser) CookieList(ctx context.Context, id string) (any, error) {
 	var out any
-	return out, r.c.call("CookieList", &out, id)
+	return out, r.c.call(ctx, "CookieList", &out, id)
 }
-func (r *remoteBrowser) CookieSet(_ context.Context, id, name, value, domain, path string) (map[string]any, error) {
+func (r *remoteBrowser) CookieSet(ctx context.Context, id, name, value, domain, path string) (map[string]any, error) {
 	var out map[string]any
-	return out, r.c.call("CookieSet", &out, id, name, value, domain, path)
+	return out, r.c.call(ctx, "CookieSet", &out, id, name, value, domain, path)
 }
-func (r *remoteBrowser) CookieDelete(_ context.Context, id, name string) (map[string]any, error) {
+func (r *remoteBrowser) CookieDelete(ctx context.Context, id, name string) (map[string]any, error) {
 	var out map[string]any
-	return out, r.c.call("CookieDelete", &out, id, name)
+	return out, r.c.call(ctx, "CookieDelete", &out, id, name)
 }
-func (r *remoteBrowser) CookieClear(_ context.Context, id string) (map[string]any, error) {
+func (r *remoteBrowser) CookieClear(ctx context.Context, id string) (map[string]any, error) {
 	var out map[string]any
-	return out, r.c.call("CookieClear", &out, id)
+	return out, r.c.call(ctx, "CookieClear", &out, id)
 }
-func (r *remoteBrowser) Raw(_ context.Context, id, method string, params json.RawMessage) (any, error) {
+func (r *remoteBrowser) Raw(ctx context.Context, id, method string, params json.RawMessage) (any, error) {
 	var out any
-	return out, r.c.call("Raw", &out, id, method, params)
+	return out, r.c.call(ctx, "Raw", &out, id, method, params)
 }
 
 // Close is a no-op: the shared daemon outlives a single command.

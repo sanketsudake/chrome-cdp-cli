@@ -64,6 +64,74 @@ func TestRPCRoundTrip(t *testing.T) {
 	}
 }
 
+// slowBrowser's Eval blocks until its context is cancelled — standing in for a
+// wedged/slow CDP action.
+type slowBrowser struct{ chrometest.StubBrowser }
+
+func (slowBrowser) Eval(ctx context.Context, _, _ string) (any, error) {
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
+func TestDaemonHonorsClientTimeout(t *testing.T) {
+	sock := filepath.Join(t.TempDir(), "d.sock")
+	ln, err := net.Listen("unix", sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	go Serve(ln, slowBrowser{}, time.Minute)
+	t.Cleanup(func() { _ = ln.Close() })
+	rb := Remote(&Client{path: sock})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	_, err = rb.Eval(ctx, "aa11", "1+1")
+	if err == nil {
+		t.Fatal("expected a deadline error — the daemon ignored the client timeout or the client hung")
+	}
+	if d := time.Since(start); d > 4*time.Second {
+		t.Errorf("call took %v; the client blocked past the deadline instead of failing fast", d)
+	}
+}
+
+// gateBrowser signals when its Eval has entered (holding the dispatch mutex) and
+// then blocks, so a concurrent __stop can be tested against a busy daemon.
+type gateBrowser struct {
+	chrometest.StubBrowser
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (g *gateBrowser) Eval(context.Context, string, string) (any, error) {
+	close(g.entered)
+	<-g.release
+	return nil, nil
+}
+
+func TestStopRespondsWhileBusy(t *testing.T) {
+	sock := filepath.Join(t.TempDir(), "d.sock")
+	ln, err := net.Listen("unix", sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	g := &gateBrowser{entered: make(chan struct{}), release: make(chan struct{})}
+	go Serve(ln, g, time.Minute)
+	t.Cleanup(func() { close(g.release); _ = ln.Close() })
+
+	// Occupy the dispatch mutex with a long-running Eval.
+	go func() { _, _ = Remote(&Client{path: sock}).Eval(context.Background(), "x", "y") }()
+	<-g.entered // Eval now holds the mutex
+
+	start := time.Now()
+	if err := (&Client{path: sock}).Stop(); err != nil {
+		t.Fatalf("Stop while busy: %v", err)
+	}
+	if d := time.Since(start); d > 3*time.Second {
+		t.Errorf("Stop took %v; it blocked behind the busy action instead of responding", d)
+	}
+}
+
 func TestEnsureConnectsToExisting(t *testing.T) {
 	sock := filepath.Join(t.TempDir(), "d.sock")
 	ln, err := net.Listen("unix", sock)
