@@ -634,34 +634,153 @@ func nameMatches(actual, want, mode string) bool {
 func axNameQuery(name, role string, nth int, match string) func(context.Context, *cdp.Node) ([]cdp.NodeID, error) {
 	return func(ctx context.Context, _ *cdp.Node) ([]cdp.NodeID, error) {
 		nodes, err := accessibility.GetFullAXTree().Do(ctx)
+		if err == nil {
+			backend := axMatchBackends(nodes, name, role, nth, match)
+			if len(backend) > 0 {
+				return dom.PushNodesByBackendIDsToFrontend(backend).Do(ctx)
+			}
+		}
+		// The a11y tree yielded no match (or errored). Chrome throttles the tree on
+		// a tab it can't foreground, so on a hidden tab fall back to a DOM-based
+		// accessible-name match (querySelector isn't throttled). On a visible tab
+		// the a11y tree is authoritative, so we don't second-guess it.
+		if tabHidden(ctx) {
+			return domNameQuery(ctx, name, role, nth, match)
+		}
 		if err != nil {
 			return nil, err
 		}
-		var backend []cdp.BackendNodeID
-		for _, n := range nodes {
-			if n.Ignored || n.BackendDOMNodeID == 0 {
-				continue // ignored = not exposed to accessibility (hidden) -> skip
-			}
-			if !nameMatches(axString(n.Name), name, match) {
-				continue
-			}
-			if role != "" && axString(n.Role) != role {
-				continue
-			}
-			backend = append(backend, n.BackendDOMNodeID)
-		}
-		if nth > 0 {
-			if nth > len(backend) {
-				return nil, nil // not enough matches (yet) — let chromedp retry/timeout
-			}
-			backend = backend[nth-1 : nth]
-		}
-		if len(backend) == 0 {
-			return nil, nil
-		}
-		return dom.PushNodesByBackendIDsToFrontend(backend).Do(ctx)
+		return nil, nil
 	}
 }
+
+// axMatchBackends returns the backend ids of the exposed (non-ignored) a11y nodes
+// matching name (and optional role), the Nth (1-based) or all when nth is 0.
+func axMatchBackends(nodes []*accessibility.Node, name, role string, nth int, match string) []cdp.BackendNodeID {
+	var backend []cdp.BackendNodeID
+	for _, n := range nodes {
+		if n.Ignored || n.BackendDOMNodeID == 0 {
+			continue // ignored = not exposed to accessibility (hidden) -> skip
+		}
+		if !nameMatches(axString(n.Name), name, match) {
+			continue
+		}
+		if role != "" && axString(n.Role) != role {
+			continue
+		}
+		backend = append(backend, n.BackendDOMNodeID)
+	}
+	if nth > 0 {
+		if nth > len(backend) {
+			return nil
+		}
+		return backend[nth-1 : nth]
+	}
+	return backend
+}
+
+// tabHidden reports whether document.visibilityState is "hidden" — the tab isn't
+// the active tab in a focused window, so Chrome throttles its accessibility tree.
+func tabHidden(ctx context.Context) bool {
+	var vis string
+	if err := chromedp.Evaluate("document.visibilityState", &vis).Do(ctx); err != nil {
+		return false
+	}
+	return vis == "hidden"
+}
+
+// domNameQuery resolves an element by its accessible name computed in JS (not the
+// throttled a11y tree) — aria-label / labelledby / associated label / role text /
+// title / placeholder — restricted to visible, non-aria-hidden elements so it
+// keeps the "skip hidden nodes" property. Returns the Nth (1-based, or first)
+// visible match, via DOM.requestNode.
+func domNameQuery(ctx context.Context, name, role string, nth int, match string) ([]cdp.NodeID, error) {
+	nameJSON, _ := json.Marshal(name)
+	roleJSON, _ := json.Marshal(role)
+	modeJSON, _ := json.Marshal(match)
+	expr := fmt.Sprintf(domNameLocatorJS, string(nameJSON), string(roleJSON), string(modeJSON), nth)
+	res, exc, err := cdpruntime.Evaluate(expr).Do(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if exc != nil {
+		return nil, fmt.Errorf("dom name locator: %s", exc.Text)
+	}
+	if res == nil || res.ObjectID == "" {
+		return nil, nil
+	}
+	nid, err := dom.RequestNode(res.ObjectID).Do(ctx)
+	if err != nil || nid == 0 {
+		return nil, err
+	}
+	return []cdp.NodeID{nid}, nil
+}
+
+// domNameLocatorJS computes a simplified ARIA accessible name + role in JS and
+// returns the Nth (1-based, or first) visible matching element. Args: %[1]s name
+// JSON, %[2]s role JSON (empty = any), %[3]s match-mode JSON, %[4]d nth.
+const domNameLocatorJS = `(() => {
+  const want = %[1]s, role = %[2]s, mode = %[3]s, nth = %[4]d;
+  const norm = s => (s || "").replace(/\s+/g, " ").trim();
+  const cmp = (a, b) => {
+    a = norm(a);
+    if (mode === "contains") return a.toLowerCase().includes(b.toLowerCase());
+    if (mode === "regex") { try { return new RegExp(b).test(a); } catch (e) { return false; } }
+    return a === b;
+  };
+  const visible = el => {
+    if (el.getAttribute("aria-hidden") === "true") return false;
+    const cs = getComputedStyle(el);
+    if (cs.visibility === "hidden" || cs.display === "none") return false;
+    const r = el.getBoundingClientRect();
+    return r.width > 0 && r.height > 0;
+  };
+  const roleOf = el => {
+    const ex = el.getAttribute("role"); if (ex) return ex;
+    const tag = el.tagName.toLowerCase();
+    if (tag === "button") return "button";
+    if (tag === "a" && el.hasAttribute("href")) return "link";
+    if (tag === "select") return "combobox";
+    if (tag === "textarea") return "textbox";
+    if (/^h[1-6]$/.test(tag)) return "heading";
+    if (tag === "input") {
+      const ty = (el.getAttribute("type") || "text").toLowerCase();
+      if (["button", "submit", "reset"].includes(ty)) return "button";
+      if (ty === "checkbox") return "checkbox";
+      if (ty === "radio") return "radio";
+      return "textbox";
+    }
+    return "";
+  };
+  const textRoles = ["button", "link", "heading", "option", "menuitem", "menuitemradio", "menuitemcheckbox", "tab", "treeitem", "cell", "columnheader", "rowheader"];
+  const accName = el => {
+    const al = el.getAttribute("aria-label"); if (al) return al;
+    const lb = el.getAttribute("aria-labelledby");
+    if (lb) {
+      const t = lb.split(/\s+/).map(id => { const e = document.getElementById(id); return e ? e.textContent : ""; }).join(" ");
+      if (norm(t)) return t;
+    }
+    if (el.id) { try { const lab = document.querySelector('label[for="' + CSS.escape(el.id) + '"]'); if (lab && norm(lab.textContent)) return lab.textContent; } catch (e) {} }
+    const wrap = el.closest("label"); if (wrap && norm(wrap.textContent)) return wrap.textContent;
+    if (textRoles.includes(roleOf(el)) && norm(el.textContent)) return el.textContent;
+    const ph = el.getAttribute("placeholder"); if (ph) return ph;
+    const ti = el.getAttribute("title"); if (ti) return ti;
+    const alt = el.getAttribute("alt"); if (alt) return alt;
+    if (el.tagName === "INPUT" && ["button", "submit", "reset"].includes((el.getAttribute("type") || "").toLowerCase())) {
+      const v = el.getAttribute("value"); if (v) return v;
+    }
+    return "";
+  };
+  const out = [];
+  for (const el of document.querySelectorAll("*")) {
+    if (!visible(el)) continue;
+    if (role && roleOf(el) !== role) continue;
+    if (!cmp(accName(el), want)) continue;
+    out.push(el);
+  }
+  if (!out.length) return null;
+  return out[nth > 0 ? nth - 1 : 0] || null;
+})()`
 
 // bringToFront is a best-effort action to make the tab active before synthetic
 // input: Chrome drops clicks and keystrokes dispatched at a background/inactive
