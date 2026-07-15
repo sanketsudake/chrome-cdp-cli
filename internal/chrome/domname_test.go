@@ -50,7 +50,7 @@ func TestDOMNameResolution(t *testing.T) {
 		t.Helper()
 		var desc string
 		rerr := cdpB.run(ctx, id, chromedp.ActionFunc(func(actx context.Context) error {
-			ids, e := domNameQuery(actx, name, role, 0, match)
+			ids, e := domNameQuery(actx, name, role, 0, match, "")
 			if e != nil {
 				return e
 			}

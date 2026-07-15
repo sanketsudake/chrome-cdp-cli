@@ -57,6 +57,8 @@ func (a *App) newRoot() *cobra.Command {
 	pf.StringVar(&a.roleFlag, "role", "", "with --by name: constrain to an ARIA role (button|link|textbox|…)")
 	pf.IntVar(&a.nthFlag, "nth", 0, "with --by name: pick the Nth (1-based) match among visible candidates")
 	pf.StringVar(&a.matchFlag, "match", "", "with --by name: name match mode: exact (default)|contains|regex")
+	pf.StringVar(&a.inRowFlag, "in-row", "", "with --by name: scope the match to the table row whose text contains this (e.g. click the Delete in one row of many)")
+	pf.StringVar(&a.onDialog, "on-dialog", "", "on click/type/fill: auto-handle a native dialog (alert/confirm/prompt) opened during the action: accept|dismiss")
 	pf.BoolVar(&a.noWait, "no-wait", false, "act immediately; fail fast instead of waiting for the element")
 	pf.BoolVar(&a.pierce, "pierce", false, "reach into shadow DOM / iframes (via DevTools search)")
 	pf.BoolVarP(&a.quiet, "quiet", "q", false, "suppress non-essential output")
