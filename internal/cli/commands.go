@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -51,7 +52,7 @@ func (a *App) newRoot() *cobra.Command {
 	pf.BoolVar(&a.noDaemon, "no-daemon", d.NoDaemon, "connect directly instead of via the shared daemon")
 	pf.StringVar(&a.profileDir, "profile-dir", d.ProfileDir, "managed-launch Chrome profile dir (else $CHROME_CDP_PROFILE or ~/.cache/chrome-cdp/profile)")
 	pf.IntVar(&a.port, "port", d.Port, "explicit Chrome debug port to attach to / launch with (0 = auto)")
-	pf.StringVar(&a.byFlag, "by", d.By, "selector syntax: css|id|search|jspath|css-all|name (name = ARIA accessible name)")
+	pf.StringVar(&a.byFlag, "by", d.By, "selector syntax: css|id|search|jspath|css-all|name|ref (name = ARIA accessible name; ref = a snap-issued e<id>)")
 	pf.StringVar(&a.waitFlag, "wait", d.Wait, "selector wait condition: visible|ready|enabled")
 	pf.StringVar(&a.roleFlag, "role", "", "with --by name: constrain to an ARIA role (button|link|textbox|…)")
 	pf.IntVar(&a.nthFlag, "nth", 0, "with --by name: pick the Nth (1-based) match among visible candidates")
@@ -68,7 +69,7 @@ func (a *App) newRoot() *cobra.Command {
 		a.cmdHTML(), a.cmdText(), a.cmdValue(),
 		a.cmdClick(), a.cmdType(), a.cmdSelect(), a.cmdGrid(), a.cmdScroll(), a.cmdAttr(), a.cmdScreenshot(), a.cmdPDF(),
 		a.cmdCookie(), a.cmdHeaders(), a.cmdEmulate(), a.cmdFrame(), a.cmdWait(), a.cmdRaw(),
-		a.cmdDoctor(), a.cmdDaemon(), a.cmdExitCodes(), a.cmdVersion(),
+		a.cmdSession(), a.cmdDoctor(), a.cmdDaemon(), a.cmdExitCodes(), a.cmdVersion(),
 	)
 	return root
 }
@@ -728,6 +729,56 @@ func (a *App) cmdDaemon() *cobra.Command {
 		},
 	)
 	return daemon
+}
+
+func (a *App) cmdSession() *cobra.Command {
+	return &cobra.Command{
+		Use:   "session",
+		Short: "Batch mode: read NDJSON argv commands on stdin, run each over one held connection, emit NDJSON results",
+		Long: "Read one command per stdin line as a JSON array of argv, run it against a\n" +
+			"single held Chrome connection (no per-command process spawn or reconnect),\n" +
+			"and print each result as one JSON line. Comment lines (#) and blank lines are\n" +
+			"skipped. Combine with `snap`'s element refs and `--by ref` to act on nodes\n" +
+			"without re-resolving them:\n\n" +
+			"  printf '%s\\n' '[\"use\",\"url:workday\"]' '[\"snap\"]' '[\"click\",\"e42\",\"--by\",\"ref\"]' | chrome-cdp session",
+		Args: cobra.NoArgs,
+		RunE: func(*cobra.Command, []string) error {
+			// Each result line is a JSON envelope (NDJSON) regardless of the global
+			// --json default.
+			a.defaults.JSON = true
+			r := a.in
+			if r == nil {
+				r = os.Stdin
+			}
+			sc := bufio.NewScanner(r)
+			sc.Buffer(make([]byte, 0, 64*1024), 8*1024*1024) // tolerate long lines
+			for sc.Scan() {
+				line := strings.TrimSpace(sc.Text())
+				if line == "" || strings.HasPrefix(line, "#") {
+					continue
+				}
+				var argv []string
+				if err := json.Unmarshal([]byte(line), &argv); err != nil {
+					a.emitErr("session", result.CodeUsage, "each line must be a JSON array of argv strings: "+err.Error(), nil)
+					continue
+				}
+				if len(argv) == 0 {
+					continue
+				}
+				// Reuse the full command tree per line; the browser connection is
+				// cached on the App, so only the first line pays the connect cost.
+				a.Execute(argv...)
+			}
+			if err := sc.Err(); err != nil {
+				a.emitErr("session", result.CodeGeneric, err.Error(), nil)
+				return nil
+			}
+			// The session itself succeeded (stdin drained cleanly); per-line success
+			// or failure is carried in each NDJSON envelope, not the process exit.
+			a.exitCode = result.ExitOK
+			return nil
+		},
+	}
 }
 
 func (a *App) cmdExitCodes() *cobra.Command {

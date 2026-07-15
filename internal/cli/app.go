@@ -22,6 +22,7 @@ type App struct {
 	browser chrome.Browser
 	out     io.Writer
 	err     io.Writer
+	in      io.Reader // stdin for `session` NDJSON commands (defaults to os.Stdin)
 
 	// global flags
 	jsonOut    bool
@@ -68,7 +69,13 @@ type App struct {
 // New builds an App around a Browser and output streams. The --timeout flag's
 // default is the single source of truth for the timeout (see newRoot).
 func New(b chrome.Browser, out, errw io.Writer) *App {
-	return &App{browser: b, out: out, err: errw, defaults: config.Builtin()}
+	return &App{browser: b, out: out, err: errw, in: os.Stdin, defaults: config.Builtin()}
+}
+
+// WithInput overrides the stdin reader used by `session` (used by tests).
+func (a *App) WithInput(r io.Reader) *App {
+	a.in = r
+	return a
 }
 
 // WithDefaults overrides the built-in flag defaults with values resolved from

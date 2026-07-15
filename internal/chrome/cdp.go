@@ -309,6 +309,7 @@ func (c *CDP) Snapshot(ctx context.Context, id string) (any, error) {
 		return nil, err
 	}
 	type axNode struct {
+		Ref    string   `json:"ref,omitempty"`
 		Role   string   `json:"role"`
 		Name   string   `json:"name,omitempty"`
 		Value  string   `json:"value,omitempty"`
@@ -336,7 +337,14 @@ func (c *CDP) Snapshot(ctx context.Context, id string) (any, error) {
 		if role == "" && name == "" {
 			continue
 		}
-		out = append(out, axNode{Role: role, Name: name, Value: axString(n.Value), States: axStates(n)})
+		// A stable element ref (the CDP backend node id) that `--by ref` resolves
+		// without re-querying by name — the same node keeps the same ref across
+		// snaps for the document's lifetime.
+		var ref string
+		if n.BackendDOMNodeID != 0 {
+			ref = fmt.Sprintf("e%d", n.BackendDOMNodeID)
+		}
+		out = append(out, axNode{Ref: ref, Role: role, Name: name, Value: axString(n.Value), States: axStates(n)})
 	}
 	res := map[string]any{"nodes": out}
 	if len(alerts) > 0 {
@@ -462,26 +470,62 @@ func queryOptions(q QueryOpts) []chromedp.QueryOption {
 	return append(byOptions(q), waitOption(q.Wait))
 }
 
-// byFor returns the addressing option for a selector (accessible-name aware),
-// without a wait condition — for verbs like wait --gone that supply their own.
+// byFor returns the addressing option for a selector (accessible-name / ref
+// aware), without a wait condition — for verbs like wait --gone that supply
+// their own.
 func byFor(selector string, q QueryOpts) []chromedp.QueryOption {
-	if q.By == "name" {
+	switch q.By {
+	case "name":
 		return []chromedp.QueryOption{chromedp.ByFunc(axNameQuery(selector, q.Role, q.Nth, q.Match))}
+	case "ref":
+		return []chromedp.QueryOption{chromedp.ByFunc(axRefQuery(selector))}
 	}
 	return byOptions(q)
 }
 
 // query builds the chromedp query options for a selector. By=="name" resolves by
-// ARIA accessible name (the selector is the name); every other mode falls
-// through to queryOptions.
+// ARIA accessible name, By=="ref" by a snap-issued element ref; every other mode
+// falls through to queryOptions.
 func query(selector string, q QueryOpts) []chromedp.QueryOption {
-	if q.By == "name" {
+	switch q.By {
+	case "name":
 		return []chromedp.QueryOption{
 			chromedp.ByFunc(axNameQuery(selector, q.Role, q.Nth, q.Match)),
 			waitOption(q.Wait),
 		}
+	case "ref":
+		return []chromedp.QueryOption{
+			chromedp.ByFunc(axRefQuery(selector)),
+			waitOption(q.Wait),
+		}
 	}
 	return queryOptions(q)
+}
+
+// axRefQuery resolves a snap-issued element ref ("e<backendNodeId>") back to a
+// frontend node, so a caller acts on the exact element snap reported without
+// re-resolving it by name. The backend id is stable for the document's lifetime.
+func axRefQuery(ref string) func(context.Context, *cdp.Node) ([]cdp.NodeID, error) {
+	return func(ctx context.Context, _ *cdp.Node) ([]cdp.NodeID, error) {
+		id, err := parseRef(ref)
+		if err != nil {
+			return nil, err
+		}
+		return dom.PushNodesByBackendIDsToFrontend([]cdp.BackendNodeID{cdp.BackendNodeID(id)}).Do(ctx)
+	}
+}
+
+// parseRef parses an "e<n>" ref into its backend node id.
+func parseRef(ref string) (int64, error) {
+	s := strings.TrimSpace(ref)
+	if !strings.HasPrefix(s, "e") {
+		return 0, fmt.Errorf("bad ref %q (want e<number> from snap)", ref)
+	}
+	n, err := strconv.ParseInt(s[1:], 10, 64)
+	if err != nil || n <= 0 {
+		return 0, fmt.Errorf("bad ref %q (want e<number> from snap)", ref)
+	}
+	return n, nil
 }
 
 // nameMatches compares an accessible name against the query per the match mode:
