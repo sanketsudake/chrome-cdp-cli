@@ -296,18 +296,107 @@ func (c *CDP) Snapshot(ctx context.Context, id string) (any, error) {
 		return nil, err
 	}
 	type axNode struct {
-		Role string `json:"role"`
-		Name string `json:"name,omitempty"`
+		Role   string   `json:"role"`
+		Name   string   `json:"name,omitempty"`
+		Value  string   `json:"value,omitempty"`
+		States []string `json:"states,omitempty"`
+	}
+	byID := make(map[accessibility.NodeID]*accessibility.Node, len(nodes))
+	for _, n := range nodes {
+		byID[n.NodeID] = n
 	}
 	out := make([]axNode, 0, len(nodes))
+	var alerts []string        // aria-live / role=alert|status text — the toasts/notifications
+	var focused map[string]any // the currently-focused element
 	for _, n := range nodes {
 		role, name := axString(n.Role), axString(n.Name)
+		// A live region's text is usually in child StaticText nodes, not its own
+		// name — walk the subtree so toasts ("Success! Event approved") surface.
+		if role == "alert" || role == "status" || axLive(n) {
+			if txt := axSubtreeText(byID, n); txt != "" {
+				alerts = append(alerts, txt)
+			}
+		}
+		if focused == nil && axHasState(n, "focused") {
+			focused = map[string]any{"role": role, "name": name}
+		}
 		if role == "" && name == "" {
 			continue
 		}
-		out = append(out, axNode{Role: role, Name: name})
+		out = append(out, axNode{Role: role, Name: name, Value: axString(n.Value), States: axStates(n)})
 	}
-	return map[string]any{"nodes": out}, nil
+	res := map[string]any{"nodes": out}
+	if len(alerts) > 0 {
+		res["alerts"] = alerts
+	}
+	if focused != nil {
+		res["focused"] = focused
+	}
+	return res, nil
+}
+
+// axStates returns the active ARIA states of a node (focused, expanded, checked,
+// selected, disabled, required, pressed) — so a caller sees widget state without
+// a screenshot.
+func axStates(n *accessibility.Node) []string {
+	var s []string
+	for _, p := range n.Properties {
+		switch p.Name {
+		case "focused", "expanded", "checked", "selected", "disabled", "required", "pressed":
+			if v := axString(p.Value); v != "" && v != "false" {
+				s = append(s, string(p.Name))
+			}
+		}
+	}
+	return s
+}
+
+// axSubtreeText returns a node's accessible name, or (when it has none, as with
+// a live-region container) the joined unique names of its descendants.
+func axSubtreeText(byID map[accessibility.NodeID]*accessibility.Node, n *accessibility.Node) string {
+	if nm := strings.TrimSpace(axString(n.Name)); nm != "" {
+		return nm
+	}
+	var parts []string
+	seen := map[string]bool{}
+	var walk func(id accessibility.NodeID)
+	walk = func(id accessibility.NodeID) {
+		m := byID[id]
+		if m == nil {
+			return
+		}
+		if t := strings.TrimSpace(axString(m.Name)); t != "" && !seen[t] {
+			seen[t] = true
+			parts = append(parts, t)
+		}
+		for _, c := range m.ChildIDs {
+			walk(c)
+		}
+	}
+	for _, c := range n.ChildIDs {
+		walk(c)
+	}
+	return strings.Join(parts, " ")
+}
+
+// axLive reports whether a node is an active aria-live region.
+func axLive(n *accessibility.Node) bool {
+	for _, p := range n.Properties {
+		if p.Name == "live" {
+			v := axString(p.Value)
+			return v == "assertive" || v == "polite"
+		}
+	}
+	return false
+}
+
+func axHasState(n *accessibility.Node, name string) bool {
+	for _, p := range n.Properties {
+		if string(p.Name) == name {
+			return axString(p.Value) == "true"
+		}
+	}
+	return false
 }
 
 // axString decodes an accessibility Value (a raw JSON value) to a string.

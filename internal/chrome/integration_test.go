@@ -6,6 +6,7 @@ package chrome
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -166,6 +167,95 @@ func TestAccessibleNameAddressing(t *testing.T) {
 	if _, err := b.Text(short, id, "button", QueryOpts{By: "css"}); err == nil {
 		t.Error("expected --by css to stall on the hidden-first button, but it succeeded")
 	}
+}
+
+// snap surfaces aria-live toasts, widget states, field values, and the focused
+// element — so verification needs no screenshot.
+func TestSnapStateAndAlerts(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping live-Chrome integration in -short mode")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	b, err := launch(true, t.TempDir(), 0)
+	if err != nil {
+		t.Skipf("cannot launch a managed headless Chrome here: %v", err)
+	}
+	defer b.Close()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		fmt.Fprint(w, `<!doctype html><title>State</title><body>
+<div role="status" aria-live="polite">Saved successfully</div>
+<button aria-pressed="true" aria-label="Bold">B</button>
+<button disabled aria-label="Submit now">Submit</button>
+<input aria-label="Your name" value="Sanket" id="nm">
+<script>document.getElementById('nm').focus()</script>
+</body>`)
+	}))
+	defer srv.Close()
+
+	tabs, err := b.List(ctx)
+	if err != nil || len(tabs) == 0 {
+		t.Fatalf("List: %v", err)
+	}
+	id := tabs[0].ID
+	if _, err := b.Navigate(ctx, id, srv.URL); err != nil {
+		t.Fatalf("Navigate: %v", err)
+	}
+
+	got, err := b.Snapshot(ctx, id)
+	if err != nil {
+		t.Fatalf("Snapshot: %v", err)
+	}
+	// Assert on the real JSON shape a consumer sees.
+	raw, _ := json.Marshal(got)
+	var s struct {
+		Nodes []struct {
+			Role, Name, Value string
+			States            []string
+		} `json:"nodes"`
+		Alerts  []string                    `json:"alerts"`
+		Focused struct{ Role, Name string } `json:"focused"`
+	}
+	if err := json.Unmarshal(raw, &s); err != nil {
+		t.Fatalf("snap json: %v", err)
+	}
+
+	if !contains(s.Alerts, "Saved successfully") {
+		t.Errorf("alerts = %v, want it to contain the live-region toast", s.Alerts)
+	}
+	if s.Focused.Name != "Your name" {
+		t.Errorf("focused = %+v, want the focused input", s.Focused)
+	}
+	stateOf := func(name string) []string {
+		for _, n := range s.Nodes {
+			if n.Name == name {
+				return n.States
+			}
+		}
+		return nil
+	}
+	if !contains(stateOf("Bold"), "pressed") {
+		t.Errorf("Bold states = %v, want pressed", stateOf("Bold"))
+	}
+	if !contains(stateOf("Submit now"), "disabled") {
+		t.Errorf("Submit states = %v, want disabled", stateOf("Submit now"))
+	}
+	for _, n := range s.Nodes {
+		if n.Name == "Your name" && n.Value != "Sanket" {
+			t.Errorf("Your name value = %q, want Sanket", n.Value)
+		}
+	}
+}
+
+func contains(ss []string, want string) bool {
+	for _, s := range ss {
+		if s == want {
+			return true
+		}
+	}
+	return false
 }
 
 func TestWaitConditions(t *testing.T) {
