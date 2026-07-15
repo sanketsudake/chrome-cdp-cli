@@ -564,6 +564,8 @@ func byFor(selector string, q QueryOpts) []chromedp.QueryOption {
 		return []chromedp.QueryOption{chromedp.ByFunc(axRefQuery(selector))}
 	case "cell":
 		return []chromedp.QueryOption{chromedp.ByFunc(cellQuery(selector))}
+	case "label":
+		return []chromedp.QueryOption{chromedp.ByFunc(labelQuery(selector, q.Match))}
 	}
 	return byOptions(q)
 }
@@ -586,6 +588,11 @@ func query(selector string, q QueryOpts) []chromedp.QueryOption {
 	case "cell":
 		return []chromedp.QueryOption{
 			chromedp.ByFunc(cellQuery(selector)),
+			waitOption(q.Wait),
+		}
+	case "label":
+		return []chromedp.QueryOption{
+			chromedp.ByFunc(labelQuery(selector, q.Match)),
 			waitOption(q.Wait),
 		}
 	}
@@ -662,6 +669,91 @@ const cellLocatorJS = `(() => {
     });
   }
   return cands[0] || null;
+})()`
+
+// labelQuery resolves a FORM CONTROL by its visible label text — for forms whose
+// labels are visible to a human but not wired to the control (no `aria-label`, no
+// `<label for>`), which would otherwise force an eval to find a CSS selector. It
+// matches a `<label for>`/wrapping label, else a label-ish element (span/div/dt/
+// legend/th) whose text matches, then returns the control after it in its
+// container. match defaults to contains (labels are often verbose).
+func labelQuery(label, match string) func(context.Context, *cdp.Node) ([]cdp.NodeID, error) {
+	return func(ctx context.Context, _ *cdp.Node) ([]cdp.NodeID, error) {
+		mode := match
+		if mode == "" {
+			mode = "contains"
+		}
+		labelJSON, _ := json.Marshal(label)
+		modeJSON, _ := json.Marshal(mode)
+		expr := fmt.Sprintf(labelLocatorJS, string(labelJSON), string(modeJSON))
+		res, exc, err := cdpruntime.Evaluate(expr).Do(ctx)
+		if err != nil {
+			return nil, err
+		}
+		if exc != nil {
+			return nil, fmt.Errorf("label locator: %s", exc.Text)
+		}
+		if res == nil || res.ObjectID == "" {
+			return nil, nil
+		}
+		nid, err := dom.RequestNode(res.ObjectID).Do(ctx)
+		if err != nil || nid == 0 {
+			return nil, err
+		}
+		return []cdp.NodeID{nid}, nil
+	}
+}
+
+// labelLocatorJS finds the form control described by a visible label. Args: %[1]s
+// label JSON, %[2]s match-mode JSON (exact|contains|regex).
+const labelLocatorJS = `(() => {
+  const want = %[1]s, mode = %[2]s;
+  const norm = s => (s || "").replace(/\s+/g, " ").trim();
+  const cmp = (a, b) => {
+    a = norm(a);
+    if (mode === "exact") return a.toLowerCase() === b.toLowerCase();
+    if (mode === "regex") { try { return new RegExp(b).test(a); } catch (e) { return false; } }
+    return a.toLowerCase().includes(b.toLowerCase());
+  };
+  const CTL = "input:not([type=hidden]),select,textarea,[contenteditable=true],[role=textbox],[role=combobox],[role=spinbutton],[role=listbox]";
+  const vis = el => {
+    const r = el.getBoundingClientRect();
+    if (r.width < 1 || r.height < 1) return false;
+    const cs = getComputedStyle(el);
+    return cs.visibility !== "hidden" && cs.display !== "none";
+  };
+  // Given a matching label element, return the control it labels: a control it
+  // wraps, else the first visible control in the nearest ancestor that has one,
+  // preferring one that follows the label in document order.
+  const controlFor = lab => {
+    let node = lab;
+    for (let i = 0; i < 4 && node; i++) {
+      const ctls = [...node.querySelectorAll(CTL)].filter(vis);
+      if (ctls.length) {
+        const after = ctls.find(c => lab.compareDocumentPosition(c) & Node.DOCUMENT_POSITION_FOLLOWING);
+        return after || ctls[0];
+      }
+      node = node.parentElement;
+    }
+    return null;
+  };
+  // 1. A real <label> (for= or wrapping) — the authoritative case.
+  for (const lab of document.querySelectorAll("label")) {
+    if (!cmp(lab.textContent, want)) continue;
+    const f = lab.getAttribute("for");
+    const ctl = f ? document.getElementById(f) : lab.querySelector(CTL);
+    if (ctl && vis(ctl)) return ctl;
+  }
+  // 2. A label-ish element whose text matches -> the control near it. Prefer the
+  // tightest (shortest-text) match so "Notes" beats a paragraph containing it.
+  const labelish = [...document.querySelectorAll("label,span,div,dt,legend,th,p,strong,b")]
+    .filter(e => e.childElementCount <= 2 && cmp(e.textContent, want));
+  labelish.sort((a, b) => norm(a.textContent).length - norm(b.textContent).length);
+  for (const lab of labelish) {
+    const c = controlFor(lab);
+    if (c) return c;
+  }
+  return null;
 })()`
 
 // axRefQuery resolves a snap-issued element ref ("e<backendNodeId>") back to a
