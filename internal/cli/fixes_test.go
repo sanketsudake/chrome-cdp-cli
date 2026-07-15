@@ -35,6 +35,19 @@ func TestByAndWaitFlagsThread(t *testing.T) {
 	}
 }
 
+// --in-row and --on-dialog thread through to the action verb's QueryOpts.
+func TestInRowAndOnDialogFlagsThread(t *testing.T) {
+	b := &queryCapture{fakeBrowser: fakeBrowser{tabs: []target.Info{{ID: "aa11", Title: "A", URL: "u"}}}}
+	_, _, code := run(t, b, "click", "Delete", "--target", "aa11",
+		"--by", "name", "--in-row", "TEST entry", "--on-dialog", "accept", "--json")
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0", code)
+	}
+	if b.gotQ.InRow != "TEST entry" || b.gotQ.OnDialog != "accept" {
+		t.Errorf("query opts = %+v, want {InRow:'TEST entry' OnDialog:accept}", b.gotQ)
+	}
+}
+
 // html/text/value produce their result key.
 func TestExtractVerbs(t *testing.T) {
 	b := &fakeBrowser{tabs: []target.Info{{ID: "aa11", Title: "A", URL: "u"}}}

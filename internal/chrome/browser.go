@@ -28,6 +28,19 @@ type QueryOpts struct {
 	// "regex". Lets a caller click "Review" without knowing its verbose full
 	// accessible name.
 	Match string
+
+	// InRow scopes an accessible-name match (By == "name") to the table row
+	// whose text contains this string — so `click --by name "Delete" --in-row
+	// "TEST entry"` hits the Delete button in that row, not the first of many.
+	// It resolves via the DOM (not the throttled a11y tree), so it also works on
+	// a backgrounded tab. Requires By == "name".
+	InRow string
+
+	// OnDialog, set on an action verb (click/type/fill), auto-handles a native
+	// JavaScript dialog (alert/confirm/prompt) that opens DURING the action —
+	// "accept" or "dismiss" — instead of letting it wedge the CDP connection.
+	// The handled dialogs are reported back in the result envelope.
+	OnDialog string
 }
 
 // SelectOpts controls the `select` verb — choosing an option in a prompt /

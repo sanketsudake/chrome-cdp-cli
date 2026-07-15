@@ -36,6 +36,8 @@ type App struct {
 	roleFlag    string
 	nthFlag     int
 	matchFlag   string
+	inRowFlag   string // --in-row: scope a --by name match to the row whose text contains this
+	onDialog    string // --on-dialog: auto-handle a native dialog opened during an action (accept|dismiss)
 	noWait      bool
 	actWaitText string // --wait-text: after an action verb succeeds, wait until this text appears
 	pierce      bool
@@ -167,7 +169,7 @@ func (a *App) ctx() (context.Context, context.CancelFunc) {
 
 // queryOpts builds the selector-syntax / wait / pierce options from the flags.
 func (a *App) queryOpts() chrome.QueryOpts {
-	return chrome.QueryOpts{By: a.byFlag, Wait: a.waitFlag, Pierce: a.pierce, Role: a.roleFlag, Nth: a.nthFlag, Match: a.matchFlag}
+	return chrome.QueryOpts{By: a.byFlag, Wait: a.waitFlag, Pierce: a.pierce, Role: a.roleFlag, Nth: a.nthFlag, Match: a.matchFlag, InRow: a.inRowFlag, OnDialog: a.onDialog}
 }
 
 // Close tears down a Browser that this App lazily connected (no-op for an

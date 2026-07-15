@@ -557,6 +557,9 @@ func queryOptions(q QueryOpts) []chromedp.QueryOption {
 // aware), without a wait condition — for verbs like wait --gone that supply
 // their own.
 func byFor(selector string, q QueryOpts) []chromedp.QueryOption {
+	if q.InRow != "" {
+		return []chromedp.QueryOption{chromedp.ByFunc(nameRowQuery(selector, q.Role, q.Nth, q.Match, q.InRow, q.By))}
+	}
 	switch q.By {
 	case "name":
 		return []chromedp.QueryOption{chromedp.ByFunc(axNameQuery(selector, q.Role, q.Nth, q.Match))}
@@ -574,6 +577,12 @@ func byFor(selector string, q QueryOpts) []chromedp.QueryOption {
 // ARIA accessible name, By=="ref" by a snap-issued element ref; every other mode
 // falls through to queryOptions.
 func query(selector string, q QueryOpts) []chromedp.QueryOption {
+	if q.InRow != "" {
+		return []chromedp.QueryOption{
+			chromedp.ByFunc(nameRowQuery(selector, q.Role, q.Nth, q.Match, q.InRow, q.By)),
+			waitOption(q.Wait),
+		}
+	}
 	switch q.By {
 	case "name":
 		return []chromedp.QueryOption{
@@ -819,7 +828,7 @@ func axNameQuery(name, role string, nth int, match string) func(context.Context,
 		// accessible-name match (querySelector isn't throttled). On a visible tab
 		// the a11y tree is authoritative, so we don't second-guess it.
 		if tabHidden(ctx) {
-			return domNameQuery(ctx, name, role, nth, match)
+			return domNameQuery(ctx, name, role, nth, match, "")
 		}
 		if err != nil {
 			return nil, err
@@ -868,11 +877,12 @@ func tabHidden(ctx context.Context) bool {
 // title / placeholder — restricted to visible, non-aria-hidden elements so it
 // keeps the "skip hidden nodes" property. Returns the Nth (1-based, or first)
 // visible match, via DOM.requestNode.
-func domNameQuery(ctx context.Context, name, role string, nth int, match string) ([]cdp.NodeID, error) {
+func domNameQuery(ctx context.Context, name, role string, nth int, match, row string) ([]cdp.NodeID, error) {
 	nameJSON, _ := json.Marshal(name)
 	roleJSON, _ := json.Marshal(role)
 	modeJSON, _ := json.Marshal(match)
-	expr := fmt.Sprintf(domNameLocatorJS, string(nameJSON), string(roleJSON), string(modeJSON), nth)
+	rowJSON, _ := json.Marshal(row)
+	expr := fmt.Sprintf(domNameLocatorJS, string(nameJSON), string(roleJSON), string(modeJSON), nth, string(rowJSON))
 	res, exc, err := cdpruntime.Evaluate(expr).Do(ctx)
 	if err != nil {
 		return nil, err
@@ -892,10 +902,17 @@ func domNameQuery(ctx context.Context, name, role string, nth int, match string)
 
 // domNameLocatorJS computes a simplified ARIA accessible name + role in JS and
 // returns the Nth (1-based, or first) visible matching element. Args: %[1]s name
-// JSON, %[2]s role JSON (empty = any), %[3]s match-mode JSON, %[4]d nth.
+// JSON, %[2]s role JSON (empty = any), %[3]s match-mode JSON, %[4]d nth, %[5]s
+// row JSON (empty = any row; else keep only elements whose closest [role=row]/tr
+// ancestor's text contains it — case-insensitive).
 const domNameLocatorJS = `(() => {
-  const want = %[1]s, role = %[2]s, mode = %[3]s, nth = %[4]d;
+  const want = %[1]s, role = %[2]s, mode = %[3]s, nth = %[4]d, row = %[5]s;
   const norm = s => (s || "").replace(/\s+/g, " ").trim();
+  const inRow = el => {
+    if (!row) return true;
+    const tr = el.closest("[role=row],tr");
+    return tr && norm(tr.textContent).toLowerCase().includes(norm(row).toLowerCase());
+  };
   const cmp = (a, b) => {
     a = norm(a);
     if (mode === "contains") return a.toLowerCase().includes(b.toLowerCase());
@@ -950,11 +967,27 @@ const domNameLocatorJS = `(() => {
     if (!visible(el)) continue;
     if (role && roleOf(el) !== role) continue;
     if (!cmp(accName(el), want)) continue;
+    if (!inRow(el)) continue;
     out.push(el);
   }
   if (!out.length) return null;
   return out[nth > 0 ? nth - 1 : 0] || null;
 })()`
+
+// nameRowQuery resolves an element by accessible name (and optional role/nth/
+// match) scoped to the table row whose text contains `row`. Row membership is a
+// DOM notion (closest [role=row]/tr), so this resolves via the DOM accessible-
+// name locator rather than the a11y tree — which also means it isn't throttled
+// on a backgrounded tab. Requires By == "name" (validated in query/byFor).
+func nameRowQuery(name, role string, nth int, match, row, by string) func(context.Context, *cdp.Node) ([]cdp.NodeID, error) {
+	return func(ctx context.Context, _ *cdp.Node) ([]cdp.NodeID, error) {
+		switch by {
+		case "ref", "cell", "label":
+			return nil, fmt.Errorf("--in-row addresses the control by accessible name; it can't combine with --by %s", by)
+		}
+		return domNameQuery(ctx, name, role, nth, match, row)
+	}
+}
 
 // bringToFront is a best-effort action to make the tab active before synthetic
 // input: Chrome drops clicks and keystrokes dispatched at a background/inactive
@@ -967,28 +1000,109 @@ func bringToFront() chromedp.Action {
 	})
 }
 
+// dialogSink records native JS dialogs auto-handled during an action, so the
+// verb can report them in its result envelope.
+type dialogSink struct {
+	mu   sync.Mutex
+	seen []map[string]any
+}
+
+func (d *dialogSink) add(ev *page.EventJavascriptDialogOpening, action string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.seen = append(d.seen, map[string]any{"type": string(ev.Type), "message": ev.Message, "handled": action})
+}
+
+func (d *dialogSink) list() []map[string]any {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.seen
+}
+
+func (d *dialogSink) count() int {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return len(d.seen)
+}
+
+// withDialog wraps an action so a native JavaScript dialog (alert/confirm/prompt)
+// that opens DURING it is auto-accepted (policy "accept", the default) or
+// dismissed ("dismiss") — instead of blocking the renderer and wedging the CDP
+// connection (the failure every skill warns about). A confirm() triggered by a
+// click blocks synchronously inside the click's event dispatch, so the listener
+// is live while action.Do runs; a short grace after catches a just-late dialog.
+func withDialog(policy string, sink *dialogSink, action chromedp.Action) chromedp.Action {
+	accept := policy != "dismiss"
+	return chromedp.ActionFunc(func(ctx context.Context) error {
+		// Page must be enabled for javascriptDialogOpening to fire (idempotent).
+		_ = page.Enable().Do(ctx)
+		chromedp.ListenTarget(ctx, func(ev interface{}) {
+			d, ok := ev.(*page.EventJavascriptDialogOpening)
+			if !ok {
+				return
+			}
+			sink.add(d, policy)
+			// Handle from a goroutine: the callback runs on the event-loop and
+			// must not itself issue a blocking CDP command.
+			go func() { _ = page.HandleJavaScriptDialog(accept).Do(ctx) }()
+		})
+		err := action.Do(ctx)
+		// Grace for a dialog that opens right as the action returns (e.g. a
+		// navigation-triggered beforeunload) — only pay it if none fired yet.
+		if sink.count() == 0 {
+			select {
+			case <-ctx.Done():
+			case <-time.After(250 * time.Millisecond):
+			}
+		}
+		return err
+	})
+}
+
+// withOptionalDialog wraps action with dialog handling when q.OnDialog is set,
+// and returns the sink (nil when off) so the verb can attach handled dialogs to
+// its result.
+func withOptionalDialog(q QueryOpts, action chromedp.Action) (chromedp.Action, *dialogSink) {
+	if q.OnDialog == "" {
+		return action, nil
+	}
+	sink := &dialogSink{}
+	return withDialog(q.OnDialog, sink, action), sink
+}
+
+// withDialogResult folds any handled dialogs into the verb's result map.
+func withDialogResult(res map[string]any, sink *dialogSink) map[string]any {
+	if sink != nil {
+		if d := sink.list(); len(d) > 0 {
+			res["dialogs"] = d
+		}
+	}
+	return res
+}
+
 // Click resolves the selector and clicks it at its live, occlusion-verified
 // centre via a coordinate pointer sequence (the same primitive as `select`), so
 // it lands on a background/inactive tab where chromedp's box-model node-click
 // would poll until timeout. bringToFront reactivates the tab first.
 func (c *CDP) Click(ctx context.Context, id, selector string, q QueryOpts) (map[string]any, error) {
-	err := c.run(ctx, id, bringToFront(), chromedp.ActionFunc(func(actx context.Context) error {
+	core := chromedp.ActionFunc(func(actx context.Context) error {
 		nid, err := resolveNodeReady(actx, selector, q)
 		if err != nil {
 			return err
 		}
 		return coordClickNode(actx, nid)
-	}))
-	if err != nil {
+	})
+	action, sink := withOptionalDialog(q, core)
+	if err := c.run(ctx, id, bringToFront(), action); err != nil {
 		return nil, err
 	}
-	return map[string]any{"clicked": selector}, nil
+	return withDialogResult(map[string]any{"clicked": selector}, sink), nil
 }
 
 // Type coordinate-clicks the selector to focus it (robust on a background tab),
 // then sends the text as real keystrokes to the focused element.
 func (c *CDP) Type(ctx context.Context, id, selector, text string, q QueryOpts) (map[string]any, error) {
-	err := c.run(ctx, id, bringToFront(), chromedp.ActionFunc(func(actx context.Context) error {
+	core := chromedp.ActionFunc(func(actx context.Context) error {
 		nid, err := resolveNodeReady(actx, selector, q)
 		if err != nil {
 			return err
@@ -997,11 +1111,12 @@ func (c *CDP) Type(ctx context.Context, id, selector, text string, q QueryOpts) 
 			return err
 		}
 		return chromedp.KeyEvent(text).Do(actx)
-	}))
-	if err != nil {
+	})
+	action, sink := withOptionalDialog(q, core)
+	if err := c.run(ctx, id, bringToFront(), action); err != nil {
 		return nil, err
 	}
-	return map[string]any{"typed": selector}, nil
+	return withDialogResult(map[string]any{"typed": selector}, sink), nil
 }
 
 // Fill sets a field to value, replacing (not appending to) any existing content:
@@ -1009,7 +1124,7 @@ func (c *CDP) Type(ctx context.Context, id, selector, text string, q QueryOpts) 
 // keystrokes over the selection — the reliable way to set a pre-filled cell (e.g.
 // a timesheet "0" hour cell) to a new value in one call.
 func (c *CDP) Fill(ctx context.Context, id, selector, value string, q QueryOpts) (map[string]any, error) {
-	err := c.run(ctx, id, bringToFront(), chromedp.ActionFunc(func(actx context.Context) error {
+	core := chromedp.ActionFunc(func(actx context.Context) error {
 		nid, err := resolveNodeReady(actx, selector, q)
 		if err != nil {
 			return err
@@ -1019,11 +1134,12 @@ func (c *CDP) Fill(ctx context.Context, id, selector, value string, q QueryOpts)
 			return err
 		}
 		return chromedp.KeyEvent(value).Do(actx)
-	}))
-	if err != nil {
+	})
+	action, sink := withOptionalDialog(q, core)
+	if err := c.run(ctx, id, bringToFront(), action); err != nil {
 		return nil, err
 	}
-	return map[string]any{"filled": selector, "value": value}, nil
+	return withDialogResult(map[string]any{"filled": selector, "value": value}, sink), nil
 }
 
 func (c *CDP) HTML(ctx context.Context, id, selector string, inner bool, q QueryOpts) (map[string]any, error) {
