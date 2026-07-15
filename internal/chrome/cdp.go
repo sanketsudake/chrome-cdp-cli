@@ -22,6 +22,7 @@ import (
 	"github.com/chromedp/cdproto/emulation"
 	"github.com/chromedp/cdproto/network"
 	"github.com/chromedp/cdproto/page"
+	cdpruntime "github.com/chromedp/cdproto/runtime"
 	cdptarget "github.com/chromedp/cdproto/target"
 	"github.com/chromedp/chromedp"
 	easyjson "github.com/mailru/easyjson"
@@ -479,6 +480,8 @@ func byFor(selector string, q QueryOpts) []chromedp.QueryOption {
 		return []chromedp.QueryOption{chromedp.ByFunc(axNameQuery(selector, q.Role, q.Nth, q.Match))}
 	case "ref":
 		return []chromedp.QueryOption{chromedp.ByFunc(axRefQuery(selector))}
+	case "cell":
+		return []chromedp.QueryOption{chromedp.ByFunc(cellQuery(selector))}
 	}
 	return byOptions(q)
 }
@@ -498,9 +501,86 @@ func query(selector string, q QueryOpts) []chromedp.QueryOption {
 			chromedp.ByFunc(axRefQuery(selector)),
 			waitOption(q.Wait),
 		}
+	case "cell":
+		return []chromedp.QueryOption{
+			chromedp.ByFunc(cellQuery(selector)),
+			waitOption(q.Wait),
+		}
 	}
 	return queryOptions(q)
 }
+
+// splitCell parses a cell selector into an optional row header and a column
+// header. "Mon, 7/13" targets the column in a single-row grid; "Regular|Mon,
+// 7/13" (row|col) disambiguates the row in a multi-row grid.
+func splitCell(sel string) (row, col string) {
+	parts := strings.Split(sel, "|")
+	for i := range parts {
+		parts[i] = strings.TrimSpace(parts[i])
+	}
+	if len(parts) == 1 {
+		return "", parts[0]
+	}
+	return parts[0], parts[len(parts)-1]
+}
+
+// cellQuery resolves the editable input in a grid cell addressed by its column
+// header (and optional row header) — killing the manual "map inputs to day
+// columns by x-coordinate" dance for timesheet/calendar grids. It computes the
+// column from the header's centre-x in JS (works on a hidden tab) and returns the
+// matching input via DOM.requestNode.
+func cellQuery(cellSel string) func(context.Context, *cdp.Node) ([]cdp.NodeID, error) {
+	return func(ctx context.Context, _ *cdp.Node) ([]cdp.NodeID, error) {
+		row, col := splitCell(cellSel)
+		colJSON, _ := json.Marshal(col)
+		rowJSON, _ := json.Marshal(row)
+		expr := fmt.Sprintf(cellLocatorJS, string(colJSON), string(rowJSON))
+		res, exc, err := cdpruntime.Evaluate(expr).Do(ctx)
+		if err != nil {
+			return nil, err
+		}
+		if exc != nil {
+			return nil, fmt.Errorf("cell locator: %s", exc.Text)
+		}
+		if res == nil || res.ObjectID == "" {
+			return nil, nil // not found (yet) — let chromedp retry/timeout
+		}
+		nid, err := dom.RequestNode(res.ObjectID).Do(ctx)
+		if err != nil || nid == 0 {
+			return nil, err
+		}
+		return []cdp.NodeID{nid}, nil
+	}
+}
+
+// cellLocatorJS returns the editable input in the column whose header matches
+// (case-insensitive substring) — restricted to the data row whose text matches
+// the row header when one is given. Args: %[1]s column-header JSON, %[2]s
+// row-header JSON (empty = any row).
+const cellLocatorJS = `(() => {
+  const col = %[1]s, row = %[2]s;
+  const norm = s => (s || "").replace(/\s+/g, " ").trim();
+  const has = (a, b) => norm(a).toLowerCase().includes(norm(b).toLowerCase());
+  const vis = el => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
+  const headers = [...document.querySelectorAll("[role=columnheader],th,[data-automation-id=columnHeader]")].filter(vis);
+  const hdr = headers.find(h => has(h.textContent, col));
+  if (!hdr) return null;
+  const hr = hdr.getBoundingClientRect();
+  const colX = hr.left + hr.width / 2, tol = Math.max(hr.width / 2, 30);
+  const fields = "input,textarea,select,[contenteditable=true],[role=textbox],[role=spinbutton]";
+  let cands = [...document.querySelectorAll(fields)].filter(el => {
+    if (!vis(el)) return false;
+    const r = el.getBoundingClientRect();
+    return Math.abs((r.left + r.width / 2) - colX) <= tol;
+  });
+  if (row) {
+    cands = cands.filter(el => {
+      const tr = el.closest("[role=row],tr");
+      return tr && has(tr.textContent, row);
+    });
+  }
+  return cands[0] || null;
+})()`
 
 // axRefQuery resolves a snap-issued element ref ("e<backendNodeId>") back to a
 // frontend node, so a caller acts on the exact element snap reported without

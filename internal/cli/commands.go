@@ -52,7 +52,7 @@ func (a *App) newRoot() *cobra.Command {
 	pf.BoolVar(&a.noDaemon, "no-daemon", d.NoDaemon, "connect directly instead of via the shared daemon")
 	pf.StringVar(&a.profileDir, "profile-dir", d.ProfileDir, "managed-launch Chrome profile dir (else $CHROME_CDP_PROFILE or ~/.cache/chrome-cdp/profile)")
 	pf.IntVar(&a.port, "port", d.Port, "explicit Chrome debug port to attach to / launch with (0 = auto)")
-	pf.StringVar(&a.byFlag, "by", d.By, "selector syntax: css|id|search|jspath|css-all|name|ref (name = ARIA accessible name; ref = a snap-issued e<id>)")
+	pf.StringVar(&a.byFlag, "by", d.By, "selector syntax: css|id|search|jspath|css-all|name|ref|cell (name = ARIA accessible name; ref = snap e<id>; cell = grid input by [row|]column header)")
 	pf.StringVar(&a.waitFlag, "wait", d.Wait, "selector wait condition: visible|ready|enabled")
 	pf.StringVar(&a.roleFlag, "role", "", "with --by name: constrain to an ARIA role (button|link|textbox|…)")
 	pf.IntVar(&a.nthFlag, "nth", 0, "with --by name: pick the Nth (1-based) match among visible candidates")
@@ -72,6 +72,40 @@ func (a *App) newRoot() *cobra.Command {
 		a.cmdSession(), a.cmdDoctor(), a.cmdDaemon(), a.cmdExitCodes(), a.cmdVersion(),
 	)
 	return root
+}
+
+// classifyWithTabHint classifies an action error and, when a name/ref/cell
+// resolution times out, probes whether the tab is backgrounded — Chrome throttles
+// the accessibility tree on a tab it can't foreground, so those resolutions stall.
+// It surfaces that as a `tab_hidden` detail + an actionable message instead of a
+// bare timeout, so a caller knows to foreground Chrome (or use --by css).
+func (a *App) classifyWithTabHint(b chrome.Browser, id string, err error) (string, string, map[string]any) {
+	code := classifyActionErr(err)
+	if code != result.CodeTargetTimeout || !a.ariaAddressing() {
+		return code, err.Error(), nil
+	}
+	vctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	v, verr := b.Eval(vctx, id, "document.visibilityState")
+	if verr != nil {
+		return code, err.Error(), nil
+	}
+	if vv, _ := v.(map[string]any)["value"].(string); vv == "hidden" {
+		return code,
+			"tab is backgrounded (visibilityState=hidden); Chrome throttles the accessibility tree there, so --by name/ref/cell stalls — bring Chrome/this tab to the foreground, or use --by css",
+			map[string]any{"tab_hidden": true}
+	}
+	return code, err.Error(), nil
+}
+
+// ariaAddressing reports whether the current --by mode resolves via the
+// accessibility tree (throttled on a backgrounded tab).
+func (a *App) ariaAddressing() bool {
+	switch a.byFlag {
+	case "name", "ref", "cell":
+		return true
+	}
+	return false
 }
 
 func classifyActionErr(err error) string {
@@ -666,7 +700,8 @@ func (a *App) targetAction(command string, fn func(ctx context.Context, b chrome
 		}
 		res, err := fn(ctx, b, tgt.ID, args)
 		if err != nil {
-			a.emitErr(command, classifyActionErr(err), err.Error(), nil)
+			code, msg, details := a.classifyWithTabHint(b, tgt.ID, err)
+			a.emitErr(command, code, msg, details)
 			return nil
 		}
 		// --wait-text folds "act, then confirm the write landed" into one call:
