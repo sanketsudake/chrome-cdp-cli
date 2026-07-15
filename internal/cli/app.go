@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/sanketsudake/chrome-cdp-cli/internal/chrome"
+	"github.com/sanketsudake/chrome-cdp-cli/internal/config"
 	"github.com/sanketsudake/chrome-cdp-cli/internal/result"
 	"github.com/sanketsudake/chrome-cdp-cli/internal/target"
 )
@@ -39,6 +40,10 @@ type App struct {
 	noColor    bool
 	noInput    bool
 
+	// effective flag defaults (built-in unless main injects config+env via
+	// WithDefaults); read once when the flags are registered.
+	defaults config.Defaults
+
 	// injected sticky-target source (nil in tests => no current target)
 	currentTarget func() string
 	setCurrent    func(string) error
@@ -58,7 +63,14 @@ type App struct {
 // New builds an App around a Browser and output streams. The --timeout flag's
 // default is the single source of truth for the timeout (see newRoot).
 func New(b chrome.Browser, out, errw io.Writer) *App {
-	return &App{browser: b, out: out, err: errw}
+	return &App{browser: b, out: out, err: errw, defaults: config.Builtin()}
+}
+
+// WithDefaults overrides the built-in flag defaults with values resolved from
+// the config file + environment (used by main()); tests keep the built-ins.
+func (a *App) WithDefaults(d config.Defaults) *App {
+	a.defaults = d
+	return a
 }
 
 // WithStickyTarget wires the persisted current-target source (used by main()).

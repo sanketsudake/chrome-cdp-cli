@@ -3,6 +3,7 @@ module github.com/sanketsudake/chrome-cdp-cli
 go 1.26.5
 
 require (
+	github.com/BurntSushi/toml v1.6.0
 	github.com/chromedp/cdproto v0.0.0-20260714002449-7ad0ec4e4115
 	github.com/chromedp/chromedp v0.15.1
 	github.com/mailru/easyjson v0.9.2

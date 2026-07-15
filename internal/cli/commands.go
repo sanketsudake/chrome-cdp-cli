@@ -31,6 +31,7 @@ func (a *App) newRoot() *cobra.Command {
 	root := &cobra.Command{
 		Use:           "chrome-cdp",
 		Short:         "Drive your local Chrome from the command line (CDP over chromedp)",
+		Version:       Version, // enables `--version`; the `version` subcommand prints it bare
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		PersistentPreRun: func(*cobra.Command, []string) {
@@ -39,21 +40,24 @@ func (a *App) newRoot() *cobra.Command {
 			}
 		},
 	}
+	// d holds the effective flag defaults (built-in, overlaid by the config
+	// file and CHROME_CDP_* env); an explicit flag still overrides them.
+	d := a.defaults
 	pf := root.PersistentFlags()
-	pf.BoolVar(&a.jsonOut, "json", false, "machine-readable output (one JSON value to stdout)")
+	pf.BoolVar(&a.jsonOut, "json", d.JSON, "machine-readable output (one JSON value to stdout)")
 	pf.StringVar(&a.targetFlag, "target", "", "tab to act on (idprefix | url:<s> | title:<s> | @N)")
-	pf.DurationVar(&a.timeout, "timeout", 30*time.Second, "max time to wait for the command")
-	pf.BoolVar(&a.noLaunch, "no-launch", false, "don't auto-launch a fallback Chrome")
-	pf.BoolVar(&a.noDaemon, "no-daemon", false, "connect directly instead of via the shared daemon")
-	pf.StringVar(&a.profileDir, "profile-dir", "", "managed-launch Chrome profile dir (else $CHROME_CDP_PROFILE or ~/.cache/chrome-cdp/profile)")
-	pf.IntVar(&a.port, "port", 0, "explicit Chrome debug port to attach to / launch with (0 = auto)")
-	pf.StringVar(&a.byFlag, "by", "css", "selector syntax: css|id|search|jspath|css-all")
-	pf.StringVar(&a.waitFlag, "wait", "visible", "selector wait condition: visible|ready|enabled")
+	pf.DurationVar(&a.timeout, "timeout", d.Timeout, "max time to wait for the command")
+	pf.BoolVar(&a.noLaunch, "no-launch", d.NoLaunch, "don't auto-launch a fallback Chrome")
+	pf.BoolVar(&a.noDaemon, "no-daemon", d.NoDaemon, "connect directly instead of via the shared daemon")
+	pf.StringVar(&a.profileDir, "profile-dir", d.ProfileDir, "managed-launch Chrome profile dir (else $CHROME_CDP_PROFILE or ~/.cache/chrome-cdp/profile)")
+	pf.IntVar(&a.port, "port", d.Port, "explicit Chrome debug port to attach to / launch with (0 = auto)")
+	pf.StringVar(&a.byFlag, "by", d.By, "selector syntax: css|id|search|jspath|css-all")
+	pf.StringVar(&a.waitFlag, "wait", d.Wait, "selector wait condition: visible|ready|enabled")
 	pf.BoolVar(&a.noWait, "no-wait", false, "act immediately; fail fast instead of waiting for the element")
 	pf.BoolVar(&a.pierce, "pierce", false, "reach into shadow DOM / iframes (via DevTools search)")
 	pf.BoolVarP(&a.quiet, "quiet", "q", false, "suppress non-essential output")
 	pf.BoolVarP(&a.verbose, "verbose", "v", false, "verbose diagnostics on stderr")
-	pf.BoolVar(&a.noColor, "no-color", false, "plain output (also honors $NO_COLOR)")
+	pf.BoolVar(&a.noColor, "no-color", d.NoColor, "plain output (also honors $NO_COLOR)")
 	pf.BoolVar(&a.noInput, "no-input", false, "never prompt (the CLI is non-interactive already)")
 
 	root.AddCommand(

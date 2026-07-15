@@ -11,6 +11,7 @@ import (
 	"github.com/sanketsudake/chrome-cdp-cli/internal/browser"
 	"github.com/sanketsudake/chrome-cdp-cli/internal/chrome"
 	"github.com/sanketsudake/chrome-cdp-cli/internal/cli"
+	"github.com/sanketsudake/chrome-cdp-cli/internal/config"
 	"github.com/sanketsudake/chrome-cdp-cli/internal/daemon"
 	"github.com/sanketsudake/chrome-cdp-cli/internal/state"
 )
@@ -38,7 +39,14 @@ func main() {
 	sock := daemon.SocketPath(key)
 	exe, _ := os.Executable()
 
-	app := cli.New(nil, os.Stdout, os.Stderr)
+	// Resolve persistent defaults (config file + CHROME_CDP_* env); a malformed
+	// config is a warning, not fatal — the CLI runs on built-ins + env.
+	defs, cfgErr := config.Resolve()
+	if cfgErr != nil {
+		fmt.Fprintln(os.Stderr, "chrome-cdp: ignoring config:", cfgErr)
+	}
+
+	app := cli.New(nil, os.Stdout, os.Stderr).WithDefaults(defs)
 
 	if st, err := state.New(key); err == nil {
 		app.WithStickyTarget(st.CurrentTarget, st.SetCurrentTarget)

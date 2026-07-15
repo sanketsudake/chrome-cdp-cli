@@ -1,0 +1,22 @@
+# chrome-cdp persistent defaults.
+#
+# Copy this to $XDG_CONFIG_HOME/chrome-cdp/config.toml
+# (usually ~/.config/chrome-cdp/config.toml) and uncomment what you want.
+#
+# Precedence, highest first:
+#   command-line flags  >  CHROME_CDP_* env vars  >  this file  >  built-in defaults
+#
+# Every key is optional; omit any you don't want to override.
+
+# Output + connection defaults
+# json = false          # emit the machine-readable JSON envelope by default
+# timeout = "30s"       # max time to wait per command (Go duration string)
+# no_launch = false     # never auto-launch a managed fallback Chrome
+# no_daemon = false     # connect directly instead of via the shared daemon
+# no_color = false      # plain, symbol-free human output
+# port = 0              # explicit Chrome debug port (0 = auto-discover)
+# profile_dir = ""      # managed-launch Chrome profile directory
+
+# Selector defaults
+# by = "css"            # selector syntax: css | id | search | jspath | css-all
+# wait = "visible"      # wait condition: visible | ready | enabled
