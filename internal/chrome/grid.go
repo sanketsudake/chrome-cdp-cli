@@ -109,8 +109,7 @@ func extractGrid(byID map[accessibility.NodeID]*accessibility.Node, grid *access
 
 	for _, row := range rowNodes {
 		var cells []string
-		allHeaders := true
-		anyCell := false
+		colHeaders := 0
 		var walkCells func(id accessibility.NodeID)
 		walkCells = func(id accessibility.NodeID) {
 			n := byID[id]
@@ -119,9 +118,8 @@ func extractGrid(byID map[accessibility.NodeID]*accessibility.Node, grid *access
 			}
 			role := axString(n.Role)
 			if isCellRole(role) {
-				anyCell = true
-				if role != "columnheader" && role != "rowheader" {
-					allHeaders = false
+				if role == "columnheader" {
+					colHeaders++
 				}
 				cells = append(cells, cellText(byID, n))
 				return
@@ -133,10 +131,13 @@ func extractGrid(byID map[accessibility.NodeID]*accessibility.Node, grid *access
 		for _, ch := range row.ChildIDs {
 			walkCells(ch)
 		}
-		if !anyCell {
+		if len(cells) == 0 {
 			continue
 		}
-		if headers == nil && allHeaders {
+		// The header row is the first row that is mostly column headers — real
+		// grids interleave a leading action cell (e.g. Workday's "Add Row") with
+		// the column headers, so require a majority rather than all.
+		if headers == nil && colHeaders*2 > len(cells) {
 			headers = cells
 			continue
 		}
