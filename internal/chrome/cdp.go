@@ -583,15 +583,26 @@ func axNameQuery(name, role string, nth int, match string) func(context.Context,
 	}
 }
 
+// bringToFront is a best-effort action to make the tab active before synthetic
+// input: Chrome drops clicks and keystrokes dispatched at a background/inactive
+// tab, so `click`/`type`/`select` would otherwise be silent no-ops on a tab the
+// user has switched away from.
+func bringToFront() chromedp.Action {
+	return chromedp.ActionFunc(func(ctx context.Context) error {
+		_ = page.BringToFront().Do(ctx)
+		return nil
+	})
+}
+
 func (c *CDP) Click(ctx context.Context, id, selector string, q QueryOpts) (map[string]any, error) {
-	if err := c.run(ctx, id, chromedp.Click(selector, query(selector, q)...)); err != nil {
+	if err := c.run(ctx, id, bringToFront(), chromedp.Click(selector, query(selector, q)...)); err != nil {
 		return nil, err
 	}
 	return map[string]any{"clicked": selector}, nil
 }
 
 func (c *CDP) Type(ctx context.Context, id, selector, text string, q QueryOpts) (map[string]any, error) {
-	if err := c.run(ctx, id, chromedp.SendKeys(selector, text, query(selector, q)...)); err != nil {
+	if err := c.run(ctx, id, bringToFront(), chromedp.SendKeys(selector, text, query(selector, q)...)); err != nil {
 		return nil, err
 	}
 	return map[string]any{"typed": selector}, nil
