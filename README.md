@@ -65,6 +65,7 @@ Failures use the same envelope with `"ok": false` and an `error{code,message,…
 **Deferred (next increments, per the spec):**
 - **Shared daemon** — commands currently connect per invocation ("direct-connect"). Without the daemon, attach mode may leave one stray helper tab and re-prompts "Allow" more often. The daemon (attach-and-hold) resolves both.
 - More verbs from the spec (`html`, `text`, `value`, `attr`, `cookie`, `console`, `network`, `wait`, `emulate`, `pdf`, `--frame`, `--pierce`, live observation).
+- Some universal globals from the spec: **`--by`** (selector syntax; verbs are CSS-only for now), **`--no-wait`/`--wait`**, and **`--port`** (connection is `DevToolsActivePort`-driven for now).
 - Richer error classification (action failures are currently mapped heuristically to `target/timeout` vs `cdp`).
 - goreleaser/Homebrew packaging, TOML config, shell completion.
 

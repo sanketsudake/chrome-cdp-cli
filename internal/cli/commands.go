@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -41,6 +43,7 @@ func (a *App) newRoot() *cobra.Command {
 	pf.StringVar(&a.targetFlag, "target", "", "tab to act on (idprefix | url:<s> | title:<s> | @N)")
 	pf.DurationVar(&a.timeout, "timeout", 30*time.Second, "max time to wait for the command")
 	pf.BoolVar(&a.noLaunch, "no-launch", false, "don't auto-launch a fallback Chrome")
+	pf.StringVar(&a.profileDir, "profile-dir", "", "managed-launch Chrome profile dir (else $CHROME_CDP_PROFILE or ~/.cache/chrome-cdp/profile)")
 	pf.BoolVarP(&a.quiet, "quiet", "q", false, "suppress non-essential output")
 
 	root.AddCommand(
@@ -166,24 +169,84 @@ func (a *App) cmdType() *cobra.Command {
 func (a *App) cmdScreenshot() *cobra.Command {
 	var out string
 	c := &cobra.Command{
-		Use: "screenshot", Short: "Screenshot the target tab to a PNG in cwd",
-		RunE: a.targetAction("screenshot", func(ctx context.Context, b chrome.Browser, id string, _ []string) (any, error) {
+		Use: "screenshot", Short: "Screenshot the target tab to a PNG (cwd, or -o)",
+		RunE: func(_ *cobra.Command, _ []string) error {
+			ctx, cancel := a.ctx()
+			defer cancel()
+			tgt, b, rerr := a.resolveTarget(ctx)
+			if rerr != nil {
+				a.emitErr("screenshot", rerr.Code, rerr.Message, nil)
+				return nil
+			}
+			png, err := b.Screenshot(ctx, tgt.ID)
+			if err != nil {
+				a.emitErr("screenshot", classifyActionErr(err), err.Error(), nil)
+				return nil
+			}
+			// -o - streams the raw PNG to stdout (no envelope); status to stderr.
+			if out == "-" {
+				_, _ = a.out.Write(png)
+				if !a.quiet {
+					fmt.Fprintf(a.err, "wrote %d bytes to stdout\n", len(png))
+				}
+				return nil
+			}
 			path := out
 			if path == "" {
-				path = fmt.Sprintf("./screenshot-%s.png", time.Now().Format("20060102-150405"))
+				// The default name gets a collision counter; an explicit -o path
+				// is honored as-is (overwrite), as the user named it.
+				path = uniquePath(fmt.Sprintf("./screenshot-%s.png", time.Now().Format("20060102-150405")))
 			}
-			return b.Screenshot(ctx, id, path)
-		}),
+			if err := os.WriteFile(path, png, 0o644); err != nil {
+				a.emitErr("screenshot", "generic", err.Error(), nil)
+				return nil
+			}
+			a.emitOK("screenshot", tgt, map[string]any{"path": path, "bytes": len(png)})
+			return nil
+		},
 	}
-	c.Flags().StringVarP(&out, "output", "o", "", "output path (default ./screenshot-<timestamp>.png)")
+	c.Flags().StringVarP(&out, "output", "o", "", "output path, or - for stdout (default ./screenshot-<timestamp>.png)")
 	return c
 }
 
+// uniquePath returns path if free, else inserts -1, -2, … before the extension.
+func uniquePath(path string) string {
+	if _, err := os.Stat(path); err != nil {
+		return path
+	}
+	ext := filepath.Ext(path)
+	base := strings.TrimSuffix(path, ext)
+	for i := 1; ; i++ {
+		cand := fmt.Sprintf("%s-%d%s", base, i, ext)
+		if _, err := os.Stat(cand); err != nil {
+			return cand
+		}
+	}
+}
+
 func (a *App) cmdRaw() *cobra.Command {
-	var browserLevel bool
+	var browserLevel, listDomains bool
 	c := &cobra.Command{
-		Use: "raw <domain.method> [params-json]", Short: "Call any raw CDP method", Args: cobra.RangeArgs(1, 2),
+		Use: "raw <domain.method> [params-json]", Short: "Call any raw CDP method", Args: cobra.MaximumNArgs(2),
 		RunE: func(_ *cobra.Command, args []string) error {
+			ctx, cancel := a.ctx()
+			defer cancel()
+
+			// --list enumerates the connected Chrome's live protocol.
+			if listDomains {
+				b, berr := a.getBrowser(ctx)
+				if berr != nil {
+					a.emitErr("raw", berr.Code, berr.Message, nil)
+					return nil
+				}
+				a.emitRaw(ctx, nil, b, "", "Schema.getDomains", nil)
+				return nil
+			}
+			if len(args) == 0 {
+				a.emitErr("raw", "usage", "raw requires <domain.method> (or --list)", nil)
+				return nil
+			}
+
 			var params json.RawMessage
 			if len(args) == 2 {
 				if !json.Valid([]byte(args[1])) {
@@ -192,8 +255,6 @@ func (a *App) cmdRaw() *cobra.Command {
 				}
 				params = json.RawMessage(args[1])
 			}
-			ctx, cancel := a.ctx()
-			defer cancel()
 
 			// --browser routes Browser.* / Target.* methods to the browser-level
 			// executor (no page target required).
@@ -216,6 +277,7 @@ func (a *App) cmdRaw() *cobra.Command {
 		},
 	}
 	c.Flags().BoolVar(&browserLevel, "browser", false, "run at the browser level (for Browser.* / Target.* methods, no tab needed)")
+	c.Flags().BoolVar(&listDomains, "list", false, "list the connected Chrome's CDP domains (Schema.getDomains)")
 	return c
 }
 
@@ -295,14 +357,9 @@ func (a *App) cmdExitCodes() *cobra.Command {
 	return &cobra.Command{
 		Use: "exit-codes", Short: "Print the exit-code contract",
 		RunE: func(*cobra.Command, []string) error {
-			fmt.Fprint(a.out, `0  success
-1  generic / unclassified
-2  usage (bad flags/args)
-3  connection (attach/launch failed)
-4  target/timeout (selector not found, timeout, ambiguous/unknown target)
-5  cdp protocol error
-6  daemon error
-`)
+			for _, e := range result.ExitCodes() {
+				fmt.Fprintf(a.out, "%d  %s\n", e.Code, e.Desc)
+			}
 			return nil
 		},
 	}

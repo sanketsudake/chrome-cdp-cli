@@ -18,6 +18,7 @@ const (
 
 // codeToExit maps stable error.code strings to their process exit code.
 var codeToExit = map[string]int{
+	"generic":           ExitGeneric,
 	"usage":             ExitUsage,
 	"connection_failed": ExitConnection,
 	"not_debug_enabled": ExitConnection,
@@ -27,6 +28,26 @@ var codeToExit = map[string]int{
 	"no_current_target": ExitTarget,
 	"cdp_error":         ExitCDP,
 	"daemon_error":      ExitDaemon,
+}
+
+// ExitCodeDoc documents one exit code for `chrome-cdp exit-codes`.
+type ExitCodeDoc struct {
+	Code int
+	Desc string
+}
+
+// ExitCodes is the single source for the documented exit-code contract; the
+// exit-codes command renders it rather than repeating the strings.
+func ExitCodes() []ExitCodeDoc {
+	return []ExitCodeDoc{
+		{ExitOK, "success"},
+		{ExitGeneric, "generic / unclassified"},
+		{ExitUsage, "usage (bad flags/args)"},
+		{ExitConnection, "connection (attach/launch failed)"},
+		{ExitTarget, "target/timeout (selector not found, timeout, ambiguous/unknown target)"},
+		{ExitCDP, "cdp protocol error"},
+		{ExitDaemon, "daemon error"},
+	}
 }
 
 // ExitCodeFor returns the process exit code for an error.code string,

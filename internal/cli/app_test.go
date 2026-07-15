@@ -31,8 +31,8 @@ func (f *fakeBrowser) Click(context.Context, string, string) (map[string]any, er
 func (f *fakeBrowser) Type(context.Context, string, string, string) (map[string]any, error) {
 	return map[string]any{"typed": true}, nil
 }
-func (f *fakeBrowser) Screenshot(context.Context, string, string) (map[string]any, error) {
-	return map[string]any{"path": "./shot.png"}, nil
+func (f *fakeBrowser) Screenshot(context.Context, string) ([]byte, error) {
+	return []byte("PNGDATA"), nil
 }
 func (f *fakeBrowser) Raw(context.Context, string, string, json.RawMessage) (any, error) {
 	return map[string]any{}, nil
@@ -109,8 +109,16 @@ func TestEvalResolvedTargetSucceeds(t *testing.T) {
 }
 
 func TestExitCodesCommand(t *testing.T) {
-	_, _, code := run(t, &fakeBrowser{}, "exit-codes")
+	var out, errb bytes.Buffer
+	app := New(&fakeBrowser{}, &out, &errb)
+	code := app.Execute("exit-codes")
 	if code != 0 {
 		t.Errorf("exit = %d, want 0", code)
+	}
+	// The output must list every exit code in the contract (0..6).
+	for _, n := range []string{"0", "1", "2", "3", "4", "5", "6"} {
+		if !strings.Contains(out.String(), n+"  ") {
+			t.Errorf("exit-codes output is missing code %s:\n%s", n, out.String())
+		}
 	}
 }

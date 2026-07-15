@@ -11,16 +11,36 @@ import (
 	"github.com/sanketsudake/chrome-cdp-cli/internal/target"
 )
 
-// rawCapture records the target id Raw was called with and returns a fixed value.
+// rawCapture records what Raw was called with and returns a fixed value.
 type rawCapture struct {
 	fakeBrowser
-	gotID string
-	ret   any
+	gotID     string
+	gotMethod string
+	ret       any
 }
 
-func (r *rawCapture) Raw(_ context.Context, id, _ string, _ json.RawMessage) (any, error) {
+func (r *rawCapture) Raw(_ context.Context, id, method string, _ json.RawMessage) (any, error) {
 	r.gotID = id
+	r.gotMethod = method
 	return r.ret, nil
+}
+
+// raw --list enumerates the connected Chrome's protocol via Schema.getDomains.
+func TestRawList(t *testing.T) {
+	b := &rawCapture{ret: map[string]any{"domains": []any{map[string]any{"name": "Network"}}}}
+	env, _, code := run(t, b, "raw", "--list", "--json")
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0", code)
+	}
+	if b.gotMethod != "Schema.getDomains" {
+		t.Errorf("raw --list called %q, want Schema.getDomains", b.gotMethod)
+	}
+	if b.gotID != "" {
+		t.Errorf("raw --list used target %q, want browser-level (empty)", b.gotID)
+	}
+	if env["ok"] != true {
+		t.Errorf("ok = %v", env["ok"])
+	}
 }
 
 // `use @N` must persist the RESOLVED id, not the ephemeral spec.

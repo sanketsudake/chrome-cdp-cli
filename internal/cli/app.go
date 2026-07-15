@@ -26,6 +26,7 @@ type App struct {
 	targetFlag string
 	timeout    time.Duration
 	noLaunch   bool
+	profileDir string
 	quiet      bool
 
 	// injected sticky-target source (nil in tests => no current target)
@@ -33,7 +34,7 @@ type App struct {
 	setCurrent    func(string) error
 
 	// lazy Browser connector (nil in tests, where browser is injected directly)
-	connect func(ctx context.Context, noLaunch bool) (chrome.Browser, error)
+	connect func(ctx context.Context, noLaunch bool, profileDir string) (chrome.Browser, error)
 
 	start    time.Time
 	exitCode int
@@ -53,7 +54,7 @@ func (a *App) WithStickyTarget(get func() string, set func(string) error) *App {
 
 // WithConnector wires a lazy Browser connector (used by main()); it is invoked
 // only when a command actually needs Chrome.
-func (a *App) WithConnector(fn func(ctx context.Context, noLaunch bool) (chrome.Browser, error)) *App {
+func (a *App) WithConnector(fn func(ctx context.Context, noLaunch bool, profileDir string) (chrome.Browser, error)) *App {
 	a.connect = fn
 	return a
 }
@@ -66,7 +67,7 @@ func (a *App) getBrowser(ctx context.Context) (chrome.Browser, *result.Err) {
 	if a.connect == nil {
 		return nil, &result.Err{Code: "connection_failed", Message: "no browser configured"}
 	}
-	b, err := a.connect(ctx, a.noLaunch)
+	b, err := a.connect(ctx, a.noLaunch, a.profileDir)
 	if err != nil {
 		code := "connection_failed"
 		var ce *chrome.ConnectError
@@ -125,10 +126,7 @@ func (a *App) resolveTarget(ctx context.Context) (*result.TargetInfo, chrome.Bro
 	// Validate a target was given BEFORE connecting, so a forgotten --target
 	// never launches or touches Chrome.
 	if spec == "" {
-		return nil, nil, &result.Err{
-			Code:    "no_current_target",
-			Message: `no target given and no current tab set — run "chrome-cdp list", then "use <target>" or pass --target`,
-		}
+		return nil, nil, &result.Err{Code: "no_current_target", Message: target.NoCurrentTargetMsg}
 	}
 	b, berr := a.getBrowser(ctx)
 	if berr != nil {

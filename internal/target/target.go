@@ -21,6 +21,10 @@ type Info struct {
 	URL   string
 }
 
+// NoCurrentTargetMsg is the message used when no target is given and none is
+// sticky. Shared so the CLI's pre-connect guard and Resolve stay in sync.
+const NoCurrentTargetMsg = `no target given and no current tab set — run "chrome-cdp list", then "use <target>" or pass --target`
+
 // Error is a resolution failure carrying a stable error.code.
 type Error struct {
 	Code    string
@@ -33,10 +37,7 @@ func (e *Error) Error() string { return e.Message }
 // one of: no_current_target, target_not_found, ambiguous_target.
 func Resolve(spec string, targets []Info) (Info, *Error) {
 	if spec == "" {
-		return Info{}, &Error{
-			Code:    "no_current_target",
-			Message: `no target given and no current tab set — run "chrome-cdp list", then "use <target>" or pass --target`,
-		}
+		return Info{}, &Error{Code: "no_current_target", Message: NoCurrentTargetMsg}
 	}
 
 	switch {

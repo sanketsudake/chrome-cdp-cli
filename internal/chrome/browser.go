@@ -19,7 +19,7 @@ type Browser interface {
 	Snapshot(ctx context.Context, targetID string) (any, error)
 	Click(ctx context.Context, targetID, selector string) (map[string]any, error)
 	Type(ctx context.Context, targetID, selector, text string) (map[string]any, error)
-	Screenshot(ctx context.Context, targetID, outPath string) (map[string]any, error)
+	Screenshot(ctx context.Context, targetID string) ([]byte, error)
 	Raw(ctx context.Context, targetID, method string, params json.RawMessage) (any, error)
 	Close() error
 }

@@ -7,8 +7,8 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
-	"strings"
 	"sync"
 	"time"
 
@@ -24,9 +24,10 @@ import (
 
 // Options controls how CDP connects.
 type Options struct {
-	PortFile string // override DevToolsActivePort location (else OS candidates)
-	NoLaunch bool   // don't fall back to launching a managed Chrome
-	Headless bool   // headless for the managed-launch fallback (tests use this)
+	PortFile   string // override DevToolsActivePort location (else OS candidates)
+	ProfileDir string // managed-launch profile dir (else CHROME_CDP_PROFILE / default)
+	NoLaunch   bool   // don't fall back to launching a managed Chrome
+	Headless   bool   // headless for the managed-launch fallback (tests use this)
 }
 
 // ConnectError carries a stable error.code (matching the result contract) so the
@@ -109,7 +110,7 @@ func Connect(_ context.Context, opts Options) (*CDP, error) {
 			Message: "no debug-enabled Chrome found and --no-launch is set — enable chrome://inspect/#remote-debugging or drop --no-launch",
 		}
 	default: // Launch
-		return launch(opts.Headless)
+		return launch(opts.Headless, opts.ProfileDir)
 	}
 }
 
@@ -118,13 +119,37 @@ func attach(ws string) (*CDP, error) {
 	return startBase(false, alloc, allocCancel, "attach to "+ws)
 }
 
-func launch(headless bool) (*CDP, error) {
+func launch(headless bool, profileDir string) (*CDP, error) {
+	// A dedicated, persistent profile so managed-Chrome logins survive across
+	// runs (rather than chromedp's default ephemeral temp dir).
+	dir := resolveProfileDir(profileDir)
+	// Best-effort: if the dir can't be created, the launch below fails clearly.
+	_ = os.MkdirAll(dir, 0o700)
+
 	execOpts := append([]chromedp.ExecAllocatorOption{}, chromedp.DefaultExecAllocatorOptions[:]...)
+	execOpts = append(execOpts, chromedp.UserDataDir(dir))
 	if !headless {
 		execOpts = append(execOpts, chromedp.Flag("headless", false))
 	}
 	alloc, allocCancel := chromedp.NewExecAllocator(context.Background(), execOpts...)
 	return startBase(true, alloc, allocCancel, "launch managed Chrome")
+}
+
+// resolveProfileDir picks the managed-launch profile: an explicit dir, else
+// $CHROME_CDP_PROFILE, else <cache>/chrome-cdp/profile.
+func resolveProfileDir(explicit string) string {
+	if explicit != "" {
+		return explicit
+	}
+	if env := os.Getenv("CHROME_CDP_PROFILE"); env != "" {
+		return env
+	}
+	base := os.Getenv("XDG_CACHE_HOME")
+	if base == "" {
+		home, _ := os.UserHomeDir()
+		base = filepath.Join(home, ".cache")
+	}
+	return filepath.Join(base, "chrome-cdp", "profile")
 }
 
 // startBase creates the base context on an allocator and initializes the browser
@@ -188,7 +213,7 @@ func (c *CDP) List(_ context.Context) ([]target.Info, error) {
 	}
 	var out []target.Info
 	for _, i := range infos {
-		if i.Type != "page" || strings.HasPrefix(i.URL, "chrome://") {
+		if i.Type != "page" { // page targets only (incl. chrome:// pages); skip iframes/workers
 			continue
 		}
 		out = append(out, target.Info{ID: i.TargetID.String(), Title: i.Title, URL: i.URL})
@@ -297,15 +322,12 @@ func (c *CDP) Type(ctx context.Context, id, selector, text string) (map[string]a
 	return map[string]any{"typed": selector}, nil
 }
 
-func (c *CDP) Screenshot(ctx context.Context, id, outPath string) (map[string]any, error) {
+func (c *CDP) Screenshot(ctx context.Context, id string) ([]byte, error) {
 	var buf []byte
 	if err := c.run(ctx, id, chromedp.CaptureScreenshot(&buf)); err != nil {
 		return nil, err
 	}
-	if err := os.WriteFile(outPath, buf, 0o644); err != nil {
-		return nil, err
-	}
-	return map[string]any{"path": outPath, "bytes": len(buf)}, nil
+	return buf, nil
 }
 
 // Raw sends any CDP method by string via the executor — full coverage, no
