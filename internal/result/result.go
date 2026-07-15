@@ -45,8 +45,7 @@ type TargetInfo struct {
 	URL   string `json:"url"`
 }
 
-// Err is a structured command failure. Details are flattened into the error
-// object alongside code and message (e.g. {"code","message","selector",...}).
+// Err is a structured command failure with optional context Details.
 type Err struct {
 	Code    string
 	Message string

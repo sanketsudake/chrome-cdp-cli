@@ -203,8 +203,9 @@ func short(id string) string {
 	return id
 }
 
+// oneLine renders a result map as a single human-mode line, using the first
+// present key in priority order.
 func oneLine(m map[string]any) string {
-	// stable-ish single-line summary for human mode
 	for _, k := range []string{"url", "value", "path", "clicked", "typed"} {
 		if v, ok := m[k]; ok {
 			return fmt.Sprintf("%s: %v", k, v)
