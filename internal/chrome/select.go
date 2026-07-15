@@ -136,10 +136,22 @@ func splitPath(option, sep string) []string {
 	return out
 }
 
-// resolveField resolves the field control by accessible name (via the shared
-// axNameQuery matcher) and returns its node id + described node (for tag/tagname
-// checks). It errors if no exposed match is found within the action deadline.
+// resolveField resolves the field control and returns its node id + described
+// node (for tag checks). By default it addresses by accessible name (with
+// role/match/nth), but honours an explicit --by (css/id/search/ref) — which also
+// makes select work on a backgrounded tab where the a11y tree is throttled.
 func resolveField(ctx context.Context, field string, q QueryOpts) (cdp.NodeID, *cdp.Node, error) {
+	if q.By != "" && q.By != "name" {
+		nid, err := resolveNodeReady(ctx, field, q)
+		if err != nil {
+			return 0, nil, err
+		}
+		node, derr := dom.DescribeNode().WithNodeID(nid).Do(ctx)
+		if derr != nil {
+			return 0, nil, derr
+		}
+		return nid, node, nil
+	}
 	match := axNameQuery(field, q.Role, q.Nth, q.Match)
 	t := time.NewTicker(150 * time.Millisecond)
 	defer t.Stop()
@@ -184,16 +196,23 @@ func nodeCenter(ctx context.Context, nid cdp.NodeID) (float64, float64, error) {
 // release. This is what drives Workday's delegated menu/prompt handlers where a
 // single chromedp node-click misses.
 func coordClick(ctx context.Context, x, y float64) error {
+	return coordClickN(ctx, x, y, 1)
+}
+
+// coordClickN is coordClick with an explicit click count — count 3 is a
+// triple-click, which selects all text in an input (so a fill can replace, not
+// append to, the existing value).
+func coordClickN(ctx context.Context, x, y float64, count int64) error {
 	if err := input.DispatchMouseEvent(input.MouseMoved, x, y).Do(ctx); err != nil {
 		return err
 	}
 	press := input.DispatchMouseEvent(input.MousePressed, x, y).
-		WithButton(input.Left).WithClickCount(1)
+		WithButton(input.Left).WithClickCount(count)
 	if err := press.Do(ctx); err != nil {
 		return err
 	}
 	release := input.DispatchMouseEvent(input.MouseReleased, x, y).
-		WithButton(input.Left).WithClickCount(1)
+		WithButton(input.Left).WithClickCount(count)
 	return release.Do(ctx)
 }
 
@@ -226,6 +245,12 @@ func resolveNodeReady(ctx context.Context, selector string, q QueryOpts) (cdp.No
 // It waits for the centre to settle on the target (or a descendant) — an occluding
 // overlay or a mid-animation element is waited out rather than mis-clicked.
 func coordClickNode(ctx context.Context, nid cdp.NodeID) error {
+	return coordClickNodeN(ctx, nid, 1)
+}
+
+// coordClickNodeN is coordClickNode with a click count (3 = triple-click to
+// select all text in an input).
+func coordClickNodeN(ctx context.Context, nid cdp.NodeID, count int64) error {
 	obj, err := dom.ResolveNode().WithNodeID(nid).Do(ctx)
 	if err != nil {
 		return err
@@ -239,7 +264,7 @@ func coordClickNode(ctx context.Context, nid cdp.NodeID) error {
 	for {
 		x, y, ok, err := nodeCoord(ctx, obj.ObjectID)
 		if err == nil && ok {
-			return coordClick(ctx, x, y)
+			return coordClickN(ctx, x, y, count)
 		}
 		lastErr = err
 		select {

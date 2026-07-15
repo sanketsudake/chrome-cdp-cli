@@ -159,6 +159,10 @@ func (s *server) dispatch(ctx context.Context, method string, args []json.RawMes
 		return b.Click(ctx, argStr(args, 0), argStr(args, 1), argQ(args, 2))
 	case "Select":
 		return b.Select(ctx, argStr(args, 0), argStr(args, 1), argStr(args, 2), argSel(args, 3))
+	case "Fill":
+		return b.Fill(ctx, argStr(args, 0), argStr(args, 1), argStr(args, 2), argQ(args, 3))
+	case "Values":
+		return b.Values(ctx, argStr(args, 0), argStr(args, 1), argQ(args, 2))
 	case "Grid":
 		return b.Grid(ctx, argStr(args, 0), argStr(args, 1), argQ(args, 2))
 	case "Scroll":
@@ -390,6 +394,14 @@ func (r *remoteBrowser) Type(ctx context.Context, id, sel, text string, q chrome
 func (r *remoteBrowser) Select(ctx context.Context, id, field, option string, opts chrome.SelectOpts) (map[string]any, error) {
 	var out map[string]any
 	return out, r.c.call(ctx, "Select", &out, id, field, option, opts)
+}
+func (r *remoteBrowser) Fill(ctx context.Context, id, selector, value string, q chrome.QueryOpts) (map[string]any, error) {
+	var out map[string]any
+	return out, r.c.call(ctx, "Fill", &out, id, selector, value, q)
+}
+func (r *remoteBrowser) Values(ctx context.Context, id, selector string, q chrome.QueryOpts) (map[string]any, error) {
+	var out map[string]any
+	return out, r.c.call(ctx, "Values", &out, id, selector, q)
 }
 func (r *remoteBrowser) Grid(ctx context.Context, id, selector string, q chrome.QueryOpts) (any, error) {
 	var out any

@@ -37,6 +37,7 @@ type App struct {
 	nthFlag    int
 	matchFlag  string
 	noWait     bool
+	actWaitText string // --wait-text: after an action verb succeeds, wait until this text appears
 	pierce     bool
 	noDaemon   bool
 	quiet      bool

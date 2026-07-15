@@ -32,6 +32,12 @@ func (StubBrowser) Type(context.Context, string, string, string, chrome.QueryOpt
 func (StubBrowser) Select(context.Context, string, string, string, chrome.SelectOpts) (map[string]any, error) {
 	return map[string]any{"selected": true}, nil
 }
+func (StubBrowser) Fill(context.Context, string, string, string, chrome.QueryOpts) (map[string]any, error) {
+	return map[string]any{"filled": true}, nil
+}
+func (StubBrowser) Values(context.Context, string, string, chrome.QueryOpts) (map[string]any, error) {
+	return map[string]any{"values": []any{}, "count": 0}, nil
+}
 func (StubBrowser) Grid(context.Context, string, string, chrome.QueryOpts) (any, error) {
 	return map[string]any{"headers": []any{}, "rows": []any{}, "count": 0}, nil
 }

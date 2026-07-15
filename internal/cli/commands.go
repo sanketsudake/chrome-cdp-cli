@@ -67,7 +67,7 @@ func (a *App) newRoot() *cobra.Command {
 	root.AddCommand(
 		a.cmdList(), a.cmdUse(), a.cmdNav(), a.cmdEval(), a.cmdSnap(),
 		a.cmdHTML(), a.cmdText(), a.cmdValue(),
-		a.cmdClick(), a.cmdType(), a.cmdSelect(), a.cmdGrid(), a.cmdScroll(), a.cmdAttr(), a.cmdScreenshot(), a.cmdPDF(),
+		a.cmdClick(), a.cmdType(), a.cmdFill(), a.cmdSelect(), a.cmdGrid(), a.cmdScroll(), a.cmdAttr(), a.cmdScreenshot(), a.cmdPDF(),
 		a.cmdCookie(), a.cmdHeaders(), a.cmdEmulate(), a.cmdFrame(), a.cmdWait(), a.cmdRaw(),
 		a.cmdSession(), a.cmdDoctor(), a.cmdDaemon(), a.cmdExitCodes(), a.cmdVersion(),
 	)
@@ -194,12 +194,18 @@ func (a *App) cmdText() *cobra.Command {
 }
 
 func (a *App) cmdValue() *cobra.Command {
-	return &cobra.Command{
-		Use: "value <selector>", Short: "Value of a form field", Args: cobra.ExactArgs(1),
+	var all bool
+	c := &cobra.Command{
+		Use: "value <selector>", Short: "Value of a form field (--all: values of every match, as a list)", Args: cobra.ExactArgs(1),
 		RunE: a.targetAction("value", func(ctx context.Context, b chrome.Browser, id string, args []string) (any, error) {
+			if all {
+				return b.Values(ctx, id, args[0], a.queryOpts())
+			}
 			return b.Value(ctx, id, args[0], a.queryOpts())
 		}),
 	}
+	c.Flags().BoolVar(&all, "all", false, "return the value/text of every element matching the CSS selector, as a list")
+	return c
 }
 
 func (a *App) cmdCookie() *cobra.Command {
@@ -394,21 +400,30 @@ func (a *App) runResolved(command string, fn func(ctx context.Context, b chrome.
 }
 
 func (a *App) cmdClick() *cobra.Command {
-	return &cobra.Command{
+	return a.withWaitText(&cobra.Command{
 		Use: "click <selector>", Short: "Click an element (auto-waits)", Args: cobra.ExactArgs(1),
 		RunE: a.targetAction("click", func(ctx context.Context, b chrome.Browser, id string, args []string) (any, error) {
 			return b.Click(ctx, id, args[0], a.queryOpts())
 		}),
-	}
+	})
 }
 
 func (a *App) cmdType() *cobra.Command {
-	return &cobra.Command{
-		Use: "type <selector> <text>", Short: "Type text via real keystrokes", Args: cobra.ExactArgs(2),
+	return a.withWaitText(&cobra.Command{
+		Use: "type <selector> <text>", Short: "Type text via real keystrokes (appends)", Args: cobra.ExactArgs(2),
 		RunE: a.targetAction("type", func(ctx context.Context, b chrome.Browser, id string, args []string) (any, error) {
 			return b.Type(ctx, id, args[0], args[1], a.queryOpts())
 		}),
-	}
+	})
+}
+
+func (a *App) cmdFill() *cobra.Command {
+	return a.withWaitText(&cobra.Command{
+		Use: "fill <selector> <value>", Short: "Set a field to a value, replacing existing content (clears then types)", Args: cobra.ExactArgs(2),
+		RunE: a.targetAction("fill", func(ctx context.Context, b chrome.Browser, id string, args []string) (any, error) {
+			return b.Fill(ctx, id, args[0], args[1], a.queryOpts())
+		}),
+	})
 }
 
 func (a *App) cmdSelect() *cobra.Command {
@@ -440,7 +455,7 @@ func (a *App) cmdSelect() *cobra.Command {
 	c.Flags().StringVar(&filter, "filter", "", "type this text into the prompt to narrow options before selecting")
 	c.Flags().StringVar(&optMatch, "option-match", "", "option match mode: contains (default)|exact|regex")
 	c.Flags().StringVar(&sep, "sep", ">", "cascade path separator between option levels")
-	return c
+	return a.withWaitText(c)
 }
 
 func (a *App) cmdGrid() *cobra.Command {
@@ -654,9 +669,26 @@ func (a *App) targetAction(command string, fn func(ctx context.Context, b chrome
 			a.emitErr(command, classifyActionErr(err), err.Error(), nil)
 			return nil
 		}
+		// --wait-text folds "act, then confirm the write landed" into one call:
+		// after the action succeeds, block until the page contains the text.
+		if a.actWaitText != "" {
+			if _, werr := b.Wait(ctx, tgt.ID, chrome.WaitCond{Text: a.actWaitText}); werr != nil {
+				a.emitErr(command, classifyActionErr(werr), "action ok but wait-text failed: "+werr.Error(), nil)
+				return nil
+			}
+			if m, ok := res.(map[string]any); ok {
+				m["waited_text"] = a.actWaitText
+			}
+		}
 		a.emitOK(command, tgt, res)
 		return nil
 	}
+}
+
+// withWaitText registers the shared --wait-text flag on an action command.
+func (a *App) withWaitText(c *cobra.Command) *cobra.Command {
+	c.Flags().StringVar(&a.actWaitText, "wait-text", "", "after the action, wait until the page contains this text (e.g. a 'Saved' toast)")
+	return c
 }
 
 func (a *App) cmdDoctor() *cobra.Command {

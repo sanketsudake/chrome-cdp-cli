@@ -631,6 +631,28 @@ func (c *CDP) Type(ctx context.Context, id, selector, text string, q QueryOpts) 
 	return map[string]any{"typed": selector}, nil
 }
 
+// Fill sets a field to value, replacing (not appending to) any existing content:
+// it triple-clicks the field to select all its text, then types value as real
+// keystrokes over the selection — the reliable way to set a pre-filled cell (e.g.
+// a timesheet "0" hour cell) to a new value in one call.
+func (c *CDP) Fill(ctx context.Context, id, selector, value string, q QueryOpts) (map[string]any, error) {
+	err := c.run(ctx, id, bringToFront(), chromedp.ActionFunc(func(actx context.Context) error {
+		nid, err := resolveNodeReady(actx, selector, q)
+		if err != nil {
+			return err
+		}
+		// Triple-click selects all text in the field; typing then replaces it.
+		if err := coordClickNodeN(actx, nid, 3); err != nil {
+			return err
+		}
+		return chromedp.KeyEvent(value).Do(actx)
+	}))
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{"filled": selector, "value": value}, nil
+}
+
 func (c *CDP) HTML(ctx context.Context, id, selector string, inner bool, q QueryOpts) (map[string]any, error) {
 	sel := selector
 	if sel == "" {
@@ -663,6 +685,20 @@ func (c *CDP) Value(ctx context.Context, id, selector string, q QueryOpts) (map[
 		return nil, err
 	}
 	return map[string]any{"value": val}, nil
+}
+
+// Values reads the value (or text) of EVERY element matching a CSS selector, in
+// document order — one round trip instead of an eval per field (e.g. reading a
+// whole row of timesheet hour cells or a set of selected pills). Uses
+// querySelectorAll, so it works even on a background/hidden tab.
+func (c *CDP) Values(ctx context.Context, id, selector string, q QueryOpts) (map[string]any, error) {
+	selJSON, _ := json.Marshal(selector)
+	expr := fmt.Sprintf(`(() => [...document.querySelectorAll(%s)].map(e => ("value" in e && typeof e.value === "string") ? e.value : (e.textContent || "").trim()))()`, string(selJSON))
+	var vals []string
+	if err := c.run(ctx, id, chromedp.Evaluate(expr, &vals)); err != nil {
+		return nil, err
+	}
+	return map[string]any{"values": vals, "count": len(vals)}, nil
 }
 
 func (c *CDP) Screenshot(ctx context.Context, id string) ([]byte, error) {
