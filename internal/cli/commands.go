@@ -66,7 +66,7 @@ func (a *App) newRoot() *cobra.Command {
 	root.AddCommand(
 		a.cmdList(), a.cmdUse(), a.cmdNav(), a.cmdEval(), a.cmdSnap(),
 		a.cmdHTML(), a.cmdText(), a.cmdValue(),
-		a.cmdClick(), a.cmdType(), a.cmdSelect(), a.cmdAttr(), a.cmdScreenshot(), a.cmdPDF(),
+		a.cmdClick(), a.cmdType(), a.cmdSelect(), a.cmdGrid(), a.cmdScroll(), a.cmdAttr(), a.cmdScreenshot(), a.cmdPDF(),
 		a.cmdCookie(), a.cmdHeaders(), a.cmdEmulate(), a.cmdFrame(), a.cmdWait(), a.cmdRaw(),
 		a.cmdDoctor(), a.cmdDaemon(), a.cmdExitCodes(), a.cmdVersion(),
 	)
@@ -439,6 +439,47 @@ func (a *App) cmdSelect() *cobra.Command {
 	c.Flags().StringVar(&filter, "filter", "", "type this text into the prompt to narrow options before selecting")
 	c.Flags().StringVar(&optMatch, "option-match", "", "option match mode: contains (default)|exact|regex")
 	c.Flags().StringVar(&sep, "sep", ">", "cascade path separator between option levels")
+	return c
+}
+
+func (a *App) cmdGrid() *cobra.Command {
+	return &cobra.Command{
+		Use:   "grid [selector]",
+		Short: "Read a table/grid as structured {headers, rows} from the accessibility tree",
+		Args:  cobra.MaximumNArgs(1),
+		RunE: a.targetAction("grid", func(ctx context.Context, b chrome.Browser, id string, args []string) (any, error) {
+			sel := ""
+			if len(args) == 1 {
+				sel = args[0]
+			}
+			return b.Grid(ctx, id, sel, a.queryOpts())
+		}),
+	}
+}
+
+func (a *App) cmdScroll() *cobra.Command {
+	var dx, dy float64
+	var into, wheel bool
+	c := &cobra.Command{
+		Use:   "scroll [selector]",
+		Short: "Scroll by --dx/--dy (a selector's box or the window), --to a selector into view, or --wheel",
+		Args:  cobra.MaximumNArgs(1),
+		RunE: func(_ *cobra.Command, args []string) error {
+			sel := ""
+			if len(args) == 1 {
+				sel = args[0]
+			}
+			opts := chrome.ScrollOpts{Dx: dx, Dy: dy, Into: into, Wheel: wheel, Query: a.queryOpts()}
+			a.runResolved("scroll", func(ctx context.Context, b chrome.Browser, id string) (any, error) {
+				return b.Scroll(ctx, id, sel, opts)
+			})
+			return nil
+		},
+	}
+	c.Flags().Float64Var(&dx, "dx", 0, "horizontal scroll delta in pixels")
+	c.Flags().Float64Var(&dy, "dy", 0, "vertical scroll delta in pixels (positive scrolls down)")
+	c.Flags().BoolVar(&into, "to", false, "scroll the selector into view instead of by a delta")
+	c.Flags().BoolVar(&wheel, "wheel", false, "dispatch a real mouse wheel (for grids that render on wheel, not scroll)")
 	return c
 }
 

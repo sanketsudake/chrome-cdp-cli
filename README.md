@@ -46,6 +46,8 @@ chrome-cdp click --by search "Sign in"   # match by DevTools text/XPath/CSS sear
 chrome-cdp click --by name "Request Absence" --role button   # match by ARIA accessible name
 chrome-cdp type "#q" "hello"        # type via real keystrokes
 chrome-cdp select "Time Type" "Project Plan Tasks > ShiftLeft: Qwiet" --role textbox  # drive a prompt/combobox/cascade
+chrome-cdp grid                     # read a table/grid as {headers, rows} (a11y)
+chrome-cdp scroll --dy 600          # scroll (or --to <sel> into view, --wheel for lazy grids)
 chrome-cdp eval "document.title"    # evaluate JS
 chrome-cdp wait --url "/dashboard"  # wait until the tab's URL settles (or --visible/--gone/--for)
 chrome-cdp screenshot               # PNG -> ./screenshot-<timestamp>.png (or -o -)
@@ -100,7 +102,7 @@ Shell completion is built in (cobra): `chrome-cdp completion bash|zsh|fish|power
 ## Status
 
 **Implemented & tested:** the connection ladder + `DevToolsActivePort` reader, target-grammar resolution, the uniform envelope + exit-code contract, selector options (`--by` incl.
-`name` = ARIA accessible-name addressing with `--role`/`--nth`, `--wait`, `--no-wait`), the connection globals (`--port`, `--profile-dir`, `--no-launch`) and output globals (`--json`, `--no-color`, `-v`, `--no-input`, `--quiet`, `--timeout`), and commands `list`, `use`, `nav`, `snap`, `html`, `text`, `value`, `eval`, `click`, `type`, `select` (prompt/combobox/cascade/native-`<select>`), `attr` (get/list/set/rm), `screenshot`, `pdf`, `cookie` (list/set/rm/clear), `headers set`, `emulate` (viewport/geo/reset), `frame list`, `wait` (`--url`/`--visible`/`--gone`/`--for`), `--pierce` (shadow-DOM/iframe piercing), `raw` (incl.
+`name` = ARIA accessible-name addressing with `--role`/`--nth`, `--wait`, `--no-wait`), the connection globals (`--port`, `--profile-dir`, `--no-launch`) and output globals (`--json`, `--no-color`, `-v`, `--no-input`, `--quiet`, `--timeout`), and commands `list`, `use`, `nav`, `snap`, `html`, `text`, `value`, `eval`, `click`, `type`, `select` (prompt/combobox/cascade/native-`<select>`), `grid` (a11y table read), `scroll` (`--dy`/`--to`/`--wheel`), `attr` (get/list/set/rm), `screenshot`, `pdf`, `cookie` (list/set/rm/clear), `headers set`, `emulate` (viewport/geo/reset), `frame list`, `wait` (`--url`/`--visible`/`--gone`/`--for`), `--pierce` (shadow-DOM/iframe piercing), `raw` (incl.
 `--browser`/`--list`), `doctor`, `daemon` (start/stop/status), `exit-codes`, `version` (and `--version`).
 Plus an optional TOML config file (flags > `CHROME_CDP_*` env > config > defaults), shell completion (`completion`), and goreleaser + Homebrew-cask packaging with a CI matrix (Linux/macOS) and a tag-driven release workflow.
 Verified with unit tests, a golden output-contract test, an in-process + subprocess command-boundary suite, RPC round-trip tests for the daemon, and an integration test that drives a real headless Chrome.

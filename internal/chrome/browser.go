@@ -51,6 +51,21 @@ type SelectOpts struct {
 	Sep string
 }
 
+// ScrollOpts controls the `scroll` verb:
+//   - Into: scroll Selector into view.
+//   - otherwise: scroll by (Dx, Dy) pixels — Selector's scroll box, or the window
+//     when Selector is empty. This is a JS scrollBy (deterministic; it fires the
+//     scroll events virtualized grids render on).
+//   - Wheel: instead dispatch a real mouse-wheel of (Dx, Dy) at Selector's centre
+//     (viewport centre if empty), for grids that listen for wheel specifically.
+type ScrollOpts struct {
+	Dx    float64
+	Dy    float64
+	Into  bool
+	Wheel bool
+	Query QueryOpts
+}
+
 // WaitCond is a condition for the `wait` verb: settle until the target URL
 // contains URL, or a selector becomes Visible / is Gone. Exactly one is set;
 // Query carries the selector options for Visible/Gone. A fixed --for duration is
@@ -73,6 +88,8 @@ type Browser interface {
 	Snapshot(ctx context.Context, targetID string) (any, error)
 	Click(ctx context.Context, targetID, selector string, q QueryOpts) (map[string]any, error)
 	Select(ctx context.Context, targetID, field, option string, opts SelectOpts) (map[string]any, error)
+	Grid(ctx context.Context, targetID, selector string, q QueryOpts) (any, error)
+	Scroll(ctx context.Context, targetID, selector string, opts ScrollOpts) (map[string]any, error)
 	Type(ctx context.Context, targetID, selector, text string, q QueryOpts) (map[string]any, error)
 	HTML(ctx context.Context, targetID, selector string, inner bool, q QueryOpts) (map[string]any, error)
 	Text(ctx context.Context, targetID, selector string, q QueryOpts) (map[string]any, error)
