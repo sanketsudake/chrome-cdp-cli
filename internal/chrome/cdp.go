@@ -594,15 +594,38 @@ func bringToFront() chromedp.Action {
 	})
 }
 
+// Click resolves the selector and clicks it at its live, occlusion-verified
+// centre via a coordinate pointer sequence (the same primitive as `select`), so
+// it lands on a background/inactive tab where chromedp's box-model node-click
+// would poll until timeout. bringToFront reactivates the tab first.
 func (c *CDP) Click(ctx context.Context, id, selector string, q QueryOpts) (map[string]any, error) {
-	if err := c.run(ctx, id, bringToFront(), chromedp.Click(selector, query(selector, q)...)); err != nil {
+	err := c.run(ctx, id, bringToFront(), chromedp.ActionFunc(func(actx context.Context) error {
+		nid, err := resolveNodeReady(actx, selector, q)
+		if err != nil {
+			return err
+		}
+		return coordClickNode(actx, nid)
+	}))
+	if err != nil {
 		return nil, err
 	}
 	return map[string]any{"clicked": selector}, nil
 }
 
+// Type coordinate-clicks the selector to focus it (robust on a background tab),
+// then sends the text as real keystrokes to the focused element.
 func (c *CDP) Type(ctx context.Context, id, selector, text string, q QueryOpts) (map[string]any, error) {
-	if err := c.run(ctx, id, bringToFront(), chromedp.SendKeys(selector, text, query(selector, q)...)); err != nil {
+	err := c.run(ctx, id, bringToFront(), chromedp.ActionFunc(func(actx context.Context) error {
+		nid, err := resolveNodeReady(actx, selector, q)
+		if err != nil {
+			return err
+		}
+		if err := coordClickNode(actx, nid); err != nil {
+			return err
+		}
+		return chromedp.KeyEvent(text).Do(actx)
+	}))
+	if err != nil {
 		return nil, err
 	}
 	return map[string]any{"typed": selector}, nil

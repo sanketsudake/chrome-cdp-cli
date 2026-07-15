@@ -203,6 +203,89 @@ func typeKeys(ctx context.Context, text string) error {
 	return chromedp.KeyEvent(text).Do(ctx)
 }
 
+// resolveNodeReady resolves a selector to one node using a PRESENT (not visible)
+// wait — so it doesn't hang on a background/hidden tab whose box model isn't
+// computed. It honours every --by mode (css/id/search/name/ref) via byFor.
+func resolveNodeReady(ctx context.Context, selector string, q QueryOpts) (cdp.NodeID, error) {
+	var nodes []*cdp.Node
+	opts := append(byFor(selector, q), chromedp.NodeReady)
+	if err := chromedp.Nodes(selector, &nodes, opts...).Do(ctx); err != nil {
+		return 0, err
+	}
+	if len(nodes) == 0 {
+		return 0, fmt.Errorf("selector %q not found", selector)
+	}
+	return nodes[0].NodeID, nil
+}
+
+// coordClickNode clicks a resolved node at its live, occlusion-verified centre via
+// a coordinate pointer sequence. Unlike chromedp's node-click it computes geometry
+// in JS (getBoundingClientRect / elementFromPoint work even when the tab is
+// hidden) and dispatches Input events — so it lands on a background/inactive tab
+// (after bringToFront) where a box-model node-click would poll until it times out.
+// It waits for the centre to settle on the target (or a descendant) — an occluding
+// overlay or a mid-animation element is waited out rather than mis-clicked.
+func coordClickNode(ctx context.Context, nid cdp.NodeID) error {
+	obj, err := dom.ResolveNode().WithNodeID(nid).Do(ctx)
+	if err != nil {
+		return err
+	}
+	if obj == nil || obj.ObjectID == "" {
+		return fmt.Errorf("node has no remote object")
+	}
+	t := time.NewTicker(100 * time.Millisecond)
+	defer t.Stop()
+	var lastErr error
+	for {
+		x, y, ok, err := nodeCoord(ctx, obj.ObjectID)
+		if err == nil && ok {
+			return coordClick(ctx, x, y)
+		}
+		lastErr = err
+		select {
+		case <-ctx.Done():
+			if lastErr != nil {
+				return lastErr
+			}
+			return fmt.Errorf("element has no settled, unoccluded clickable centre")
+		case <-t.C:
+		}
+	}
+}
+
+// nodeCoord returns the element's clamped centre and whether that point is
+// hit-testable on the element (or a descendant) — i.e. not occluded.
+func nodeCoord(ctx context.Context, objID runtime.RemoteObjectID) (float64, float64, bool, error) {
+	res, err := callOnObject(ctx, objID, nodeCoordJS)
+	if err != nil {
+		return 0, 0, false, err
+	}
+	var v struct {
+		OK bool    `json:"ok"`
+		X  float64 `json:"x"`
+		Y  float64 `json:"y"`
+	}
+	if err := json.Unmarshal(res, &v); err != nil {
+		return 0, 0, false, err
+	}
+	return v.X, v.Y, v.OK, nil
+}
+
+// nodeCoordJS scrolls the element into view and returns its viewport centre
+// (clamped so elementFromPoint is valid) plus whether that pixel resolves to the
+// element or a descendant — the occlusion check.
+const nodeCoordJS = `function() {
+  try { this.scrollIntoView({block:"center", inline:"nearest"}); } catch (e) {}
+  const r = this.getBoundingClientRect();
+  if (r.width < 1 || r.height < 1) return { ok: false, x: 0, y: 0 };
+  let cx = Math.round(r.left + r.width / 2), cy = Math.round(r.top + r.height / 2);
+  cx = Math.max(0, Math.min(cx, window.innerWidth - 1));
+  cy = Math.max(0, Math.min(cy, window.innerHeight - 1));
+  const at = document.elementFromPoint(cx, cy);
+  const ok = !!at && (at === this || this.contains(at));
+  return { ok, x: cx, y: cy };
+}`
+
 // locateResult is the coordinate + occlusion verdict returned by the JS option
 // locator.
 type locateResult struct {
