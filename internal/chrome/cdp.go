@@ -15,6 +15,9 @@ import (
 
 	"github.com/chromedp/cdproto/accessibility"
 	"github.com/chromedp/cdproto/cdp"
+	"github.com/chromedp/cdproto/emulation"
+	"github.com/chromedp/cdproto/network"
+	"github.com/chromedp/cdproto/page"
 	cdptarget "github.com/chromedp/cdproto/target"
 	"github.com/chromedp/chromedp"
 	easyjson "github.com/mailru/easyjson"
@@ -397,6 +400,153 @@ func (c *CDP) Screenshot(ctx context.Context, id string) ([]byte, error) {
 		return nil, err
 	}
 	return buf, nil
+}
+
+// PDF prints the page to PDF (no chromedp Action; raw page.PrintToPDF).
+func (c *CDP) PDF(ctx context.Context, id string) ([]byte, error) {
+	var buf []byte
+	err := c.run(ctx, id, chromedp.ActionFunc(func(ctx context.Context) error {
+		var e error
+		buf, _, e = page.PrintToPDF().WithPrintBackground(true).Do(ctx)
+		return e
+	}))
+	if err != nil {
+		return nil, err
+	}
+	return buf, nil
+}
+
+func (c *CDP) CookieList(ctx context.Context, id string) (any, error) {
+	var cookies []*network.Cookie
+	err := c.run(ctx, id, chromedp.ActionFunc(func(ctx context.Context) error {
+		var e error
+		cookies, e = network.GetCookies().Do(ctx)
+		return e
+	}))
+	if err != nil {
+		return nil, err
+	}
+	out := make([]map[string]any, len(cookies))
+	for i, ck := range cookies {
+		out[i] = map[string]any{
+			"name": ck.Name, "value": ck.Value, "domain": ck.Domain,
+			"path": ck.Path, "secure": ck.Secure, "httpOnly": ck.HTTPOnly,
+		}
+	}
+	return map[string]any{"cookies": out}, nil
+}
+
+func (c *CDP) CookieSet(ctx context.Context, id, name, value, domain, path string) (map[string]any, error) {
+	err := c.run(ctx, id, chromedp.ActionFunc(func(ctx context.Context) error {
+		a := network.SetCookie(name, value)
+		if domain != "" {
+			a = a.WithDomain(domain)
+		}
+		if path != "" {
+			a = a.WithPath(path)
+		}
+		return a.Do(ctx)
+	}))
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{"set": name}, nil
+}
+
+func (c *CDP) CookieDelete(ctx context.Context, id, name string) (map[string]any, error) {
+	err := c.run(ctx, id, chromedp.ActionFunc(func(ctx context.Context) error {
+		return network.DeleteCookies(name).Do(ctx)
+	}))
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{"deleted": name}, nil
+}
+
+func (c *CDP) CookieClear(ctx context.Context, id string) (map[string]any, error) {
+	err := c.run(ctx, id, chromedp.ActionFunc(func(ctx context.Context) error {
+		return network.ClearBrowserCookies().Do(ctx)
+	}))
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{"cleared": true}, nil
+}
+
+func (c *CDP) AttrGet(ctx context.Context, id, selector, name string, q QueryOpts) (map[string]any, error) {
+	var val string
+	var ok bool
+	if err := c.run(ctx, id, chromedp.AttributeValue(selector, name, &val, &ok, queryOptions(q)...)); err != nil {
+		return nil, err
+	}
+	return map[string]any{"name": name, "value": val, "present": ok}, nil
+}
+
+func (c *CDP) AttrList(ctx context.Context, id, selector string, q QueryOpts) (map[string]any, error) {
+	var attrs map[string]string
+	if err := c.run(ctx, id, chromedp.Attributes(selector, &attrs, queryOptions(q)...)); err != nil {
+		return nil, err
+	}
+	return map[string]any{"attributes": attrs}, nil
+}
+
+func (c *CDP) AttrSet(ctx context.Context, id, selector, name, value string, q QueryOpts) (map[string]any, error) {
+	if err := c.run(ctx, id, chromedp.SetAttributeValue(selector, name, value, queryOptions(q)...)); err != nil {
+		return nil, err
+	}
+	return map[string]any{"set": name}, nil
+}
+
+func (c *CDP) AttrRemove(ctx context.Context, id, selector, name string, q QueryOpts) (map[string]any, error) {
+	if err := c.run(ctx, id, chromedp.RemoveAttribute(selector, name, queryOptions(q)...)); err != nil {
+		return nil, err
+	}
+	return map[string]any{"removed": name}, nil
+}
+
+func (c *CDP) SetHeaders(ctx context.Context, id string, headers map[string]string) (map[string]any, error) {
+	h := network.Headers{}
+	for k, v := range headers {
+		h[k] = v
+	}
+	err := c.run(ctx, id, chromedp.ActionFunc(func(ctx context.Context) error {
+		if err := network.Enable().Do(ctx); err != nil {
+			return err
+		}
+		return network.SetExtraHTTPHeaders(h).Do(ctx)
+	}))
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{"headers": len(headers)}, nil
+}
+
+func (c *CDP) EmulateViewport(ctx context.Context, id string, width, height int64) (map[string]any, error) {
+	if err := c.run(ctx, id, chromedp.EmulateViewport(width, height)); err != nil {
+		return nil, err
+	}
+	return map[string]any{"width": width, "height": height}, nil
+}
+
+func (c *CDP) EmulateGeo(ctx context.Context, id string, lat, lon float64) (map[string]any, error) {
+	err := c.run(ctx, id, chromedp.ActionFunc(func(ctx context.Context) error {
+		return emulation.SetGeolocationOverride().WithLatitude(lat).WithLongitude(lon).WithAccuracy(1).Do(ctx)
+	}))
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{"lat": lat, "lon": lon}, nil
+}
+
+func (c *CDP) EmulateReset(ctx context.Context, id string) (map[string]any, error) {
+	err := c.run(ctx, id, chromedp.ActionFunc(func(ctx context.Context) error {
+		_ = emulation.ClearGeolocationOverride().Do(ctx)
+		return emulation.ClearDeviceMetricsOverride().Do(ctx)
+	}))
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{"reset": true}, nil
 }
 
 // Raw sends any CDP method by string via the executor — full coverage, no
