@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
@@ -363,7 +364,7 @@ func queryOptions(q QueryOpts) []chromedp.QueryOption {
 // without a wait condition — for verbs like wait --gone that supply their own.
 func byFor(selector string, q QueryOpts) []chromedp.QueryOption {
 	if q.By == "name" {
-		return []chromedp.QueryOption{chromedp.ByFunc(axNameQuery(selector, q.Role, q.Nth))}
+		return []chromedp.QueryOption{chromedp.ByFunc(axNameQuery(selector, q.Role, q.Nth, q.Match))}
 	}
 	return byOptions(q)
 }
@@ -374,11 +375,27 @@ func byFor(selector string, q QueryOpts) []chromedp.QueryOption {
 func query(selector string, q QueryOpts) []chromedp.QueryOption {
 	if q.By == "name" {
 		return []chromedp.QueryOption{
-			chromedp.ByFunc(axNameQuery(selector, q.Role, q.Nth)),
+			chromedp.ByFunc(axNameQuery(selector, q.Role, q.Nth, q.Match)),
 			waitOption(q.Wait),
 		}
 	}
 	return queryOptions(q)
+}
+
+// nameMatches compares an accessible name against the query per the match mode:
+// exact (default, trimmed equality), contains (case-insensitive substring), or
+// regex.
+func nameMatches(actual, want, mode string) bool {
+	a, w := strings.TrimSpace(actual), strings.TrimSpace(want)
+	switch mode {
+	case "contains":
+		return strings.Contains(strings.ToLower(a), strings.ToLower(w))
+	case "regex":
+		re, err := regexp.Compile(want)
+		return err == nil && re.MatchString(actual)
+	default: // "" | "exact"
+		return a == w
+	}
 }
 
 // axNameQuery is a chromedp custom selector that resolves elements by their ARIA
@@ -388,8 +405,7 @@ func query(selector string, q QueryOpts) []chromedp.QueryOption {
 // match never stalls the wait — and returns the Nth (1-based) match, or all
 // exposed matches when Nth is 0. (Accessibility.queryAXTree was tried first but
 // recomputes the whole subtree per poll and times out on huge DOMs like Workday.)
-func axNameQuery(name, role string, nth int) func(context.Context, *cdp.Node) ([]cdp.NodeID, error) {
-	want := strings.TrimSpace(name)
+func axNameQuery(name, role string, nth int, match string) func(context.Context, *cdp.Node) ([]cdp.NodeID, error) {
 	return func(ctx context.Context, _ *cdp.Node) ([]cdp.NodeID, error) {
 		nodes, err := accessibility.GetFullAXTree().Do(ctx)
 		if err != nil {
@@ -400,7 +416,7 @@ func axNameQuery(name, role string, nth int) func(context.Context, *cdp.Node) ([
 			if n.Ignored || n.BackendDOMNodeID == 0 {
 				continue // ignored = not exposed to accessibility (hidden) -> skip
 			}
-			if strings.TrimSpace(axString(n.Name)) != want {
+			if !nameMatches(axString(n.Name), name, match) {
 				continue
 			}
 			if role != "" && axString(n.Role) != role {

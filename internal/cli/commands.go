@@ -55,6 +55,7 @@ func (a *App) newRoot() *cobra.Command {
 	pf.StringVar(&a.waitFlag, "wait", d.Wait, "selector wait condition: visible|ready|enabled")
 	pf.StringVar(&a.roleFlag, "role", "", "with --by name: constrain to an ARIA role (button|link|textbox|…)")
 	pf.IntVar(&a.nthFlag, "nth", 0, "with --by name: pick the Nth (1-based) match among visible candidates")
+	pf.StringVar(&a.matchFlag, "match", "", "with --by name: name match mode: exact (default)|contains|regex")
 	pf.BoolVar(&a.noWait, "no-wait", false, "act immediately; fail fast instead of waiting for the element")
 	pf.BoolVar(&a.pierce, "pierce", false, "reach into shadow DOM / iframes (via DevTools search)")
 	pf.BoolVarP(&a.quiet, "quiet", "q", false, "suppress non-essential output")

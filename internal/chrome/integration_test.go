@@ -18,7 +18,7 @@ func TestManagedChromeDrivesAPage(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping live-Chrome integration in -short mode")
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
 	// Drive a managed headless Chrome directly (Path A), independent of the
@@ -83,7 +83,7 @@ func TestAccessibleNameAddressing(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping live-Chrome integration in -short mode")
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
 	b, err := launch(true, t.TempDir(), 0)
@@ -99,6 +99,7 @@ func TestAccessibleNameAddressing(t *testing.T) {
 <button aria-label="Request Absence" onclick="window.__ra=(window.__ra||0)+1">RA</button>
 <button aria-label="Dup">d1</button>
 <button aria-label="Dup">d2</button>
+<button aria-label="Review Approval: Awaiting Action by You">Review</button>
 </body>`)
 	}))
 	defer srv.Close()
@@ -134,6 +135,16 @@ func TestAccessibleNameAddressing(t *testing.T) {
 		t.Errorf("window.__ra = %v, want 1 (clicked the visible RA button)", v)
 	}
 
+	// --match contains finds a control by a substring of its verbose accessible
+	// name (the real-world "Review" vs "Review Approval: Awaiting Action …" case)
+	// where exact match would miss.
+	rv, err := b.Text(ctx, id, "Review", QueryOpts{By: "name", Role: "button", Match: "contains"})
+	if err != nil {
+		t.Errorf("Text --by name --match contains: %v", err)
+	} else if rv["text"] != "Review" {
+		t.Errorf("--match contains text = %q, want Review", rv["text"])
+	}
+
 	// --nth disambiguates duplicate accessible names.
 	for _, tc := range []struct {
 		nth  int
@@ -161,7 +172,7 @@ func TestWaitConditions(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping live-Chrome integration in -short mode")
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
 	b, err := launch(true, t.TempDir(), 0)

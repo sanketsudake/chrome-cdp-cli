@@ -22,6 +22,12 @@ type QueryOpts struct {
 	// the 1-based match among the visible candidates (0 = first).
 	Role string
 	Nth  int
+
+	// Match controls how the accessible name is compared (By == "name"):
+	// "" / "exact" (default), "contains" (case-insensitive substring), or
+	// "regex". Lets a caller click "Review" without knowing its verbose full
+	// accessible name.
+	Match string
 }
 
 // WaitCond is a condition for the `wait` verb: settle until the target URL
