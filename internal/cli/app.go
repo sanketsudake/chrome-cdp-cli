@@ -25,25 +25,25 @@ type App struct {
 	in      io.Reader // stdin for `session` NDJSON commands (defaults to os.Stdin)
 
 	// global flags
-	jsonOut    bool
-	targetFlag string
-	timeout    time.Duration
-	noLaunch   bool
-	profileDir string
-	port       int
-	byFlag     string
-	waitFlag   string
-	roleFlag   string
-	nthFlag    int
-	matchFlag  string
-	noWait     bool
+	jsonOut     bool
+	targetFlag  string
+	timeout     time.Duration
+	noLaunch    bool
+	profileDir  string
+	port        int
+	byFlag      string
+	waitFlag    string
+	roleFlag    string
+	nthFlag     int
+	matchFlag   string
+	noWait      bool
 	actWaitText string // --wait-text: after an action verb succeeds, wait until this text appears
-	pierce     bool
-	noDaemon   bool
-	quiet      bool
-	verbose    bool
-	noColor    bool
-	noInput    bool
+	pierce      bool
+	noDaemon    bool
+	quiet       bool
+	verbose     bool
+	noColor     bool
+	noInput     bool
 
 	// effective flag defaults (built-in unless main injects config+env via
 	// WithDefaults); read once when the flags are registered.
