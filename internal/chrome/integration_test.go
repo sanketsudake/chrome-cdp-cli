@@ -10,10 +10,25 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 	"time"
 )
+
+// tmpProfile returns a throwaway managed-Chrome profile dir. Unlike t.TempDir(),
+// its cleanup is best-effort: managed Chrome tears its profile down
+// asynchronously, so a strict RemoveAll can race the browser exit and fail with
+// "directory not empty" — which must not fail an otherwise-passing test.
+func tmpProfile(t *testing.T) string {
+	t.Helper()
+	dir, err := os.MkdirTemp("", "chrome-cdp-test-*")
+	if err != nil {
+		t.Fatalf("MkdirTemp: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	return dir
+}
 
 func TestManagedChromeDrivesAPage(t *testing.T) {
 	if testing.Short() {
@@ -24,7 +39,7 @@ func TestManagedChromeDrivesAPage(t *testing.T) {
 
 	// Drive a managed headless Chrome directly (Path A), independent of the
 	// connection ladder — so this runs even when the dev's real Chrome is up.
-	b, err := launch(true, t.TempDir(), 0)
+	b, err := launch(true, tmpProfile(t), 0)
 	if err != nil {
 		t.Skipf("cannot launch a managed headless Chrome here: %v", err)
 	}
@@ -87,7 +102,7 @@ func TestAccessibleNameAddressing(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	b, err := launch(true, t.TempDir(), 0)
+	b, err := launch(true, tmpProfile(t), 0)
 	if err != nil {
 		t.Skipf("cannot launch a managed headless Chrome here: %v", err)
 	}
@@ -178,7 +193,7 @@ func TestSnapStateAndAlerts(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	b, err := launch(true, t.TempDir(), 0)
+	b, err := launch(true, tmpProfile(t), 0)
 	if err != nil {
 		t.Skipf("cannot launch a managed headless Chrome here: %v", err)
 	}
@@ -265,7 +280,7 @@ func TestWaitConditions(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	b, err := launch(true, t.TempDir(), 0)
+	b, err := launch(true, tmpProfile(t), 0)
 	if err != nil {
 		t.Skipf("cannot launch a managed headless Chrome here: %v", err)
 	}
