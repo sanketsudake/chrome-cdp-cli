@@ -277,9 +277,11 @@ func TestWaitConditions(t *testing.T) {
 		fmt.Fprint(w, `<!doctype html><title>Wait</title><body>
 <div id="spinner">loading</div>
 <div id="late" style="display:none">ready</div>
+<div role="status" aria-live="polite" id="st"></div>
 <script>setTimeout(function(){
   document.getElementById('spinner').remove();
   document.getElementById('late').style.display='block';
+  document.getElementById('st').textContent='Saved successfully';
   location.hash='done';
 }, 300)</script>
 </body>`)
@@ -303,9 +305,11 @@ func TestWaitConditions(t *testing.T) {
 		{"gone", WaitCond{Gone: "#spinner"}, "gone:#spinner"},
 		{"visible", WaitCond{Visible: "#late"}, "visible:#late"},
 		{"url", WaitCond{URL: "#done"}, "url:#done"},
+		{"text", WaitCond{Text: "Saved"}, "text:Saved"},
+		{"stable", WaitCond{Stable: true}, "stable"},
 	}
 	for _, tc := range cases {
-		bctx, bcancel := context.WithTimeout(ctx, 5*time.Second)
+		bctx, bcancel := context.WithTimeout(ctx, 8*time.Second)
 		res, err := b.Wait(bctx, id, tc.cond)
 		bcancel()
 		if err != nil {

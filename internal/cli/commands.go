@@ -339,10 +339,11 @@ func (a *App) cmdEmulate() *cobra.Command {
 }
 
 func (a *App) cmdWait() *cobra.Command {
-	var url, visible, gone string
+	var url, visible, gone, text string
+	var stable bool
 	var forDur time.Duration
 	c := &cobra.Command{
-		Use: "wait", Short: "Wait for a URL change, an element (--visible/--gone), or a fixed --for duration",
+		Use: "wait", Short: "Wait for a condition: --url/--visible/--gone/--text/--stable, or a fixed --for",
 		RunE: func(*cobra.Command, []string) error {
 			// --for is a fixed sleep — no tab needed (e.g. settle after a redirect
 			// when no condition is cleaner).
@@ -351,11 +352,11 @@ func (a *App) cmdWait() *cobra.Command {
 				a.emitOK("wait", nil, map[string]any{"waited": "for:" + forDur.String()})
 				return nil
 			}
-			if url == "" && visible == "" && gone == "" {
-				a.emitErr("wait", result.CodeUsage, "wait needs one of --url, --visible, --gone, --for", nil)
+			if url == "" && visible == "" && gone == "" && text == "" && !stable {
+				a.emitErr("wait", result.CodeUsage, "wait needs one of --url, --visible, --gone, --text, --stable, --for", nil)
 				return nil
 			}
-			cond := chrome.WaitCond{URL: url, Visible: visible, Gone: gone, Query: a.queryOpts()}
+			cond := chrome.WaitCond{URL: url, Visible: visible, Gone: gone, Text: text, Stable: stable, Query: a.queryOpts()}
 			a.runResolved("wait", func(ctx context.Context, b chrome.Browser, id string) (any, error) {
 				return b.Wait(ctx, id, cond)
 			})
@@ -365,6 +366,8 @@ func (a *App) cmdWait() *cobra.Command {
 	c.Flags().StringVar(&url, "url", "", "wait until the target tab's URL contains this substring")
 	c.Flags().StringVar(&visible, "visible", "", "wait until this selector is visible")
 	c.Flags().StringVar(&gone, "gone", "", "wait until this selector is gone")
+	c.Flags().StringVar(&text, "text", "", "wait until the page (accessibility tree) contains this text, e.g. a 'Success' toast")
+	c.Flags().BoolVar(&stable, "stable", false, "wait until the accessibility tree stops changing (the page settled)")
 	c.Flags().DurationVar(&forDur, "for", 0, "wait a fixed duration (e.g. 3s) — a fallback; prefer a condition")
 	return c
 }

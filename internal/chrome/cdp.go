@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"hash/fnv"
 	"net"
 	"os"
 	"os/exec"
@@ -772,8 +773,12 @@ func (c *CDP) Wait(ctx context.Context, id string, cond WaitCond) (map[string]an
 		action, what = chromedp.WaitVisible(cond.Visible, byFor(cond.Visible, cond.Query)...), "visible:"+cond.Visible
 	case cond.Gone != "":
 		action, what = chromedp.WaitNotPresent(cond.Gone, byFor(cond.Gone, cond.Query)...), "gone:"+cond.Gone
+	case cond.Text != "":
+		action, what = waitText(cond.Text), "text:"+cond.Text
+	case cond.Stable:
+		action, what = waitStable(800*time.Millisecond), "stable"
 	default:
-		return nil, fmt.Errorf("wait needs one of --url, --visible, --gone, --for")
+		return nil, fmt.Errorf("wait needs one of --url, --visible, --gone, --text, --stable, --for")
 	}
 	if err := c.run(ctx, id, action); err != nil {
 		return nil, err
@@ -798,6 +803,70 @@ func waitURL(substr string) chromedp.Action {
 			}
 		}
 	})
+}
+
+// waitText polls the accessibility tree until some node's name contains substr
+// (case-insensitive) — e.g. a "Success" toast after a write, without a screenshot.
+func waitText(substr string) chromedp.Action {
+	want := strings.ToLower(strings.TrimSpace(substr))
+	return chromedp.ActionFunc(func(ctx context.Context) error {
+		t := time.NewTicker(200 * time.Millisecond)
+		defer t.Stop()
+		for {
+			if nodes, err := accessibility.GetFullAXTree().Do(ctx); err == nil {
+				for _, n := range nodes {
+					if strings.Contains(strings.ToLower(axString(n.Name)), want) {
+						return nil
+					}
+				}
+			}
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-t.C:
+			}
+		}
+	})
+}
+
+// waitStable returns once the accessibility tree has been unchanged for window —
+// "the page settled" — so a caller stops guessing fixed sleeps after an action.
+func waitStable(window time.Duration) chromedp.Action {
+	return chromedp.ActionFunc(func(ctx context.Context) error {
+		t := time.NewTicker(150 * time.Millisecond)
+		defer t.Stop()
+		var lastSig string
+		var lastChange time.Time
+		for {
+			if nodes, err := accessibility.GetFullAXTree().Do(ctx); err == nil {
+				sig := axSig(nodes)
+				now := time.Now()
+				if lastChange.IsZero() || sig != lastSig {
+					lastSig, lastChange = sig, now
+				} else if now.Sub(lastChange) >= window {
+					return nil
+				}
+			}
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-t.C:
+			}
+		}
+	})
+}
+
+// axSig is a cheap signature of the accessibility tree's shape (roles + names),
+// used to detect when it stops changing.
+func axSig(nodes []*accessibility.Node) string {
+	h := fnv.New64a()
+	for _, n := range nodes {
+		_, _ = h.Write([]byte(axString(n.Role)))
+		_, _ = h.Write([]byte{0})
+		_, _ = h.Write([]byte(axString(n.Name)))
+		_, _ = h.Write([]byte{0})
+	}
+	return strconv.FormatUint(h.Sum64(), 16)
 }
 
 // Raw sends any CDP method by string via the executor — full coverage, no

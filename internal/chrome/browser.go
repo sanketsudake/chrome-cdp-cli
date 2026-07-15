@@ -38,6 +38,8 @@ type WaitCond struct {
 	URL     string
 	Visible string
 	Gone    string
+	Text    string // until the accessibility tree contains this text (e.g. a "Success" toast)
+	Stable  bool   // until the accessibility tree stops changing (the page settled)
 	Query   QueryOpts
 }
 
