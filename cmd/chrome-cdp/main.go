@@ -43,8 +43,8 @@ func main() {
 			return s.SetCurrentTarget(v)
 		},
 	)
-	app.WithConnector(func(ctx context.Context, noLaunch bool, profileDir string) (chrome.Browser, error) {
-		return chrome.Connect(ctx, chrome.Options{PortFile: portFile, NoLaunch: noLaunch, ProfileDir: profileDir})
+	app.WithConnector(func(ctx context.Context, noLaunch bool, profileDir string, port int) (chrome.Browser, error) {
+		return chrome.Connect(ctx, chrome.Options{PortFile: portFile, NoLaunch: noLaunch, ProfileDir: profileDir, Port: port})
 	})
 
 	// os.Exit skips deferred calls, so tear the browser down explicitly first

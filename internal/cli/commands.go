@@ -44,10 +44,18 @@ func (a *App) newRoot() *cobra.Command {
 	pf.DurationVar(&a.timeout, "timeout", 30*time.Second, "max time to wait for the command")
 	pf.BoolVar(&a.noLaunch, "no-launch", false, "don't auto-launch a fallback Chrome")
 	pf.StringVar(&a.profileDir, "profile-dir", "", "managed-launch Chrome profile dir (else $CHROME_CDP_PROFILE or ~/.cache/chrome-cdp/profile)")
+	pf.IntVar(&a.port, "port", 0, "explicit Chrome debug port to attach to / launch with (0 = auto)")
+	pf.StringVar(&a.byFlag, "by", "css", "selector syntax: css|id|search|jspath|css-all")
+	pf.StringVar(&a.waitFlag, "wait", "visible", "selector wait condition: visible|ready|enabled")
+	pf.BoolVar(&a.noWait, "no-wait", false, "act immediately; fail fast instead of waiting for the element")
 	pf.BoolVarP(&a.quiet, "quiet", "q", false, "suppress non-essential output")
+	pf.BoolVarP(&a.verbose, "verbose", "v", false, "verbose diagnostics on stderr")
+	pf.BoolVar(&a.noColor, "no-color", false, "plain output (also honors $NO_COLOR)")
+	pf.BoolVar(&a.noInput, "no-input", false, "never prompt (the CLI is non-interactive already)")
 
 	root.AddCommand(
 		a.cmdList(), a.cmdUse(), a.cmdNav(), a.cmdEval(), a.cmdSnap(),
+		a.cmdHTML(), a.cmdText(), a.cmdValue(),
 		a.cmdClick(), a.cmdType(), a.cmdScreenshot(), a.cmdRaw(),
 		a.cmdDoctor(), a.cmdDaemon(), a.cmdExitCodes(), a.cmdVersion(),
 	)
@@ -59,9 +67,9 @@ func classifyActionErr(err error) string {
 	switch {
 	case strings.Contains(s, "deadline exceeded"), strings.Contains(s, "timeout"),
 		strings.Contains(s, "could not find node"), strings.Contains(s, "no node"):
-		return "target_timeout"
+		return result.CodeTargetTimeout
 	default:
-		return "cdp_error"
+		return result.CodeCDP
 	}
 }
 
@@ -148,11 +156,45 @@ func (a *App) cmdSnap() *cobra.Command {
 	}
 }
 
+func (a *App) cmdHTML() *cobra.Command {
+	var inner bool
+	c := &cobra.Command{
+		Use: "html [selector]", Short: "Outer (or --inner) HTML of the page or a selector", Args: cobra.MaximumNArgs(1),
+		RunE: a.targetAction("html", func(ctx context.Context, b chrome.Browser, id string, args []string) (any, error) {
+			sel := ""
+			if len(args) == 1 {
+				sel = args[0]
+			}
+			return b.HTML(ctx, id, sel, inner, a.queryOpts())
+		}),
+	}
+	c.Flags().BoolVar(&inner, "inner", false, "inner HTML instead of outer")
+	return c
+}
+
+func (a *App) cmdText() *cobra.Command {
+	return &cobra.Command{
+		Use: "text <selector>", Short: "Visible text of a selector", Args: cobra.ExactArgs(1),
+		RunE: a.targetAction("text", func(ctx context.Context, b chrome.Browser, id string, args []string) (any, error) {
+			return b.Text(ctx, id, args[0], a.queryOpts())
+		}),
+	}
+}
+
+func (a *App) cmdValue() *cobra.Command {
+	return &cobra.Command{
+		Use: "value <selector>", Short: "Value of a form field", Args: cobra.ExactArgs(1),
+		RunE: a.targetAction("value", func(ctx context.Context, b chrome.Browser, id string, args []string) (any, error) {
+			return b.Value(ctx, id, args[0], a.queryOpts())
+		}),
+	}
+}
+
 func (a *App) cmdClick() *cobra.Command {
 	return &cobra.Command{
 		Use: "click <selector>", Short: "Click an element (auto-waits)", Args: cobra.ExactArgs(1),
 		RunE: a.targetAction("click", func(ctx context.Context, b chrome.Browser, id string, args []string) (any, error) {
-			return b.Click(ctx, id, args[0])
+			return b.Click(ctx, id, args[0], a.queryOpts())
 		}),
 	}
 }
@@ -161,7 +203,7 @@ func (a *App) cmdType() *cobra.Command {
 	return &cobra.Command{
 		Use: "type <selector> <text>", Short: "Type text via real keystrokes", Args: cobra.ExactArgs(2),
 		RunE: a.targetAction("type", func(ctx context.Context, b chrome.Browser, id string, args []string) (any, error) {
-			return b.Type(ctx, id, args[0], args[1])
+			return b.Type(ctx, id, args[0], args[1], a.queryOpts())
 		}),
 	}
 }

@@ -16,18 +16,33 @@ const (
 	ExitDaemon     = 6 // daemon not running / already running / stale lock
 )
 
+// Stable error.code strings emitted in the envelope's error object. Named so
+// call sites don't scatter bare string literals.
+const (
+	CodeGeneric        = "generic"
+	CodeUsage          = "usage"
+	CodeConnection     = "connection_failed"
+	CodeNotDebug       = "not_debug_enabled"
+	CodeTargetTimeout  = "target_timeout"
+	CodeTargetNotFound = "target_not_found"
+	CodeAmbiguous      = "ambiguous_target"
+	CodeNoTarget       = "no_current_target"
+	CodeCDP            = "cdp_error"
+	CodeDaemon         = "daemon_error"
+)
+
 // codeToExit maps stable error.code strings to their process exit code.
 var codeToExit = map[string]int{
-	"generic":           ExitGeneric,
-	"usage":             ExitUsage,
-	"connection_failed": ExitConnection,
-	"not_debug_enabled": ExitConnection,
-	"target_timeout":    ExitTarget,
-	"target_not_found":  ExitTarget,
-	"ambiguous_target":  ExitTarget,
-	"no_current_target": ExitTarget,
-	"cdp_error":         ExitCDP,
-	"daemon_error":      ExitDaemon,
+	CodeGeneric:        ExitGeneric,
+	CodeUsage:          ExitUsage,
+	CodeConnection:     ExitConnection,
+	CodeNotDebug:       ExitConnection,
+	CodeTargetTimeout:  ExitTarget,
+	CodeTargetNotFound: ExitTarget,
+	CodeAmbiguous:      ExitTarget,
+	CodeNoTarget:       ExitTarget,
+	CodeCDP:            ExitCDP,
+	CodeDaemon:         ExitDaemon,
 }
 
 // ExitCodeDoc documents one exit code for `chrome-cdp exit-codes`.

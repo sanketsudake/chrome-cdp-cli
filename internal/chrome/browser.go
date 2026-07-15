@@ -10,6 +10,13 @@ import (
 	"github.com/sanketsudake/chrome-cdp-cli/internal/target"
 )
 
+// QueryOpts controls how a selector is interpreted (By) and what state to wait
+// for (Wait) on selector-taking verbs.
+type QueryOpts struct {
+	By   string // css (default) | id | search | jspath | css-all
+	Wait string // visible (default) | ready | enabled
+}
+
 // Browser is the set of Chrome operations the CLI commands need. The real
 // implementation is CDP (chromedp-backed); tests use a fake.
 type Browser interface {
@@ -17,8 +24,11 @@ type Browser interface {
 	Navigate(ctx context.Context, targetID, url string) (map[string]any, error)
 	Eval(ctx context.Context, targetID, expr string) (any, error)
 	Snapshot(ctx context.Context, targetID string) (any, error)
-	Click(ctx context.Context, targetID, selector string) (map[string]any, error)
-	Type(ctx context.Context, targetID, selector, text string) (map[string]any, error)
+	Click(ctx context.Context, targetID, selector string, q QueryOpts) (map[string]any, error)
+	Type(ctx context.Context, targetID, selector, text string, q QueryOpts) (map[string]any, error)
+	HTML(ctx context.Context, targetID, selector string, inner bool, q QueryOpts) (map[string]any, error)
+	Text(ctx context.Context, targetID, selector string, q QueryOpts) (map[string]any, error)
+	Value(ctx context.Context, targetID, selector string, q QueryOpts) (map[string]any, error)
 	Screenshot(ctx context.Context, targetID string) ([]byte, error)
 	Raw(ctx context.Context, targetID, method string, params json.RawMessage) (any, error)
 	Close() error

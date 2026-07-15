@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"time"
 
 	"github.com/sanketsudake/chrome-cdp-cli/internal/chrome"
@@ -27,14 +28,21 @@ type App struct {
 	timeout    time.Duration
 	noLaunch   bool
 	profileDir string
+	port       int
+	byFlag     string
+	waitFlag   string
+	noWait     bool
 	quiet      bool
+	verbose    bool
+	noColor    bool
+	noInput    bool
 
 	// injected sticky-target source (nil in tests => no current target)
 	currentTarget func() string
 	setCurrent    func(string) error
 
 	// lazy Browser connector (nil in tests, where browser is injected directly)
-	connect func(ctx context.Context, noLaunch bool, profileDir string) (chrome.Browser, error)
+	connect func(ctx context.Context, noLaunch bool, profileDir string, port int) (chrome.Browser, error)
 
 	start    time.Time
 	exitCode int
@@ -54,7 +62,7 @@ func (a *App) WithStickyTarget(get func() string, set func(string) error) *App {
 
 // WithConnector wires a lazy Browser connector (used by main()); it is invoked
 // only when a command actually needs Chrome.
-func (a *App) WithConnector(fn func(ctx context.Context, noLaunch bool, profileDir string) (chrome.Browser, error)) *App {
+func (a *App) WithConnector(fn func(ctx context.Context, noLaunch bool, profileDir string, port int) (chrome.Browser, error)) *App {
 	a.connect = fn
 	return a
 }
@@ -67,7 +75,7 @@ func (a *App) getBrowser(ctx context.Context) (chrome.Browser, *result.Err) {
 	if a.connect == nil {
 		return nil, &result.Err{Code: "connection_failed", Message: "no browser configured"}
 	}
-	b, err := a.connect(ctx, a.noLaunch, a.profileDir)
+	b, err := a.connect(ctx, a.noLaunch, a.profileDir, a.port)
 	if err != nil {
 		code := "connection_failed"
 		var ce *chrome.ConnectError
@@ -98,7 +106,17 @@ func (a *App) Execute(args ...string) int {
 }
 
 func (a *App) ctx() (context.Context, context.CancelFunc) {
-	return context.WithTimeout(context.Background(), a.timeout)
+	t := a.timeout
+	if a.noWait && t > time.Second {
+		// --no-wait: act immediately, failing fast rather than waiting out --timeout.
+		t = time.Second
+	}
+	return context.WithTimeout(context.Background(), t)
+}
+
+// queryOpts builds the selector-syntax / wait options from the global flags.
+func (a *App) queryOpts() chrome.QueryOpts {
+	return chrome.QueryOpts{By: a.byFlag, Wait: a.waitFlag}
 }
 
 // Close tears down a Browser that this App lazily connected (no-op for an
@@ -171,12 +189,21 @@ func (a *App) emitErr(command, code, msg string, details map[string]any) {
 	})
 }
 
+// colorless reports whether plain (symbol-free) output is requested.
+func (a *App) colorless() bool {
+	return a.noColor || os.Getenv("NO_COLOR") != ""
+}
+
 // renderHuman writes a brief human-readable rendering (result to stdout,
 // errors to stderr), per the clig.dev contract.
 func (a *App) renderHuman(env result.Envelope) {
+	okMark, errMark := "✓", "✗"
+	if a.colorless() {
+		okMark, errMark = "OK:", "ERR:"
+	}
 	if !env.OK {
 		if !a.quiet {
-			fmt.Fprintf(a.err, "✗ %s\n", env.Error.Message)
+			fmt.Fprintf(a.err, "%s %s\n", errMark, env.Error.Message)
 		}
 		return
 	}
@@ -188,9 +215,9 @@ func (a *App) renderHuman(env result.Envelope) {
 			}
 			return
 		}
-		fmt.Fprintf(a.out, "✓ %s\n", oneLine(res))
+		fmt.Fprintf(a.out, "%s %s\n", okMark, oneLine(res))
 	default:
-		fmt.Fprintf(a.out, "✓ %v\n", env.Result)
+		fmt.Fprintf(a.out, "%s %v\n", okMark, env.Result)
 	}
 }
 
@@ -204,7 +231,7 @@ func short(id string) string {
 // oneLine renders a result map as a single human-mode line, using the first
 // present key in priority order.
 func oneLine(m map[string]any) string {
-	for _, k := range []string{"url", "value", "path", "clicked", "typed"} {
+	for _, k := range []string{"url", "value", "text", "html", "path", "clicked", "typed"} {
 		if v, ok := m[k]; ok {
 			return fmt.Sprintf("%s: %v", k, v)
 		}

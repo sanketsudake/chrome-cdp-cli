@@ -25,11 +25,20 @@ func (f *fakeBrowser) Eval(context.Context, string, string) (any, error) {
 	return map[string]any{"value": 2}, nil
 }
 func (f *fakeBrowser) Snapshot(context.Context, string) (any, error) { return map[string]any{}, nil }
-func (f *fakeBrowser) Click(context.Context, string, string) (map[string]any, error) {
+func (f *fakeBrowser) Click(context.Context, string, string, chrome.QueryOpts) (map[string]any, error) {
 	return map[string]any{"clicked": true}, nil
 }
-func (f *fakeBrowser) Type(context.Context, string, string, string) (map[string]any, error) {
+func (f *fakeBrowser) Type(context.Context, string, string, string, chrome.QueryOpts) (map[string]any, error) {
 	return map[string]any{"typed": true}, nil
+}
+func (f *fakeBrowser) HTML(context.Context, string, string, bool, chrome.QueryOpts) (map[string]any, error) {
+	return map[string]any{"html": "<div></div>"}, nil
+}
+func (f *fakeBrowser) Text(context.Context, string, string, chrome.QueryOpts) (map[string]any, error) {
+	return map[string]any{"text": "hello"}, nil
+}
+func (f *fakeBrowser) Value(context.Context, string, string, chrome.QueryOpts) (map[string]any, error) {
+	return map[string]any{"value": "v"}, nil
 }
 func (f *fakeBrowser) Screenshot(context.Context, string) ([]byte, error) {
 	return []byte("PNGDATA"), nil

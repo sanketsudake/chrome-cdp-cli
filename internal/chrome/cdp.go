@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"sync"
 	"time"
 
@@ -26,6 +27,7 @@ import (
 type Options struct {
 	PortFile   string // override DevToolsActivePort location (else OS candidates)
 	ProfileDir string // managed-launch profile dir (else CHROME_CDP_PROFILE / default)
+	Port       int    // explicit debug port to attach to / launch with (0 = auto)
 	NoLaunch   bool   // don't fall back to launching a managed Chrome
 	Headless   bool   // headless for the managed-launch fallback (tests use this)
 }
@@ -84,21 +86,24 @@ func newCDP(managed bool, alloc context.Context, allocCancel context.CancelFunc,
 // instruct / launch) is delegated to the tested browser.DecideConnection so
 // there is exactly one authored copy of the ladder.
 func Connect(_ context.Context, opts Options) (*CDP, error) {
-	var portFileWS string
-	if pf := browser.FindPortFile(opts.PortFile); pf != "" {
+	// An explicit --port takes precedence over the DevToolsActivePort file.
+	var endpoint string
+	if opts.Port != 0 {
+		endpoint = fmt.Sprintf("http://127.0.0.1:%d", opts.Port)
+	} else if pf := browser.FindPortFile(opts.PortFile); pf != "" {
 		if ws, err := browser.WSURLFromPortFile(pf); err == nil {
-			portFileWS = ws
+			endpoint = ws
 		}
 	}
 	probe := browser.Probe{
-		PortFileWS:    portFileWS,
-		WSReachable:   portFileWS != "" && Reachable(portFileWS),
+		PortFileWS:    endpoint,
+		WSReachable:   endpoint != "" && Reachable(endpoint),
 		ChromeRunning: chromeRunning(),
 		NoLaunch:      opts.NoLaunch,
 	}
 	switch browser.DecideConnection(probe) {
 	case browser.Attach:
-		return attach(portFileWS)
+		return attach(endpoint)
 	case browser.InstructToggle:
 		return nil, &ConnectError{
 			Code:    "not_debug_enabled",
@@ -110,7 +115,7 @@ func Connect(_ context.Context, opts Options) (*CDP, error) {
 			Message: "no debug-enabled Chrome found and --no-launch is set — enable chrome://inspect/#remote-debugging or drop --no-launch",
 		}
 	default: // Launch
-		return launch(opts.Headless, opts.ProfileDir)
+		return launch(opts.Headless, opts.ProfileDir, opts.Port)
 	}
 }
 
@@ -119,7 +124,7 @@ func attach(ws string) (*CDP, error) {
 	return startBase(false, alloc, allocCancel, "attach to "+ws)
 }
 
-func launch(headless bool, profileDir string) (*CDP, error) {
+func launch(headless bool, profileDir string, port int) (*CDP, error) {
 	// A dedicated, persistent profile so managed-Chrome logins survive across
 	// runs (rather than chromedp's default ephemeral temp dir).
 	dir := resolveProfileDir(profileDir)
@@ -128,6 +133,9 @@ func launch(headless bool, profileDir string) (*CDP, error) {
 
 	execOpts := append([]chromedp.ExecAllocatorOption{}, chromedp.DefaultExecAllocatorOptions[:]...)
 	execOpts = append(execOpts, chromedp.UserDataDir(dir))
+	if port != 0 {
+		execOpts = append(execOpts, chromedp.Flag("remote-debugging-port", strconv.Itoa(port)))
+	}
 	if !headless {
 		execOpts = append(execOpts, chromedp.Flag("headless", false))
 	}
@@ -308,18 +316,79 @@ func axString(v *accessibility.Value) string {
 	return string(v.Value)
 }
 
-func (c *CDP) Click(ctx context.Context, id, selector string) (map[string]any, error) {
-	if err := c.run(ctx, id, chromedp.Click(selector, chromedp.NodeVisible)); err != nil {
+// queryOptions maps QueryOpts to chromedp query options (selector syntax + the
+// node state to wait for).
+func queryOptions(q QueryOpts) []chromedp.QueryOption {
+	var opts []chromedp.QueryOption
+	switch q.By {
+	case "id":
+		opts = append(opts, chromedp.ByID)
+	case "search":
+		opts = append(opts, chromedp.BySearch)
+	case "jspath":
+		opts = append(opts, chromedp.ByJSPath)
+	case "css-all":
+		opts = append(opts, chromedp.ByQueryAll)
+	default:
+		opts = append(opts, chromedp.ByQuery)
+	}
+	switch q.Wait {
+	case "ready":
+		opts = append(opts, chromedp.NodeReady)
+	case "enabled":
+		opts = append(opts, chromedp.NodeEnabled)
+	default:
+		opts = append(opts, chromedp.NodeVisible)
+	}
+	return opts
+}
+
+func (c *CDP) Click(ctx context.Context, id, selector string, q QueryOpts) (map[string]any, error) {
+	if err := c.run(ctx, id, chromedp.Click(selector, queryOptions(q)...)); err != nil {
 		return nil, err
 	}
 	return map[string]any{"clicked": selector}, nil
 }
 
-func (c *CDP) Type(ctx context.Context, id, selector, text string) (map[string]any, error) {
-	if err := c.run(ctx, id, chromedp.SendKeys(selector, text, chromedp.NodeVisible)); err != nil {
+func (c *CDP) Type(ctx context.Context, id, selector, text string, q QueryOpts) (map[string]any, error) {
+	if err := c.run(ctx, id, chromedp.SendKeys(selector, text, queryOptions(q)...)); err != nil {
 		return nil, err
 	}
 	return map[string]any{"typed": selector}, nil
+}
+
+func (c *CDP) HTML(ctx context.Context, id, selector string, inner bool, q QueryOpts) (map[string]any, error) {
+	sel := selector
+	if sel == "" {
+		sel = "html" // whole document
+	}
+	var html string
+	var action chromedp.Action
+	if inner {
+		action = chromedp.InnerHTML(sel, &html, queryOptions(q)...)
+	} else {
+		action = chromedp.OuterHTML(sel, &html, queryOptions(q)...)
+	}
+	if err := c.run(ctx, id, action); err != nil {
+		return nil, err
+	}
+	return map[string]any{"html": html}, nil
+}
+
+func (c *CDP) Text(ctx context.Context, id, selector string, q QueryOpts) (map[string]any, error) {
+	var text string
+	if err := c.run(ctx, id, chromedp.Text(selector, &text, queryOptions(q)...)); err != nil {
+		return nil, err
+	}
+	return map[string]any{"text": text}, nil
+}
+
+func (c *CDP) Value(ctx context.Context, id, selector string, q QueryOpts) (map[string]any, error) {
+	var val string
+	if err := c.run(ctx, id, chromedp.Value(selector, &val, queryOptions(q)...)); err != nil {
+		return nil, err
+	}
+	return map[string]any{"value": val}, nil
 }
 
 func (c *CDP) Screenshot(ctx context.Context, id string) ([]byte, error) {

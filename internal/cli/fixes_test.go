@@ -8,8 +8,55 @@ import (
 	"encoding/json"
 	"testing"
 
+	"github.com/sanketsudake/chrome-cdp-cli/internal/chrome"
 	"github.com/sanketsudake/chrome-cdp-cli/internal/target"
 )
+
+// queryCapture records the QueryOpts passed to Click.
+type queryCapture struct {
+	fakeBrowser
+	gotQ chrome.QueryOpts
+}
+
+func (q *queryCapture) Click(_ context.Context, _, _ string, opts chrome.QueryOpts) (map[string]any, error) {
+	q.gotQ = opts
+	return map[string]any{"clicked": true}, nil
+}
+
+// --by and --wait thread through to the selector verb.
+func TestByAndWaitFlagsThread(t *testing.T) {
+	b := &queryCapture{fakeBrowser: fakeBrowser{tabs: []target.Info{{ID: "aa11", Title: "A", URL: "u"}}}}
+	_, _, code := run(t, b, "click", "#x", "--target", "aa11", "--by", "search", "--wait", "ready", "--json")
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0", code)
+	}
+	if b.gotQ.By != "search" || b.gotQ.Wait != "ready" {
+		t.Errorf("query opts = %+v, want {By:search Wait:ready}", b.gotQ)
+	}
+}
+
+// html/text/value produce their result key.
+func TestExtractVerbs(t *testing.T) {
+	b := &fakeBrowser{tabs: []target.Info{{ID: "aa11", Title: "A", URL: "u"}}}
+	cases := []struct {
+		args []string
+		key  string
+	}{
+		{[]string{"html", "--target", "aa11", "--json"}, "html"},
+		{[]string{"text", "#x", "--target", "aa11", "--json"}, "text"},
+		{[]string{"value", "#x", "--target", "aa11", "--json"}, "value"},
+	}
+	for _, c := range cases {
+		env, _, code := run(t, b, c.args...)
+		if code != 0 {
+			t.Errorf("%v exit = %d, want 0", c.args, code)
+			continue
+		}
+		if _, ok := env["result"].(map[string]any)[c.key]; !ok {
+			t.Errorf("%v: result missing key %q", c.args, c.key)
+		}
+	}
+}
 
 // rawCapture records what Raw was called with and returns a fixed value.
 type rawCapture struct {

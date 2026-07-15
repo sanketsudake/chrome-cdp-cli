@@ -5,6 +5,17 @@ import (
 	"testing"
 )
 
+func TestQueryOptions(t *testing.T) {
+	// Every By/Wait branch yields exactly one selector-syntax + one node-state option.
+	for _, by := range []string{"", "css", "id", "search", "jspath", "css-all"} {
+		for _, wait := range []string{"", "visible", "ready", "enabled"} {
+			if got := queryOptions(QueryOpts{By: by, Wait: wait}); len(got) != 2 {
+				t.Errorf("queryOptions(by=%q, wait=%q) returned %d options, want 2", by, wait, len(got))
+			}
+		}
+	}
+}
+
 func TestResolveProfileDir(t *testing.T) {
 	t.Setenv("CHROME_CDP_PROFILE", "")
 	t.Setenv("XDG_CACHE_HOME", "")

@@ -29,10 +29,14 @@ chrome-cdp list                     # list open tabs (id, title, url)
 chrome-cdp use url:github           # set the sticky current tab
 chrome-cdp snap                     # accessibility-tree snapshot (see the page)
 chrome-cdp nav https://example.com  # navigate (waits for load)
+chrome-cdp html "#main"             # outer HTML of a selector (or the page)
+chrome-cdp text ".title"            # visible text of a selector
 chrome-cdp click "#submit"          # click (auto-waits for the element)
+chrome-cdp click --by search "Sign in"   # match by DevTools text/XPath/CSS search
 chrome-cdp type "#q" "hello"        # type via real keystrokes
 chrome-cdp eval "document.title"    # evaluate JS
-chrome-cdp screenshot               # PNG -> ./screenshot-<timestamp>.png
+chrome-cdp screenshot               # PNG -> ./screenshot-<timestamp>.png (or -o -)
+chrome-cdp raw --list               # list the connected Chrome's CDP domains
 chrome-cdp raw Network.setCacheDisabled '{"cacheDisabled":true}'   # any CDP method
 ```
 
@@ -60,12 +64,11 @@ Failures use the same envelope with `"ok": false` and an `error{code,message,…
 
 ## Status
 
-**Implemented & tested:** the connection ladder + `DevToolsActivePort` reader, target-grammar resolution, the uniform envelope + exit-code contract, and commands `list`, `use`, `nav`, `snap`, `eval`, `click`, `type`, `screenshot`, `raw`, `doctor`, `daemon (status)`, `exit-codes`, `version`. Verified with unit tests, a golden output-contract test, an in-process + subprocess command-boundary suite, and an integration test that drives a real headless Chrome.
+**Implemented & tested:** the connection ladder + `DevToolsActivePort` reader, target-grammar resolution, the uniform envelope + exit-code contract, selector options (`--by`, `--wait`, `--no-wait`), the connection globals (`--port`, `--profile-dir`, `--no-launch`) and output globals (`--json`, `--no-color`, `-v`, `--no-input`, `--quiet`, `--timeout`), and commands `list`, `use`, `nav`, `snap`, `html`, `text`, `value`, `eval`, `click`, `type`, `screenshot`, `raw` (incl. `--browser`/`--list`), `doctor`, `daemon (status)`, `exit-codes`, `version`. Verified with unit tests, a golden output-contract test, an in-process + subprocess command-boundary suite, and an integration test that drives a real headless Chrome.
 
 **Deferred (next increments, per the spec):**
 - **Shared daemon** — commands currently connect per invocation ("direct-connect"). Without the daemon, attach mode may leave one stray helper tab and re-prompts "Allow" more often. The daemon (attach-and-hold) resolves both.
-- More verbs from the spec (`html`, `text`, `value`, `attr`, `cookie`, `console`, `network`, `wait`, `emulate`, `pdf`, `--frame`, `--pierce`, live observation).
-- Some universal globals from the spec: **`--by`** (selector syntax; verbs are CSS-only for now), **`--no-wait`/`--wait`**, and **`--port`** (connection is `DevToolsActivePort`-driven for now).
+- The remaining verbs from the spec: `attr`, `cookie`, `headers`, `console`, `network`, `mock`, `block`, `download`, `emulate`, `perm`, `pdf`, and `--frame`/`--pierce` (frame + shadow-DOM addressing), plus live observation streaming.
 - Richer error classification (action failures are currently mapped heuristically to `target/timeout` vs `cdp`).
 - goreleaser/Homebrew packaging, TOML config, shell completion.
 

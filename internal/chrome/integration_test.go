@@ -23,7 +23,7 @@ func TestManagedChromeDrivesAPage(t *testing.T) {
 
 	// Drive a managed headless Chrome directly (Path A), independent of the
 	// connection ladder — so this runs even when the dev's real Chrome is up.
-	b, err := launch(true, t.TempDir())
+	b, err := launch(true, t.TempDir(), 0)
 	if err != nil {
 		t.Skipf("cannot launch a managed headless Chrome here: %v", err)
 	}
