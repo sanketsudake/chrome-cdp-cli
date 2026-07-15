@@ -44,9 +44,13 @@ chrome-cdp text ".title"            # visible text of a selector
 chrome-cdp click "#submit"          # click (auto-waits for the element)
 chrome-cdp click --by search "Sign in"   # match by DevTools text/XPath/CSS search
 chrome-cdp click --by name "Request Absence" --role button   # match by ARIA accessible name
-chrome-cdp type "#q" "hello"        # type via real keystrokes
-chrome-cdp select "Time Type" "Project Plan Tasks > ShiftLeft: Qwiet" --role textbox  # drive a prompt/combobox/cascade
+chrome-cdp type "#q" "hello"        # type via real keystrokes (appends)
+chrome-cdp fill "#hours" "8"        # set a field, replacing its content (clears then types)
+chrome-cdp fill --by cell "Mon, 7/13" "8"   # a grid input by its column header
+chrome-cdp select "Time Type" "Category > Acme: Platform > Project > Time Entry" --role textbox  # prompt/combobox/cascade
+chrome-cdp click --by name "Approve" --role button --wait-text "Success"   # act, then confirm the toast
 chrome-cdp grid                     # read a table/grid as {headers, rows} (a11y)
+chrome-cdp value --all "input.hr"   # values of every match, as a list
 chrome-cdp scroll --dy 600          # scroll (or --to <sel> into view, --wheel for lazy grids)
 chrome-cdp eval "document.title"    # evaluate JS
 chrome-cdp wait --url "/dashboard"  # wait until the tab's URL settles (or --visible/--gone/--for)
@@ -65,6 +69,25 @@ printf '%s\n' \
   '["snap"]' \
   '["click","e42","--by","ref"]' | chrome-cdp session
 ```
+
+Filling a grid over one connection — cell-addressed `fill`s plus a single
+`value --all` read-back, no per-command process spawn:
+
+```sh
+printf '%s\n' \
+  '["fill","--by","cell","Mon, 7/13","8"]' \
+  '["fill","--by","cell","Tue, 7/14","8"]' \
+  '["fill","--by","cell","Wed, 7/15","8"]' \
+  '["value","--all","input[data-automation-id=numericInput]"]' \
+  '["click","--by","name","Save and Close","--role","button","--wait-text","saved"]' \
+  | chrome-cdp session
+```
+
+Addressing on a **backgrounded tab**: `--by css`/`id`/`search` resolve via
+`querySelector` and work regardless; `--by name`/`ref`/`cell` use the a11y tree,
+which Chrome throttles on a tab it can't foreground — a timeout there returns
+`tab_hidden: true` so you know to foreground Chrome (name-addressing also falls
+back to a DOM accessible-name match when the tab is hidden).
 
 Target a tab with `--target <idprefix|url:<s>|title:<s>|@N>`, or set it once with `use`.
 Add `--json` for machine-readable output; branch on the exit code (`chrome-cdp exit-codes`).
@@ -113,7 +136,7 @@ Shell completion is built in (cobra): `chrome-cdp completion bash|zsh|fish|power
 ## Status
 
 **Implemented & tested:** the connection ladder + `DevToolsActivePort` reader, target-grammar resolution, the uniform envelope + exit-code contract, selector options (`--by` incl.
-`name` = ARIA accessible-name addressing with `--role`/`--nth`, `ref` = snap-issued `e<id>` element refs, `--wait`, `--no-wait`), the connection globals (`--port`, `--profile-dir`, `--no-launch`) and output globals (`--json`, `--no-color`, `-v`, `--no-input`, `--quiet`, `--timeout`), and commands `list`, `use`, `nav`, `snap`, `html`, `text`, `value`, `eval`, `click`, `type`, `select` (prompt/combobox/cascade/native-`<select>`), `grid` (a11y table read), `scroll` (`--dy`/`--to`/`--wheel`), `attr` (get/list/set/rm), `screenshot`, `pdf`, `cookie` (list/set/rm/clear), `headers set`, `emulate` (viewport/geo/reset), `frame list`, `wait` (`--url`/`--visible`/`--gone`/`--for`), `session` (NDJSON batch over one held connection), `--pierce` (shadow-DOM/iframe piercing), `raw` (incl.
+`name` = ARIA accessible-name addressing with `--role`/`--nth` (with a DOM accessible-name fallback on a throttled hidden tab), `ref` = snap-issued `e<id>` element refs, `cell` = grid input by `[row|]column` header, `--wait`, `--no-wait`), the connection globals (`--port`, `--profile-dir`, `--no-launch`) and output globals (`--json`, `--no-color`, `-v`, `--no-input`, `--quiet`, `--timeout`), and commands `list`, `use`, `nav`, `snap`, `html`, `text`, `value`, `eval`, `click`, `type`, `fill` (clear-then-set), `select` (prompt/combobox/cascade/native-`<select>`), `grid` (a11y table read), `value --all`, `scroll` (`--dy`/`--to`/`--wheel`), `--wait-text` (act-and-confirm on action verbs), `attr` (get/list/set/rm), `screenshot`, `pdf`, `cookie` (list/set/rm/clear), `headers set`, `emulate` (viewport/geo/reset), `frame list`, `wait` (`--url`/`--visible`/`--gone`/`--for`), `session` (NDJSON batch over one held connection), `--pierce` (shadow-DOM/iframe piercing), `raw` (incl.
 `--browser`/`--list`), `doctor`, `daemon` (start/stop/status), `exit-codes`, `version` (and `--version`).
 Plus an optional TOML config file (flags > `CHROME_CDP_*` env > config > defaults), shell completion (`completion`), and goreleaser + Homebrew-cask packaging with a CI matrix (Linux/macOS) and a tag-driven release workflow.
 Verified with unit tests, a golden output-contract test, an in-process + subprocess command-boundary suite, RPC round-trip tests for the daemon, and an integration test that drives a real headless Chrome.
