@@ -183,6 +183,8 @@ func (s *server) dispatch(ctx context.Context, method string, args []json.RawMes
 		return b.EmulateReset(ctx, argStr(args, 0))
 	case "Frames":
 		return b.Frames(ctx, argStr(args, 0))
+	case "Wait":
+		return b.Wait(ctx, argStr(args, 0), argWait(args, 1))
 	case "Screenshot":
 		return b.Screenshot(ctx, argStr(args, 0))
 	case "PDF":
@@ -237,6 +239,13 @@ func argF64(a []json.RawMessage, i int) float64 {
 }
 func argQ(a []json.RawMessage, i int) chrome.QueryOpts {
 	var v chrome.QueryOpts
+	if i < len(a) {
+		_ = json.Unmarshal(a[i], &v)
+	}
+	return v
+}
+func argWait(a []json.RawMessage, i int) chrome.WaitCond {
+	var v chrome.WaitCond
 	if i < len(a) {
 		_ = json.Unmarshal(a[i], &v)
 	}
@@ -405,6 +414,10 @@ func (r *remoteBrowser) EmulateReset(ctx context.Context, id string) (map[string
 func (r *remoteBrowser) Frames(ctx context.Context, id string) (any, error) {
 	var out any
 	return out, r.c.call(ctx, "Frames", &out, id)
+}
+func (r *remoteBrowser) Wait(ctx context.Context, id string, cond chrome.WaitCond) (map[string]any, error) {
+	var out map[string]any
+	return out, r.c.call(ctx, "Wait", &out, id, cond)
 }
 func (r *remoteBrowser) Screenshot(ctx context.Context, id string) ([]byte, error) {
 	var out []byte

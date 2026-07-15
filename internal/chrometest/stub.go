@@ -79,6 +79,9 @@ func (StubBrowser) EmulateReset(context.Context, string) (map[string]any, error)
 func (StubBrowser) Frames(context.Context, string) (any, error) {
 	return map[string]any{"frames": []any{}}, nil
 }
+func (StubBrowser) Wait(context.Context, string, chrome.WaitCond) (map[string]any, error) {
+	return map[string]any{"waited": "ok"}, nil
+}
 func (StubBrowser) Raw(context.Context, string, string, json.RawMessage) (any, error) {
 	return map[string]any{}, nil
 }

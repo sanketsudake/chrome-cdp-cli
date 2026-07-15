@@ -80,6 +80,27 @@ func TestFrameList(t *testing.T) {
 	}
 }
 
+// wait --for is a fixed sleep needing no tab; it emits its own envelope.
+func TestWaitForDuration(t *testing.T) {
+	b := &fakeBrowser{tabs: []target.Info{{ID: "aa11", Title: "A", URL: "u"}}}
+	env, _, code := run(t, b, "wait", "--for", "10ms", "--json")
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0", code)
+	}
+	if got := env["result"].(map[string]any)["waited"]; got != "for:10ms" {
+		t.Errorf("waited = %v, want for:10ms", got)
+	}
+}
+
+// wait with no condition is a usage error.
+func TestWaitNoConditionIsUsage(t *testing.T) {
+	b := &fakeBrowser{tabs: []target.Info{{ID: "aa11", Title: "A", URL: "u"}}}
+	_, _, code := run(t, b, "wait", "--target", "aa11", "--json")
+	if code != 2 {
+		t.Errorf("exit = %d, want 2 (usage)", code)
+	}
+}
+
 func TestPierceFlagThreads(t *testing.T) {
 	b := &queryCapture{fakeBrowser: fakeBrowser{tabs: []target.Info{{ID: "aa11", Title: "A", URL: "u"}}}}
 	_, _, code := run(t, b, "click", "#x", "--target", "aa11", "--pierce", "--json")

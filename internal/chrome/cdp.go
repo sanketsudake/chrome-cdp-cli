@@ -334,8 +334,8 @@ func waitOption(wait string) chromedp.QueryOption {
 	}
 }
 
-func queryOptions(q QueryOpts) []chromedp.QueryOption {
-	var opts []chromedp.QueryOption
+// byOptions maps --by to the chromedp addressing option (no wait condition).
+func byOptions(q QueryOpts) []chromedp.QueryOption {
 	by := q.By
 	if q.Pierce && (by == "" || by == "css") {
 		// DevTools search matches across shadow DOM and iframes.
@@ -343,17 +343,29 @@ func queryOptions(q QueryOpts) []chromedp.QueryOption {
 	}
 	switch by {
 	case "id":
-		opts = append(opts, chromedp.ByID)
+		return []chromedp.QueryOption{chromedp.ByID}
 	case "search":
-		opts = append(opts, chromedp.BySearch)
+		return []chromedp.QueryOption{chromedp.BySearch}
 	case "jspath":
-		opts = append(opts, chromedp.ByJSPath)
+		return []chromedp.QueryOption{chromedp.ByJSPath}
 	case "css-all":
-		opts = append(opts, chromedp.ByQueryAll)
+		return []chromedp.QueryOption{chromedp.ByQueryAll}
 	default:
-		opts = append(opts, chromedp.ByQuery)
+		return []chromedp.QueryOption{chromedp.ByQuery}
 	}
-	return append(opts, waitOption(q.Wait))
+}
+
+func queryOptions(q QueryOpts) []chromedp.QueryOption {
+	return append(byOptions(q), waitOption(q.Wait))
+}
+
+// byFor returns the addressing option for a selector (accessible-name aware),
+// without a wait condition — for verbs like wait --gone that supply their own.
+func byFor(selector string, q QueryOpts) []chromedp.QueryOption {
+	if q.By == "name" {
+		return []chromedp.QueryOption{chromedp.ByFunc(axNameQuery(selector, q.Role, q.Nth))}
+	}
+	return byOptions(q)
 }
 
 // query builds the chromedp query options for a selector. By=="name" resolves by
@@ -641,6 +653,46 @@ func (c *CDP) Frames(ctx context.Context, id string) (any, error) {
 	}
 	walk(tree)
 	return map[string]any{"frames": frames}, nil
+}
+
+// Wait blocks until a condition holds: the target URL contains cond.URL, or a
+// selector becomes visible / is gone. The caller's context deadline bounds it.
+func (c *CDP) Wait(ctx context.Context, id string, cond WaitCond) (map[string]any, error) {
+	var action chromedp.Action
+	var what string
+	switch {
+	case cond.URL != "":
+		action, what = waitURL(cond.URL), "url:"+cond.URL
+	case cond.Visible != "":
+		action, what = chromedp.WaitVisible(cond.Visible, byFor(cond.Visible, cond.Query)...), "visible:"+cond.Visible
+	case cond.Gone != "":
+		action, what = chromedp.WaitNotPresent(cond.Gone, byFor(cond.Gone, cond.Query)...), "gone:"+cond.Gone
+	default:
+		return nil, fmt.Errorf("wait needs one of --url, --visible, --gone, --for")
+	}
+	if err := c.run(ctx, id, action); err != nil {
+		return nil, err
+	}
+	return map[string]any{"waited": what}, nil
+}
+
+// waitURL polls location.href until it contains substr (or the context ends).
+func waitURL(substr string) chromedp.Action {
+	return chromedp.ActionFunc(func(ctx context.Context) error {
+		t := time.NewTicker(200 * time.Millisecond)
+		defer t.Stop()
+		for {
+			var href string
+			if err := chromedp.Evaluate("location.href", &href).Do(ctx); err == nil && strings.Contains(href, substr) {
+				return nil
+			}
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-t.C:
+			}
+		}
+	})
 }
 
 // Raw sends any CDP method by string via the executor — full coverage, no

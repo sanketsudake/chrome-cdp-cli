@@ -24,6 +24,17 @@ type QueryOpts struct {
 	Nth  int
 }
 
+// WaitCond is a condition for the `wait` verb: settle until the target URL
+// contains URL, or a selector becomes Visible / is Gone. Exactly one is set;
+// Query carries the selector options for Visible/Gone. A fixed --for duration is
+// handled in the CLI (no browser round-trip needed).
+type WaitCond struct {
+	URL     string
+	Visible string
+	Gone    string
+	Query   QueryOpts
+}
+
 // Browser is the set of Chrome operations the CLI commands need. The real
 // implementation is CDP (chromedp-backed); tests use a fake.
 type Browser interface {
@@ -45,6 +56,7 @@ type Browser interface {
 	EmulateGeo(ctx context.Context, targetID string, lat, lon float64) (map[string]any, error)
 	EmulateReset(ctx context.Context, targetID string) (map[string]any, error)
 	Frames(ctx context.Context, targetID string) (any, error)
+	Wait(ctx context.Context, targetID string, cond WaitCond) (map[string]any, error)
 	Screenshot(ctx context.Context, targetID string) ([]byte, error)
 	PDF(ctx context.Context, targetID string) ([]byte, error)
 	CookieList(ctx context.Context, targetID string) (any, error)

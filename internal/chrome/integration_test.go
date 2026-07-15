@@ -156,3 +156,68 @@ func TestAccessibleNameAddressing(t *testing.T) {
 		t.Error("expected --by css to stall on the hidden-first button, but it succeeded")
 	}
 }
+
+func TestWaitConditions(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping live-Chrome integration in -short mode")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	b, err := launch(true, t.TempDir(), 0)
+	if err != nil {
+		t.Skipf("cannot launch a managed headless Chrome here: %v", err)
+	}
+	defer b.Close()
+
+	// A page where, after 300ms, a spinner is removed, a hidden element appears,
+	// and the URL hash changes — one page to exercise --gone / --visible / --url.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		fmt.Fprint(w, `<!doctype html><title>Wait</title><body>
+<div id="spinner">loading</div>
+<div id="late" style="display:none">ready</div>
+<script>setTimeout(function(){
+  document.getElementById('spinner').remove();
+  document.getElementById('late').style.display='block';
+  location.hash='done';
+}, 300)</script>
+</body>`)
+	}))
+	defer srv.Close()
+
+	tabs, err := b.List(ctx)
+	if err != nil || len(tabs) == 0 {
+		t.Fatalf("List: %v", err)
+	}
+	id := tabs[0].ID
+	if _, err := b.Navigate(ctx, id, srv.URL); err != nil {
+		t.Fatalf("Navigate: %v", err)
+	}
+
+	cases := []struct {
+		name string
+		cond WaitCond
+		want string
+	}{
+		{"gone", WaitCond{Gone: "#spinner"}, "gone:#spinner"},
+		{"visible", WaitCond{Visible: "#late"}, "visible:#late"},
+		{"url", WaitCond{URL: "#done"}, "url:#done"},
+	}
+	for _, tc := range cases {
+		bctx, bcancel := context.WithTimeout(ctx, 5*time.Second)
+		res, err := b.Wait(bctx, id, tc.cond)
+		bcancel()
+		if err != nil {
+			t.Errorf("Wait %s: %v", tc.name, err)
+			continue
+		}
+		if res["waited"] != tc.want {
+			t.Errorf("Wait %s = %v, want %q", tc.name, res["waited"], tc.want)
+		}
+	}
+
+	// An empty condition is a usage error, not a hang.
+	if _, err := b.Wait(ctx, id, WaitCond{}); err == nil {
+		t.Error("Wait with no condition should error")
+	}
+}

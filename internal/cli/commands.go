@@ -66,7 +66,7 @@ func (a *App) newRoot() *cobra.Command {
 		a.cmdList(), a.cmdUse(), a.cmdNav(), a.cmdEval(), a.cmdSnap(),
 		a.cmdHTML(), a.cmdText(), a.cmdValue(),
 		a.cmdClick(), a.cmdType(), a.cmdAttr(), a.cmdScreenshot(), a.cmdPDF(),
-		a.cmdCookie(), a.cmdHeaders(), a.cmdEmulate(), a.cmdFrame(), a.cmdRaw(),
+		a.cmdCookie(), a.cmdHeaders(), a.cmdEmulate(), a.cmdFrame(), a.cmdWait(), a.cmdRaw(),
 		a.cmdDoctor(), a.cmdDaemon(), a.cmdExitCodes(), a.cmdVersion(),
 	)
 	return root
@@ -335,6 +335,37 @@ func (a *App) cmdEmulate() *cobra.Command {
 		},
 	)
 	return emu
+}
+
+func (a *App) cmdWait() *cobra.Command {
+	var url, visible, gone string
+	var forDur time.Duration
+	c := &cobra.Command{
+		Use: "wait", Short: "Wait for a URL change, an element (--visible/--gone), or a fixed --for duration",
+		RunE: func(*cobra.Command, []string) error {
+			// --for is a fixed sleep — no tab needed (e.g. settle after a redirect
+			// when no condition is cleaner).
+			if forDur > 0 {
+				time.Sleep(forDur)
+				a.emitOK("wait", nil, map[string]any{"waited": "for:" + forDur.String()})
+				return nil
+			}
+			if url == "" && visible == "" && gone == "" {
+				a.emitErr("wait", result.CodeUsage, "wait needs one of --url, --visible, --gone, --for", nil)
+				return nil
+			}
+			cond := chrome.WaitCond{URL: url, Visible: visible, Gone: gone, Query: a.queryOpts()}
+			a.runResolved("wait", func(ctx context.Context, b chrome.Browser, id string) (any, error) {
+				return b.Wait(ctx, id, cond)
+			})
+			return nil
+		},
+	}
+	c.Flags().StringVar(&url, "url", "", "wait until the target tab's URL contains this substring")
+	c.Flags().StringVar(&visible, "visible", "", "wait until this selector is visible")
+	c.Flags().StringVar(&gone, "gone", "", "wait until this selector is gone")
+	c.Flags().DurationVar(&forDur, "for", 0, "wait a fixed duration (e.g. 3s) — a fallback; prefer a condition")
+	return c
 }
 
 func (a *App) cmdFrame() *cobra.Command {
