@@ -35,9 +35,11 @@ chrome-cdp doctor    # check the connection and get the exact fix if it's not re
 ## Use
 
 ```sh
-chrome-cdp list                     # list open tabs (id, title, url)
+chrome-cdp list --url outlook       # list open tabs (--url/--title filter by substring)
+chrome-cdp open https://example.com # new tab, navigate, make it current — returns its id
 chrome-cdp use url:github           # set the sticky current tab
 chrome-cdp snap                     # accessibility-tree snapshot (see the page)
+chrome-cdp snap --role button --grep "[AP]M"   # filter the tree server-side (role + name regex)
 chrome-cdp nav https://example.com  # navigate (waits for load)
 chrome-cdp html "#main"             # outer HTML of a selector (or the page)
 chrome-cdp text ".title"            # visible text of a selector
@@ -53,7 +55,7 @@ chrome-cdp grid                     # read a table/grid as {headers, rows} (a11y
 chrome-cdp value --all "input.hr"   # values of every match, as a list
 chrome-cdp scroll --dy 600          # scroll (or --to <sel> into view, --wheel for lazy grids)
 chrome-cdp eval "document.title"    # evaluate JS
-chrome-cdp wait --url "/dashboard"  # wait until the tab's URL settles (or --visible/--gone/--for)
+chrome-cdp wait --url "/dashboard"  # wait until the tab's URL settles (or --visible/--gone/--text/--stable/--idle/--for)
 chrome-cdp screenshot               # PNG -> ./screenshot-<timestamp>.png (or -o -)
 chrome-cdp raw --list               # list the connected Chrome's CDP domains
 chrome-cdp raw Network.setCacheDisabled '{"cacheDisabled":true}'   # any CDP method
@@ -136,7 +138,7 @@ Shell completion is built in (cobra): `chrome-cdp completion bash|zsh|fish|power
 ## Status
 
 **Implemented & tested:** the connection ladder + `DevToolsActivePort` reader, target-grammar resolution, the uniform envelope + exit-code contract, selector options (`--by` incl.
-`name` = ARIA accessible-name addressing with `--role`/`--nth` (with a DOM accessible-name fallback on a throttled hidden tab), `ref` = snap-issued `e<id>` element refs, `cell` = grid input by `[row|]column` header, `--wait`, `--no-wait`), the connection globals (`--port`, `--profile-dir`, `--no-launch`) and output globals (`--json`, `--no-color`, `-v`, `--no-input`, `--quiet`, `--timeout`), and commands `list`, `use`, `nav`, `snap`, `html`, `text`, `value`, `eval`, `click`, `type`, `fill` (clear-then-set), `select` (prompt/combobox/cascade/native-`<select>`), `grid` (a11y table read), `value --all`, `scroll` (`--dy`/`--to`/`--wheel`), `--wait-text` (act-and-confirm on action verbs), `attr` (get/list/set/rm), `screenshot`, `pdf`, `cookie` (list/set/rm/clear), `headers set`, `emulate` (viewport/geo/reset), `frame list`, `wait` (`--url`/`--visible`/`--gone`/`--for`), `session` (NDJSON batch over one held connection), `--pierce` (shadow-DOM/iframe piercing), `raw` (incl.
+`name` = ARIA accessible-name addressing with `--role`/`--nth` (with a DOM accessible-name fallback on a throttled hidden tab), `ref` = snap-issued `e<id>` element refs, `cell` = grid input by `[row|]column` header, `--wait`, `--no-wait`), the connection globals (`--port`, `--profile-dir`, `--no-launch`) and output globals (`--json`, `--no-color`, `-v`, `--no-input`, `--quiet`, `--timeout`), and commands `list` (`--url`/`--title` filters), `open` (new tab → navigate → current), `use`, `nav`, `snap` (`--role`/`--grep`/`--region`/`--dedupe` server-side filters), `html`, `text`, `value`, `eval`, `click`, `type`, `fill` (clear-then-set), `select` (prompt/combobox/cascade/native-`<select>`), `grid` (a11y table read), `value --all`, `scroll` (`--dy`/`--to`/`--wheel`), `--wait-text` (act-and-confirm on action verbs), `attr` (get/list/set/rm), `screenshot`, `pdf`, `cookie` (list/set/rm/clear), `headers set`, `emulate` (viewport/geo/reset), `frame list`, `wait` (`--url`/`--visible`/`--gone`/`--text`/`--stable`/`--idle`/`--for`), `session` (NDJSON batch over one held connection), `--pierce` (shadow-DOM/iframe piercing), `raw` (incl.
 `--browser`/`--list`), `doctor`, `daemon` (start/stop/status), `exit-codes`, `version` (and `--version`).
 Plus an optional TOML config file (flags > `CHROME_CDP_*` env > config > defaults), shell completion (`completion`), and goreleaser + Homebrew-cask packaging with a CI matrix (Linux/macOS) and a tag-driven release workflow.
 Verified with unit tests, a golden output-contract test, an in-process + subprocess command-boundary suite, RPC round-trip tests for the daemon, and an integration test that drives a real headless Chrome.
