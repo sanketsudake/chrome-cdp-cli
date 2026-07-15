@@ -10,11 +10,12 @@ import (
 	"github.com/sanketsudake/chrome-cdp-cli/internal/target"
 )
 
-// QueryOpts controls how a selector is interpreted (By) and what state to wait
-// for (Wait) on selector-taking verbs.
+// QueryOpts controls how a selector is interpreted (By), what state to wait for
+// (Wait), and whether to pierce shadow DOM / iframes (Pierce).
 type QueryOpts struct {
-	By   string // css (default) | id | search | jspath | css-all
-	Wait string // visible (default) | ready | enabled
+	By     string // css (default) | id | search | jspath | css-all
+	Wait   string // visible (default) | ready | enabled
+	Pierce bool   // reach into shadow DOM / iframes (via DevTools search)
 }
 
 // Browser is the set of Chrome operations the CLI commands need. The real
@@ -37,6 +38,7 @@ type Browser interface {
 	EmulateViewport(ctx context.Context, targetID string, width, height int64) (map[string]any, error)
 	EmulateGeo(ctx context.Context, targetID string, lat, lon float64) (map[string]any, error)
 	EmulateReset(ctx context.Context, targetID string) (map[string]any, error)
+	Frames(ctx context.Context, targetID string) (any, error)
 	Screenshot(ctx context.Context, targetID string) ([]byte, error)
 	PDF(ctx context.Context, targetID string) ([]byte, error)
 	CookieList(ctx context.Context, targetID string) (any, error)

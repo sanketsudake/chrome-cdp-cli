@@ -64,12 +64,12 @@ Failures use the same envelope with `"ok": false` and an `error{code,message,…
 
 ## Status
 
-**Implemented & tested:** the connection ladder + `DevToolsActivePort` reader, target-grammar resolution, the uniform envelope + exit-code contract, selector options (`--by`, `--wait`, `--no-wait`), the connection globals (`--port`, `--profile-dir`, `--no-launch`) and output globals (`--json`, `--no-color`, `-v`, `--no-input`, `--quiet`, `--timeout`), and commands `list`, `use`, `nav`, `snap`, `html`, `text`, `value`, `eval`, `click`, `type`, `attr` (get/list/set/rm), `screenshot`, `pdf`, `cookie` (list/set/rm/clear), `headers set`, `emulate` (viewport/geo/reset), `raw` (incl. `--browser`/`--list`), `doctor`, `daemon (status)`, `exit-codes`, `version`. Verified with unit tests, a golden output-contract test, an in-process + subprocess command-boundary suite, and an integration test that drives a real headless Chrome.
+**Implemented & tested:** the connection ladder + `DevToolsActivePort` reader, target-grammar resolution, the uniform envelope + exit-code contract, selector options (`--by`, `--wait`, `--no-wait`), the connection globals (`--port`, `--profile-dir`, `--no-launch`) and output globals (`--json`, `--no-color`, `-v`, `--no-input`, `--quiet`, `--timeout`), and commands `list`, `use`, `nav`, `snap`, `html`, `text`, `value`, `eval`, `click`, `type`, `attr` (get/list/set/rm), `screenshot`, `pdf`, `cookie` (list/set/rm/clear), `headers set`, `emulate` (viewport/geo/reset), `frame list`, `--pierce` (shadow-DOM/iframe piercing), `raw` (incl. `--browser`/`--list`), `doctor`, `daemon (status)`, `exit-codes`, `version`. Verified with unit tests, a golden output-contract test, an in-process + subprocess command-boundary suite, and an integration test that drives a real headless Chrome.
 
 **Deferred (next increments, per the spec):**
 - **Shared daemon** — commands currently connect per invocation ("direct-connect"). Without the daemon, attach mode may leave one stray helper tab and re-prompts "Allow" more often. The daemon (attach-and-hold) resolves both.
 - The streaming/interception verbs: `console`, `network log`, `mock`, `block`, `download wait` (they hang on the always-on observation model), plus `perm` (reachable today via `raw Browser.grantPermissions`).
-- `--frame` / `--pierce` (frame + shadow-DOM addressing).
+- Explicit `--frame <selector>` element scoping (the same-origin `FromNode` two-phase resolve the catalog flagged as its own sub-effort). `frame list` and `--pierce` (which reaches shadow DOM + iframes via DevTools search) are done; cross-origin frames are also reachable today as their own `--target` (they are separate CDP targets).
 - Richer error classification (action failures are currently mapped heuristically to `target/timeout` vs `cdp`).
 - goreleaser/Homebrew packaging, TOML config, shell completion.
 

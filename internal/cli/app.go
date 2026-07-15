@@ -32,6 +32,7 @@ type App struct {
 	byFlag     string
 	waitFlag   string
 	noWait     bool
+	pierce     bool
 	quiet      bool
 	verbose    bool
 	noColor    bool
@@ -114,9 +115,9 @@ func (a *App) ctx() (context.Context, context.CancelFunc) {
 	return context.WithTimeout(context.Background(), t)
 }
 
-// queryOpts builds the selector-syntax / wait options from the global flags.
+// queryOpts builds the selector-syntax / wait / pierce options from the flags.
 func (a *App) queryOpts() chrome.QueryOpts {
-	return chrome.QueryOpts{By: a.byFlag, Wait: a.waitFlag}
+	return chrome.QueryOpts{By: a.byFlag, Wait: a.waitFlag, Pierce: a.pierce}
 }
 
 // Close tears down a Browser that this App lazily connected (no-op for an

@@ -323,7 +323,12 @@ func axString(v *accessibility.Value) string {
 // node state to wait for).
 func queryOptions(q QueryOpts) []chromedp.QueryOption {
 	var opts []chromedp.QueryOption
-	switch q.By {
+	by := q.By
+	if q.Pierce && (by == "" || by == "css") {
+		// DevTools search matches across shadow DOM and iframes.
+		by = "search"
+	}
+	switch by {
 	case "id":
 		opts = append(opts, chromedp.ByID)
 	case "search":
@@ -547,6 +552,37 @@ func (c *CDP) EmulateReset(ctx context.Context, id string) (map[string]any, erro
 		return nil, err
 	}
 	return map[string]any{"reset": true}, nil
+}
+
+// Frames enumerates the tab's frame tree (Page.getFrameTree).
+func (c *CDP) Frames(ctx context.Context, id string) (any, error) {
+	var tree *page.FrameTree
+	err := c.run(ctx, id, chromedp.ActionFunc(func(ctx context.Context) error {
+		var e error
+		tree, e = page.GetFrameTree().Do(ctx)
+		return e
+	}))
+	if err != nil {
+		return nil, err
+	}
+	var frames []map[string]any
+	var walk func(n *page.FrameTree)
+	walk = func(n *page.FrameTree) {
+		if n == nil || n.Frame == nil {
+			return
+		}
+		frames = append(frames, map[string]any{
+			"id":       string(n.Frame.ID),
+			"url":      n.Frame.URL,
+			"name":     n.Frame.Name,
+			"parentId": string(n.Frame.ParentID),
+		})
+		for _, ch := range n.ChildFrames {
+			walk(ch)
+		}
+	}
+	walk(tree)
+	return map[string]any{"frames": frames}, nil
 }
 
 // Raw sends any CDP method by string via the executor — full coverage, no

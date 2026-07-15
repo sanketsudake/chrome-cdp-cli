@@ -69,6 +69,28 @@ func TestHeadersBadFormatIsUsage(t *testing.T) {
 	}
 }
 
+func TestFrameList(t *testing.T) {
+	b := &fakeBrowser{tabs: []target.Info{{ID: "aa11", Title: "A", URL: "u"}}}
+	env, _, code := run(t, b, "frame", "list", "--target", "aa11", "--json")
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0", code)
+	}
+	if _, ok := env["result"].(map[string]any)["frames"]; !ok {
+		t.Errorf("result missing frames: %v", env["result"])
+	}
+}
+
+func TestPierceFlagThreads(t *testing.T) {
+	b := &queryCapture{fakeBrowser: fakeBrowser{tabs: []target.Info{{ID: "aa11", Title: "A", URL: "u"}}}}
+	_, _, code := run(t, b, "click", "#x", "--target", "aa11", "--pierce", "--json")
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0", code)
+	}
+	if !b.gotQ.Pierce {
+		t.Error("--pierce did not thread to QueryOpts.Pierce")
+	}
+}
+
 func TestPDFToFile(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "out.pdf")
 	b := &fakeBrowser{tabs: []target.Info{{ID: "aa11", Title: "A", URL: "u"}}}

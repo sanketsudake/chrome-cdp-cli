@@ -49,6 +49,7 @@ func (a *App) newRoot() *cobra.Command {
 	pf.StringVar(&a.byFlag, "by", "css", "selector syntax: css|id|search|jspath|css-all")
 	pf.StringVar(&a.waitFlag, "wait", "visible", "selector wait condition: visible|ready|enabled")
 	pf.BoolVar(&a.noWait, "no-wait", false, "act immediately; fail fast instead of waiting for the element")
+	pf.BoolVar(&a.pierce, "pierce", false, "reach into shadow DOM / iframes (via DevTools search)")
 	pf.BoolVarP(&a.quiet, "quiet", "q", false, "suppress non-essential output")
 	pf.BoolVarP(&a.verbose, "verbose", "v", false, "verbose diagnostics on stderr")
 	pf.BoolVar(&a.noColor, "no-color", false, "plain output (also honors $NO_COLOR)")
@@ -58,7 +59,7 @@ func (a *App) newRoot() *cobra.Command {
 		a.cmdList(), a.cmdUse(), a.cmdNav(), a.cmdEval(), a.cmdSnap(),
 		a.cmdHTML(), a.cmdText(), a.cmdValue(),
 		a.cmdClick(), a.cmdType(), a.cmdAttr(), a.cmdScreenshot(), a.cmdPDF(),
-		a.cmdCookie(), a.cmdHeaders(), a.cmdEmulate(), a.cmdRaw(),
+		a.cmdCookie(), a.cmdHeaders(), a.cmdEmulate(), a.cmdFrame(), a.cmdRaw(),
 		a.cmdDoctor(), a.cmdDaemon(), a.cmdExitCodes(), a.cmdVersion(),
 	)
 	return root
@@ -327,6 +328,17 @@ func (a *App) cmdEmulate() *cobra.Command {
 		},
 	)
 	return emu
+}
+
+func (a *App) cmdFrame() *cobra.Command {
+	frame := &cobra.Command{Use: "frame", Short: "Inspect frames"}
+	frame.AddCommand(&cobra.Command{
+		Use: "list", Short: "List the frame tree of the target tab",
+		RunE: a.targetAction("frame", func(ctx context.Context, b chrome.Browser, id string, _ []string) (any, error) {
+			return b.Frames(ctx, id)
+		}),
+	})
+	return frame
 }
 
 // runResolved resolves the target and runs a pre-bound action, then emits.

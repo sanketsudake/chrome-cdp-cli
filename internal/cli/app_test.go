@@ -76,6 +76,9 @@ func (stubBrowser) EmulateGeo(context.Context, string, float64, float64) (map[st
 func (stubBrowser) EmulateReset(context.Context, string) (map[string]any, error) {
 	return map[string]any{"reset": true}, nil
 }
+func (stubBrowser) Frames(context.Context, string) (any, error) {
+	return map[string]any{"frames": []any{}}, nil
+}
 func (stubBrowser) Raw(context.Context, string, string, json.RawMessage) (any, error) {
 	return map[string]any{}, nil
 }

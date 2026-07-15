@@ -63,4 +63,14 @@ func TestManagedChromeDrivesAPage(t *testing.T) {
 	if !strings.Contains(fmt.Sprintf("%v", rawRes), "2") {
 		t.Errorf("raw Runtime.evaluate result = %v, want it to contain 2", rawRes)
 	}
+
+	// frame enumeration returns the real frame tree.
+	fr, err := b.Frames(ctx, id)
+	if err != nil {
+		t.Fatalf("Frames: %v", err)
+	}
+	frames := fr.(map[string]any)["frames"].([]map[string]any)
+	if len(frames) == 0 {
+		t.Fatal("Frames returned no frames")
+	}
 }
