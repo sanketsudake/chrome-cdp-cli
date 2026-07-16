@@ -12,6 +12,7 @@ import (
 // session runs each stdin line as a JSON argv over one held connection and emits
 // one JSON envelope per line (NDJSON).
 func TestSessionNDJSON(t *testing.T) {
+	t.Parallel()
 	b := &fakeBrowser{tabs: []target.Info{{ID: "aa11", Title: "A", URL: "u"}}}
 	in := strings.NewReader(
 		`["list"]` + "\n" +

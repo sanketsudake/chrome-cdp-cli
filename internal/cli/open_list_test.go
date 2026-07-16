@@ -18,6 +18,7 @@ func (o *openCapture) Open(_ context.Context, url string) (map[string]any, error
 }
 
 func TestOpenCommand(t *testing.T) {
+	t.Parallel()
 	b := &openCapture{fakeBrowser: fakeBrowser{tabs: []target.Info{{ID: "aa11", Title: "A", URL: "u"}}}}
 	env, _, code := run(t, b, "open", "https://example.com/x", "--json")
 	if code != 0 {
@@ -32,6 +33,7 @@ func TestOpenCommand(t *testing.T) {
 }
 
 func TestListFilters(t *testing.T) {
+	t.Parallel()
 	b := &fakeBrowser{tabs: []target.Info{
 		{ID: "aa11", Title: "GitHub", URL: "https://github.com/"},
 		{ID: "bb22", Title: "Calendar - Outlook", URL: "https://outlook.cloud.microsoft/calendar"},

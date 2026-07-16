@@ -7,6 +7,7 @@ import (
 )
 
 func TestParseDevToolsActivePort(t *testing.T) {
+	t.Parallel()
 	port, wsPath, err := ParseDevToolsActivePort([]byte("9222\n/devtools/browser/2d642c44\n"))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -20,6 +21,7 @@ func TestParseDevToolsActivePort(t *testing.T) {
 }
 
 func TestParseDevToolsActivePortErrors(t *testing.T) {
+	t.Parallel()
 	for _, in := range []string{"", "9222", "notaport\n/devtools/browser/x"} {
 		if _, _, err := ParseDevToolsActivePort([]byte(in)); err == nil {
 			t.Errorf("ParseDevToolsActivePort(%q) = nil error, want error", in)
@@ -28,6 +30,7 @@ func TestParseDevToolsActivePortErrors(t *testing.T) {
 }
 
 func TestWSURLFromPortFile(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	f := filepath.Join(dir, "DevToolsActivePort")
 	if err := os.WriteFile(f, []byte("9222\n/devtools/browser/abc\n"), 0o600); err != nil {
@@ -43,12 +46,14 @@ func TestWSURLFromPortFile(t *testing.T) {
 }
 
 func TestWSURLFromPortFileMissing(t *testing.T) {
+	t.Parallel()
 	if _, err := WSURLFromPortFile(filepath.Join(t.TempDir(), "nope")); err == nil {
 		t.Error("expected error for missing port file")
 	}
 }
 
 func TestDecideConnection(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name string
 		p    Probe
@@ -67,6 +72,7 @@ func TestDecideConnection(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
 			if got := DecideConnection(c.p); got != c.want {
 				t.Errorf("DecideConnection(%+v) = %v, want %v", c.p, got, c.want)
 			}
@@ -75,6 +81,7 @@ func TestDecideConnection(t *testing.T) {
 }
 
 func TestEndpointKey(t *testing.T) {
+	t.Parallel()
 	// An explicit port yields a distinct, port-specific key (no collisions).
 	if k := EndpointKey("", 9333); k != "127.0.0.1:9333" {
 		t.Errorf("explicit port key = %q, want 127.0.0.1:9333", k)

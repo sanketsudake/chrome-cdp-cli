@@ -24,6 +24,7 @@ func (s *selectCapture) Select(_ context.Context, _, field, option string, o chr
 }
 
 func TestSelectCommandWiring(t *testing.T) {
+	t.Parallel()
 	b := &selectCapture{fakeBrowser: fakeBrowser{tabs: []target.Info{{ID: "aa11", Title: "A", URL: "u"}}}}
 	env, _, code := run(t, b,
 		"select", "Time Type", "Project Plan Tasks > ShiftLeft: Qwiet",
@@ -51,6 +52,7 @@ func TestSelectCommandWiring(t *testing.T) {
 }
 
 func TestSelectCommandOverrides(t *testing.T) {
+	t.Parallel()
 	b := &selectCapture{fakeBrowser: fakeBrowser{tabs: []target.Info{{ID: "aa11", Title: "A", URL: "u"}}}}
 	_, _, code := run(t, b,
 		"select", "Region", "APAC/India",

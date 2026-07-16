@@ -40,6 +40,7 @@ func run(t *testing.T, b chrome.Browser, args ...string) (env map[string]any, st
 }
 
 func TestListJSONEnvelope(t *testing.T) {
+	t.Parallel()
 	b := &fakeBrowser{tabs: []target.Info{
 		{ID: "aa11", Title: "GitHub", URL: "https://github.com/"},
 		{ID: "bb22", Title: "Inbox", URL: "https://mail.google.com/"},
@@ -58,6 +59,7 @@ func TestListJSONEnvelope(t *testing.T) {
 }
 
 func TestEvalWithoutTargetIsTargetError(t *testing.T) {
+	t.Parallel()
 	b := &fakeBrowser{tabs: []target.Info{{ID: "aa11", Title: "X", URL: "u"}, {ID: "bb22", Title: "Y", URL: "v"}}}
 	env, _, code := run(t, b, "eval", "1+1", "--json")
 	if code != 4 {
@@ -72,6 +74,7 @@ func TestEvalWithoutTargetIsTargetError(t *testing.T) {
 }
 
 func TestRawBadParamsIsUsageError(t *testing.T) {
+	t.Parallel()
 	b := &fakeBrowser{tabs: []target.Info{{ID: "aa11", Title: "X", URL: "u"}}}
 	env, _, code := run(t, b, "raw", "Foo.bar", "not-json", "--target", "aa11", "--json")
 	if code != 2 {
@@ -83,6 +86,7 @@ func TestRawBadParamsIsUsageError(t *testing.T) {
 }
 
 func TestEvalResolvedTargetSucceeds(t *testing.T) {
+	t.Parallel()
 	b := &fakeBrowser{tabs: []target.Info{{ID: "aa11", Title: "X", URL: "u"}, {ID: "bb22", Title: "Y", URL: "v"}}}
 	env, _, code := run(t, b, "eval", "1+1", "--target", "aa11", "--json")
 	if code != 0 {
@@ -94,6 +98,7 @@ func TestEvalResolvedTargetSucceeds(t *testing.T) {
 }
 
 func TestExitCodesCommand(t *testing.T) {
+	t.Parallel()
 	var out, errb bytes.Buffer
 	app := New(&fakeBrowser{}, &out, &errb)
 	code := app.Execute("exit-codes")

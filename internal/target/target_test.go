@@ -9,6 +9,7 @@ var fixture = []Info{
 }
 
 func TestResolve(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name     string
 		spec     string
@@ -30,6 +31,7 @@ func TestResolve(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
 			got, err := Resolve(c.spec, fixture)
 			if c.wantID != "" {
 				if err != nil {
