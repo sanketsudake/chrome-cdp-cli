@@ -24,6 +24,9 @@ Because it attaches to the browser you're already using, an app you're signed in
    go install github.com/sanketsudake/chrome-cdp-cli/cmd/chrome-cdp@latest
    ```
 
+   Recent Homebrew may print a tap-trust notice for third-party taps on first install.
+   The install still proceeds; to acknowledge it explicitly, run `brew trust --cask sanketsudake/tap/chrome-cdp` first.
+
 2. **Let Chrome accept a debugger** — open `chrome://inspect/#remote-debugging` and toggle it on (a one-time consent; `chrome-cdp` never suppresses it).
 
 3. **Check the connection** — `chrome-cdp doctor` confirms it's ready, or prints the exact fix.
