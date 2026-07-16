@@ -52,9 +52,10 @@ changelog:
       - "^ci:"
 
 # Homebrew tap (macOS cask for the prebuilt binary). Requires a
-# `sanketsudake/homebrew-tap` repo and a HOMEBREW_TAP_GITHUB_TOKEN secret (a PAT
-# with `repo` scope on that tap) so goreleaser can push the generated cask there
-# during a release. Linux users install via the tarball or `go install`.
+# `sanketsudake/homebrew-tap` repo and a HOMEBREW_TAP_GITHUB_TOKEN secret (a
+# fine-grained PAT scoped to that tap repo with Contents: read/write) so
+# goreleaser can push the generated cask there during a release. Linux users
+# install via the tarball or `go install`.
 homebrew_casks:
   - name: chrome-cdp
     repository:
