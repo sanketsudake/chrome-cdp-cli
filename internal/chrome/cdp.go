@@ -1397,10 +1397,13 @@ func (c *CDP) Wait(ctx context.Context, id string, cond WaitCond) (map[string]an
 	default:
 		return nil, fmt.Errorf("wait needs one of --url, --visible, --gone, --text, --stable, --idle, --for")
 	}
-	if err := c.run(ctx, id, action); err != nil {
+	// Also read the URL the tab settled at, so the envelope's target reflects
+	// where a --url / redirect wait actually landed, not the pre-wait URL.
+	var loc string
+	if err := c.run(ctx, id, action, chromedp.Location(&loc)); err != nil {
 		return nil, err
 	}
-	return map[string]any{"waited": what}, nil
+	return map[string]any{"waited": what, "url": loc}, nil
 }
 
 // waitURL polls location.href until it contains substr (or the context ends).
@@ -1473,37 +1476,58 @@ func waitStable(window time.Duration) chromedp.Action {
 	})
 }
 
-// waitIdle returns once network activity has settled: no in-flight requests for
-// `window`. It tracks requestWillBeSent vs loadingFinished/Failed — for SPA
-// loads (Outlook, Workday) where "DOM loaded" ≠ "content rendered".
+// waitIdle returns once network activity has settled. It considers the page
+// settled when EITHER no requests are in flight for `window` (the clean path,
+// for pages whose requests all complete), OR requests remain open but the
+// connection has gone silent for `idleStall` (the stalled path). The stalled
+// path is what makes --idle usable on SPAs (Outlook, Workday) that hold a
+// websocket / long-poll / EventSource stream open indefinitely: such a request
+// fires requestWillBeSent but never loadingFinished, so inflight never returns
+// to zero and a strict "inflight == 0" wait would hang until --timeout. Progress
+// events (response/data), not just start/finish, keep the clock live, so an
+// in-progress download is never mistaken for a silent held-open stream.
 func waitIdle(window time.Duration) chromedp.Action {
+	// A still-open request is treated as idle after this much network silence.
+	// Longer than `window` so a normally-completing load always settles via the
+	// clean path first; short enough that a held-open stream doesn't wait out
+	// the whole --timeout.
+	const idleStall = 2 * time.Second
 	return chromedp.ActionFunc(func(ctx context.Context) error {
 		if err := network.Enable().Do(ctx); err != nil {
 			return err
 		}
 		var mu sync.Mutex
 		inflight := 0
-		lastZero := time.Now()
+		// lastActivity is the last time any request started, progressed, or
+		// ended — set only for network events (ListenTarget also delivers page/
+		// DOM events, which must not count as network activity).
+		lastActivity := time.Now()
 		chromedp.ListenTarget(ctx, func(ev interface{}) {
 			mu.Lock()
 			defer mu.Unlock()
 			switch ev.(type) {
 			case *network.EventRequestWillBeSent:
 				inflight++
+				lastActivity = time.Now()
 			case *network.EventLoadingFinished, *network.EventLoadingFailed:
 				if inflight > 0 {
 					inflight--
 				}
-				if inflight == 0 {
-					lastZero = time.Now()
-				}
+				lastActivity = time.Now()
+			case *network.EventResponseReceived, *network.EventDataReceived:
+				// bytes moving on an open request — keep it counted as active
+				lastActivity = time.Now()
 			}
 		})
 		t := time.NewTicker(100 * time.Millisecond)
 		defer t.Stop()
 		for {
 			mu.Lock()
-			idle := inflight == 0 && time.Since(lastZero) >= window
+			threshold := window
+			if inflight > 0 {
+				threshold = idleStall // still-open requests need the longer stall window
+			}
+			idle := time.Since(lastActivity) >= threshold
 			mu.Unlock()
 			if idle {
 				return nil
