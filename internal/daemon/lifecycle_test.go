@@ -8,6 +8,7 @@ import (
 )
 
 func TestConnectErrSidecarRoundTrip(t *testing.T) {
+	t.Parallel()
 	// A ConnectError's stable code survives the encode -> .err -> decode trip,
 	// so a daemon-path connect failure keeps its specific code.
 	orig := &chrome.ConnectError{Code: "not_debug_enabled", Message: "chrome up but not debuggable"}

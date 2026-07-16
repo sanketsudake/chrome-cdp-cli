@@ -7,25 +7,29 @@ import (
 )
 
 func TestGridAndScrollCommands(t *testing.T) {
+	t.Parallel()
 	b := &fakeBrowser{tabs: []target.Info{{ID: "aa11", Title: "A", URL: "u"}}}
 	cases := []struct {
+		name    string
 		args    []string
 		wantKey string
 	}{
-		{[]string{"grid", "--target", "aa11", "--json"}, "headers"},
-		{[]string{"grid", "table.week", "--target", "aa11", "--json"}, "headers"},
-		{[]string{"scroll", "--dy", "400", "--target", "aa11", "--json"}, "scrolled"},
-		{[]string{"scroll", "#list", "--to", "--target", "aa11", "--json"}, "scrolled"},
-		{[]string{"scroll", ".grid", "--dy", "300", "--wheel", "--target", "aa11", "--json"}, "scrolled"},
+		{"grid default", []string{"grid", "--target", "aa11", "--json"}, "headers"},
+		{"grid with selector", []string{"grid", "table.week", "--target", "aa11", "--json"}, "headers"},
+		{"scroll by dy", []string{"scroll", "--dy", "400", "--target", "aa11", "--json"}, "scrolled"},
+		{"scroll to element", []string{"scroll", "#list", "--to", "--target", "aa11", "--json"}, "scrolled"},
+		{"scroll wheel", []string{"scroll", ".grid", "--dy", "300", "--wheel", "--target", "aa11", "--json"}, "scrolled"},
 	}
 	for _, c := range cases {
-		env, _, code := run(t, b, c.args...)
-		if code != 0 {
-			t.Errorf("%v exit = %d, want 0", c.args, code)
-			continue
-		}
-		if _, ok := env["result"].(map[string]any)[c.wantKey]; !ok {
-			t.Errorf("%v: result missing key %q (%v)", c.args, c.wantKey, env["result"])
-		}
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			env, _, code := run(t, b, c.args...)
+			if code != 0 {
+				t.Fatalf("%v exit = %d, want 0", c.args, code)
+			}
+			if _, ok := env["result"].(map[string]any)[c.wantKey]; !ok {
+				t.Errorf("%v: result missing key %q (%v)", c.args, c.wantKey, env["result"])
+			}
+		})
 	}
 }

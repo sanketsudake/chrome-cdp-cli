@@ -24,6 +24,7 @@ func clickCapture(t *testing.T, defs config.Defaults, args ...string) *queryCapt
 }
 
 func TestConfigDefaultsFeedFlagDefaults(t *testing.T) {
+	t.Parallel()
 	defs := config.Defaults{By: "search", Wait: "ready", Timeout: 5 * time.Second}
 	// No --by/--wait on the command line, so the config defaults take effect.
 	b := clickCapture(t, defs, "click", "#x", "--target", "aa11", "--json")
@@ -33,6 +34,7 @@ func TestConfigDefaultsFeedFlagDefaults(t *testing.T) {
 }
 
 func TestExplicitFlagOverridesConfigDefault(t *testing.T) {
+	t.Parallel()
 	defs := config.Defaults{By: "search", Wait: "ready", Timeout: 5 * time.Second}
 	// An explicit --by must win over the config default.
 	b := clickCapture(t, defs, "click", "#x", "--target", "aa11", "--by", "id", "--json")
@@ -45,6 +47,7 @@ func TestExplicitFlagOverridesConfigDefault(t *testing.T) {
 }
 
 func TestConfigTargetIsFallback(t *testing.T) {
+	t.Parallel()
 	// With no --target and no sticky target, the config default target resolves.
 	defs := config.Defaults{By: "css", Wait: "visible", Timeout: 5 * time.Second, Target: "@1"}
 	b := &fakeBrowser{tabs: []target.Info{{ID: "aa11", Title: "A", URL: "u"}}}

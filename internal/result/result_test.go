@@ -6,28 +6,40 @@ import (
 )
 
 func TestExitCodeFor(t *testing.T) {
-	cases := map[string]int{
-		"usage":             ExitUsage,
-		"connection_failed": ExitConnection,
-		"not_debug_enabled": ExitConnection,
-		"target_timeout":    ExitTarget,
-		"target_not_found":  ExitTarget,
-		"ambiguous_target":  ExitTarget,
-		"no_current_target": ExitTarget,
-		"cdp_error":         ExitCDP,
-		"daemon_error":      ExitDaemon,
-		"something_unknown": ExitGeneric,
-		"":                  ExitGeneric,
+	t.Parallel()
+	cases := []struct {
+		code string
+		want int
+	}{
+		{"usage", ExitUsage},
+		{"connection_failed", ExitConnection},
+		{"not_debug_enabled", ExitConnection},
+		{"target_timeout", ExitTarget},
+		{"target_not_found", ExitTarget},
+		{"ambiguous_target", ExitTarget},
+		{"no_current_target", ExitTarget},
+		{"cdp_error", ExitCDP},
+		{"daemon_error", ExitDaemon},
+		{"something_unknown", ExitGeneric},
+		{"", ExitGeneric},
 	}
-	for code, want := range cases {
-		if got := ExitCodeFor(code); got != want {
-			t.Errorf("ExitCodeFor(%q) = %d, want %d", code, got, want)
+	for _, c := range cases {
+		name := c.code
+		if name == "" {
+			name = "empty_code"
 		}
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			if got := ExitCodeFor(c.code); got != c.want {
+				t.Errorf("ExitCodeFor(%q) = %d, want %d", c.code, got, c.want)
+			}
+		})
 	}
 }
 
 // The uniform envelope is the contract the Claude skill parses against.
 func TestSuccessEnvelopeShape(t *testing.T) {
+	t.Parallel()
 	env := Envelope{
 		OK:        true,
 		Command:   "eval",
@@ -59,6 +71,7 @@ func TestSuccessEnvelopeShape(t *testing.T) {
 }
 
 func TestErrorEnvelopeShape(t *testing.T) {
+	t.Parallel()
 	env := Envelope{
 		OK:      false,
 		Command: "click",

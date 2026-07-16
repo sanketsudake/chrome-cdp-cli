@@ -10,6 +10,7 @@ import (
 )
 
 func TestUniquePath(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	p := filepath.Join(dir, "shot.png")
 
@@ -36,6 +37,7 @@ func TestUniquePath(t *testing.T) {
 }
 
 func TestScreenshotToFile(t *testing.T) {
+	t.Parallel()
 	p := filepath.Join(t.TempDir(), "out.png")
 	b := &fakeBrowser{tabs: []target.Info{{ID: "aa11", Title: "A", URL: "u"}}}
 	env, _, code := run(t, b, "screenshot", "-o", p, "--target", "aa11", "--json")
@@ -51,6 +53,7 @@ func TestScreenshotToFile(t *testing.T) {
 }
 
 func TestScreenshotToStdout(t *testing.T) {
+	t.Parallel()
 	b := &fakeBrowser{tabs: []target.Info{{ID: "aa11", Title: "A", URL: "u"}}}
 	var out, errb bytes.Buffer
 	app := New(b, &out, &errb)

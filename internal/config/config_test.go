@@ -24,6 +24,7 @@ func writeConfig(t *testing.T, body string) string {
 }
 
 func TestResolveBuiltinWhenNoFileNoEnv(t *testing.T) {
+	t.Parallel()
 	d, err := ResolveFrom(filepath.Join(t.TempDir(), "absent.toml"), noEnv)
 	if err != nil {
 		t.Fatalf("missing file must not error: %v", err)
@@ -37,6 +38,7 @@ func TestResolveBuiltinWhenNoFileNoEnv(t *testing.T) {
 }
 
 func TestConfigFileOverridesBuiltin(t *testing.T) {
+	t.Parallel()
 	p := writeConfig(t, `
 # persistent defaults
 timeout = "5s"
@@ -65,6 +67,7 @@ no_color = true
 }
 
 func TestConfigTarget(t *testing.T) {
+	t.Parallel()
 	p := writeConfig(t, "target = \"url:github\"\n")
 	d, err := ResolveFrom(p, noEnv)
 	if err != nil {
@@ -81,6 +84,7 @@ func TestConfigTarget(t *testing.T) {
 }
 
 func TestEnvOverridesConfig(t *testing.T) {
+	t.Parallel()
 	p := writeConfig(t, `
 timeout = "5s"
 by = "search"
@@ -120,6 +124,7 @@ json = true
 }
 
 func TestMalformedConfigSurfacesErrorButStillUsable(t *testing.T) {
+	t.Parallel()
 	p := writeConfig(t, "timeout = \"5s\"\nthis is not valid toml =\n")
 	env := envFrom(map[string]string{"CHROME_CDP_BY": "id"})
 	d, err := ResolveFrom(p, env)
@@ -136,6 +141,7 @@ func TestMalformedConfigSurfacesErrorButStillUsable(t *testing.T) {
 }
 
 func TestPathHonorsXDG(t *testing.T) {
+	t.Parallel()
 	got := pathFrom(envFrom(map[string]string{"XDG_CONFIG_HOME": "/x/cfg"}))
 	if got != "/x/cfg/chrome-cdp/config.toml" {
 		t.Errorf("XDG path = %q", got)

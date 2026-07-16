@@ -26,6 +26,7 @@ func (h *hiddenTabBrowser) Eval(_ context.Context, _, expr string) (any, error) 
 }
 
 func TestTabHiddenHintOnNameTimeout(t *testing.T) {
+	t.Parallel()
 	base := fakeBrowser{tabs: []target.Info{{ID: "aa11", Title: "A", URL: "u"}}}
 
 	// Hidden tab + --by name timeout -> tab_hidden detail + actionable message.

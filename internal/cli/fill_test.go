@@ -26,6 +26,7 @@ func (f *fillCapture) Wait(_ context.Context, _ string, c chrome.WaitCond) (map[
 }
 
 func TestFillAndWaitTextCommand(t *testing.T) {
+	t.Parallel()
 	b := &fillCapture{fakeBrowser: fakeBrowser{tabs: []target.Info{{ID: "aa11", Title: "A", URL: "u"}}}}
 	env, _, code := run(t, b,
 		"fill", "#h", "8", "--wait-text", "Saved", "--target", "aa11", "--json")

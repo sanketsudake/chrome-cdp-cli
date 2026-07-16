@@ -21,6 +21,7 @@ func buildBinary(t *testing.T) string {
 }
 
 func TestBinaryExitCodes(t *testing.T) {
+	t.Parallel()
 	bin := buildBinary(t)
 	cases := []struct {
 		name string
@@ -35,6 +36,7 @@ func TestBinaryExitCodes(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
 			cmd := exec.Command(bin, c.args...)
 			_ = cmd.Run()
 			if got := cmd.ProcessState.ExitCode(); got != c.want {
