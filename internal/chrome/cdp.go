@@ -1483,11 +1483,9 @@ func waitStable(window time.Duration) chromedp.Action {
 // path is what makes --idle usable on SPAs (Outlook, Workday) that hold a
 // websocket / long-poll / EventSource stream open indefinitely: such a request
 // fires requestWillBeSent but never loadingFinished, so inflight never returns
-// to zero and a strict "inflight == 0" wait would hang until --timeout.
-//
-// Data/response events (not just start/finish) reset the silence clock, so a
-// large in-progress download keeps the page "active" and is never mistaken for
-// a stalled stream — only a genuinely quiet still-open request settles.
+// to zero and a strict "inflight == 0" wait would hang until --timeout. Progress
+// events (response/data), not just start/finish, keep the clock live, so an
+// in-progress download is never mistaken for a silent held-open stream.
 func waitIdle(window time.Duration) chromedp.Action {
 	// A still-open request is treated as idle after this much network silence.
 	// Longer than `window` so a normally-completing load always settles via the
@@ -1500,9 +1498,10 @@ func waitIdle(window time.Duration) chromedp.Action {
 		}
 		var mu sync.Mutex
 		inflight := 0
-		now := time.Now()
-		lastZero := now     // last time inflight was 0
-		lastActivity := now // last time any request started, progressed, or ended
+		// lastActivity is the last time any request started, progressed, or
+		// ended — set only for network events (ListenTarget also delivers page/
+		// DOM events, which must not count as network activity).
+		lastActivity := time.Now()
 		chromedp.ListenTarget(ctx, func(ev interface{}) {
 			mu.Lock()
 			defer mu.Unlock()
@@ -1515,12 +1514,8 @@ func waitIdle(window time.Duration) chromedp.Action {
 					inflight--
 				}
 				lastActivity = time.Now()
-				if inflight == 0 {
-					lastZero = time.Now()
-				}
 			case *network.EventResponseReceived, *network.EventDataReceived:
-				// Bytes are moving — keep the page "active" so an in-progress
-				// download is never mistaken for a stalled stream.
+				// bytes moving on an open request — keep it counted as active
 				lastActivity = time.Now()
 			}
 		})
@@ -1528,10 +1523,13 @@ func waitIdle(window time.Duration) chromedp.Action {
 		defer t.Stop()
 		for {
 			mu.Lock()
-			cleanIdle := inflight == 0 && time.Since(lastZero) >= window
-			stalledIdle := inflight > 0 && time.Since(lastActivity) >= idleStall
+			threshold := window
+			if inflight > 0 {
+				threshold = idleStall // still-open requests need the longer stall window
+			}
+			idle := time.Since(lastActivity) >= threshold
 			mu.Unlock()
-			if cleanIdle || stalledIdle {
+			if idle {
 				return nil
 			}
 			select {
