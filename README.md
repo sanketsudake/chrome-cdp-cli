@@ -19,7 +19,7 @@ Because it attaches to the browser you're already using, an app you're signed in
 1. **Install** — macOS via Homebrew, or Go:
 
    ```sh
-   brew install sanketsudake/tap/chrome-cdp
+   brew install --cask sanketsudake/tap/chrome-cdp
    # or:
    go install github.com/sanketsudake/chrome-cdp-cli/cmd/chrome-cdp@latest
    ```
