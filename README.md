@@ -4,6 +4,7 @@ Drive your **real, already-running Chrome** — your actual tabs, logins, cookie
 Built for humans and AI agents alike: every command speaks one JSON envelope and one stable exit-code contract.
 
 [![CI](https://github.com/sanketsudake/chrome-cdp-cli/actions/workflows/ci.yml/badge.svg)](https://github.com/sanketsudake/chrome-cdp-cli/actions/workflows/ci.yml) [![Go Reference](https://pkg.go.dev/badge/github.com/sanketsudake/chrome-cdp-cli.svg)](https://pkg.go.dev/github.com/sanketsudake/chrome-cdp-cli) [![Go Report Card](https://goreportcard.com/badge/github.com/sanketsudake/chrome-cdp-cli)](https://goreportcard.com/report/github.com/sanketsudake/chrome-cdp-cli)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 ```sh
 chrome-cdp open https://example.com     # open a tab, get its id
@@ -119,4 +120,4 @@ Architecture: `internal/result` (envelope + exit codes), `internal/target` (targ
 
 ## License
 
-Not yet licensed — a `LICENSE` file will be added before the first tagged release.
+Released under the [MIT License](LICENSE).
