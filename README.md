@@ -3,8 +3,11 @@
 Drive your **real, already-running Chrome** — your actual tabs, logins, cookies, and extensions — from the command line.
 Built for humans and AI agents alike: every command speaks one JSON envelope and one stable exit-code contract.
 
-[![CI](https://github.com/sanketsudake/chrome-cdp-cli/actions/workflows/ci.yml/badge.svg)](https://github.com/sanketsudake/chrome-cdp-cli/actions/workflows/ci.yml) [![Go Reference](https://pkg.go.dev/badge/github.com/sanketsudake/chrome-cdp-cli.svg)](https://pkg.go.dev/github.com/sanketsudake/chrome-cdp-cli) [![Go Report Card](https://goreportcard.com/badge/github.com/sanketsudake/chrome-cdp-cli)](https://goreportcard.com/report/github.com/sanketsudake/chrome-cdp-cli)
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Go Reference](https://pkg.go.dev/badge/github.com/sanketsudake/chrome-cdp-cli.svg)](https://pkg.go.dev/github.com/sanketsudake/chrome-cdp-cli)
+[![CI](https://github.com/sanketsudake/chrome-cdp-cli/actions/workflows/ci.yml/badge.svg)](https://github.com/sanketsudake/chrome-cdp-cli/actions/workflows/ci.yml)
+[![CodeQL](https://github.com/sanketsudake/chrome-cdp-cli/actions/workflows/codeql.yml/badge.svg)](https://github.com/sanketsudake/chrome-cdp-cli/actions/workflows/codeql.yml)
+[![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Go Version](https://img.shields.io/github/go-mod/go-version/sanketsudake/chrome-cdp-cli)](go.mod)
 
 ```sh
 chrome-cdp open https://example.com     # open a tab, get its id
