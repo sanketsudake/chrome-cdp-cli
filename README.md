@@ -1,169 +1,123 @@
 # chrome-cdp
 
-Drive your **already-running local Chrome** — your real tabs, logins, and extensions — from the command line over the Chrome DevTools Protocol (via [chromedp](https://github.com/chromedp/chromedp)).
-Usable by a human and by an AI agent: every command speaks a uniform JSON envelope and a stable exit-code contract.
+Drive your **real, already-running Chrome** — your actual tabs, logins, cookies, and extensions — from the command line.
+Built for humans and AI agents alike: every command speaks one JSON envelope and one stable exit-code contract.
 
-> This is an initial implementation of the design in `.scratch/chrome-cdp-cli/spec.md` (produced by a `/wayfinder` map).
-> The core spine — connection layer, target resolution, the command loop, the output contract, and the raw escape hatch — is built and tested.
-> See **Status** below for what's deferred.
-
-## Install
+[![CI](https://github.com/sanketsudake/chrome-cdp-cli/actions/workflows/ci.yml/badge.svg)](https://github.com/sanketsudake/chrome-cdp-cli/actions/workflows/ci.yml) [![Go Reference](https://pkg.go.dev/badge/github.com/sanketsudake/chrome-cdp-cli.svg)](https://pkg.go.dev/github.com/sanketsudake/chrome-cdp-cli) [![Go Report Card](https://goreportcard.com/badge/github.com/sanketsudake/chrome-cdp-cli)](https://goreportcard.com/report/github.com/sanketsudake/chrome-cdp-cli)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 ```sh
-# Homebrew (macOS):
-brew install sanketsudake/tap/chrome-cdp
-
-# go install:
-go install github.com/sanketsudake/chrome-cdp-cli/cmd/chrome-cdp@latest
-
-# or grab a prebuilt binary from the GitHub Releases page, or build from a clone:
-go build -o chrome-cdp ./cmd/chrome-cdp
+chrome-cdp open https://example.com     # open a tab, get its id
+chrome-cdp snap --role button           # see what's clickable — by accessible name
+chrome-cdp click --by name "Sign in"    # act by meaning, not a brittle CSS id
 ```
 
-## Connect
+Because it attaches to the browser you're already using, an app you're signed into loads **authenticated** — no headless browser, no second login, no credential ever typed.
 
-`chrome-cdp` attaches to your real Chrome via the one-time **`chrome://inspect/#remote-debugging`** toggle (it reads Chrome's `DevToolsActivePort` file and connects the WebSocket directly — the classic `--remote-debugging-port` no longer works on the default profile since Chrome M136).
-If no debug-enabled Chrome is found, it launches a managed Chrome on a dedicated profile alongside your real one.
+## Quickstart
 
-A background **daemon** holds the CDP connection, so Chrome's "Allow debugging?" prompt appears once per session (not once per command) and subsequent commands are a fast socket round-trip.
-It starts lazily on first use and idles out after 30 minutes; manage it with `chrome-cdp daemon start|stop|status`, or bypass it with `--no-daemon`.
+1. **Install** — macOS via Homebrew, or Go:
+
+   ```sh
+   brew install sanketsudake/tap/chrome-cdp
+   # or:
+   go install github.com/sanketsudake/chrome-cdp-cli/cmd/chrome-cdp@latest
+   ```
+
+2. **Let Chrome accept a debugger** — open `chrome://inspect/#remote-debugging` and toggle it on (a one-time consent; `chrome-cdp` never suppresses it).
+
+3. **Check the connection** — `chrome-cdp doctor` confirms it's ready, or prints the exact fix.
+
+4. **Drive it:**
+
+   ```sh
+   chrome-cdp use url:github        # pick a tab; later commands need no --target
+   chrome-cdp snap                  # read the page as an accessibility tree
+   chrome-cdp click --by name "New" --role button
+   ```
+
+That's the whole loop: **`list → use → snap → act → verify`**.
+The [logged-in web app guide](docs/scenarios/automating-a-logged-in-web-app.md) walks it end to end.
+
+## Why chrome-cdp
+
+- **Your real session.**
+  It drives the Chrome you're logged into — real cookies, SSO, extensions — so there's nothing to authenticate and no secret to store.
+- **Address by meaning.**
+  Target controls by ARIA **accessible name**, visible **label**, or grid **cell** — not CSS ids that change every session.
+  Reads and writes survive the app's cosmetic churn.
+- **Made for automation.**
+  One JSON envelope, one [exit-code contract](docs/cli-reference.md#output-contract); a background daemon holds the connection so the consent prompt appears once per session, not per command.
+- **Drives the hard widgets.**
+  Portal menus, multi-level cascade prompts, and native `<select>`s that a synthetic click can't open — the [`select`](docs/scenarios/driving-widgets-with-select.md) verb opens them.
+- **Works on modern Chrome.**
+  It reads Chrome's `DevToolsActivePort` and connects directly, so it keeps working where the classic `--remote-debugging-port` flag stopped (default profile, Chrome M136+).
+
+## A taste of the commands
 
 ```sh
-chrome-cdp doctor    # check the connection and get the exact fix if it's not ready
-```
-
-## Use
-
-```sh
-chrome-cdp list --url outlook       # list open tabs (--url/--title filter by substring)
-chrome-cdp open https://example.com # new tab, navigate, make it current — returns its id
-chrome-cdp use url:github           # set the sticky current tab
-chrome-cdp snap                     # accessibility-tree snapshot (see the page)
-chrome-cdp snap --role button --grep "[AP]M"   # filter the tree server-side (role + name regex)
-chrome-cdp nav https://example.com  # navigate (waits for load)
-chrome-cdp html "#main"             # outer HTML of a selector (or the page)
-chrome-cdp text ".title"            # visible text of a selector
-chrome-cdp click "#submit"          # click (auto-waits for the element)
-chrome-cdp click --by search "Sign in"   # match by DevTools text/XPath/CSS search
-chrome-cdp click --by name "Request Absence" --role button   # match by ARIA accessible name
-chrome-cdp click --by name "Delete" --in-row "TEST entry" --role button   # the Delete in one row of many
-chrome-cdp click "#delete" --on-dialog accept   # auto-accept a native confirm()/alert() the click triggers
-chrome-cdp type "#q" "hello"        # type via real keystrokes (appends)
-chrome-cdp fill "#hours" "8"        # set a field, replacing its content (clears then types)
-chrome-cdp fill --by cell "Mon, 7/13" "8"   # a grid input by its column header
-chrome-cdp fill --by label "Notes" "hello"  # a form control by its visible label
-chrome-cdp select --by label "Activity Category" "Direct Revenue"   # native <select> by label
-chrome-cdp select "Time Type" "Category > Acme: Platform > Project > Time Entry" --role textbox  # prompt/combobox/cascade
-chrome-cdp click --by name "Approve" --role button --wait-text "Success"   # act, then confirm the toast
-chrome-cdp grid                     # read a table/grid as {headers, rows} (a11y)
-chrome-cdp value --all "input.hr"   # values of every match, as a list
-chrome-cdp scroll --dy 600          # scroll (or --to <sel> into view, --wheel for lazy grids)
-chrome-cdp eval "document.title"    # evaluate JS
-chrome-cdp wait --url "/dashboard"  # wait until the tab's URL settles (or --visible/--gone/--text/--stable/--idle/--for)
-chrome-cdp screenshot               # PNG -> ./screenshot-<timestamp>.png (or -o -)
-chrome-cdp raw --list               # list the connected Chrome's CDP domains
+chrome-cdp list --url outlook              # list tabs (--url/--title filter)
+chrome-cdp snap --role button --grep "[AP]M"   # filter the a11y tree server-side
+chrome-cdp grid                            # read a table as {headers, rows}
+chrome-cdp fill --by cell "Mon, 7/13" "8"  # a grid input by its column header
+chrome-cdp fill --by label "Notes" "hi"    # a form control by its visible label
+chrome-cdp select "Time Type" "Projects > Acme: Platform > Project > Time Entry" --role textbox
+chrome-cdp click --by name "Approve" --role button --wait-text "Success"   # act, then confirm
+chrome-cdp wait --idle                     # settle an SPA (network, not a fixed sleep)
 chrome-cdp raw Network.setCacheDisabled '{"cacheDisabled":true}'   # any CDP method
 ```
 
-Batch many commands over one held connection (NDJSON argv in, NDJSON envelopes
-out) — `snap` issues a stable `ref` per node that `--by ref` acts on without
-re-resolving by name:
+Full command, flag, and exit-code tables live in the **[CLI reference](docs/cli-reference.md)**.
 
-```sh
-printf '%s\n' \
-  '["use","url:workday"]' \
-  '["snap"]' \
-  '["click","e42","--by","ref"]' | chrome-cdp session
-```
+## For AI agents
 
-Filling a grid over one connection — cell-addressed `fill`s plus a single
-`value --all` read-back, no per-command process spawn:
+`chrome-cdp` is meant to be a tool an agent *calls*: `snap` returns the page's actionable structure as text (roles, names, states, refs) instead of pixels, every result is one parseable envelope, and failures classify by exit code so the agent branches on a number, not on prose.
+See **[Using chrome-cdp from an AI agent](docs/using-with-ai-agents.md)**.
 
-```sh
-printf '%s\n' \
-  '["fill","--by","cell","Mon, 7/13","8"]' \
-  '["fill","--by","cell","Tue, 7/14","8"]' \
-  '["fill","--by","cell","Wed, 7/15","8"]' \
-  '["value","--all","input[data-automation-id=numericInput]"]' \
-  '["click","--by","name","Save and Close","--role","button","--wait-text","saved"]' \
-  | chrome-cdp session
-```
-
-Addressing on a **backgrounded tab**: `--by css`/`id`/`search` resolve via
-`querySelector` and work regardless; `--by name`/`ref`/`cell` use the a11y tree,
-which Chrome throttles on a tab it can't foreground — a timeout there returns
-`tab_hidden: true` so you know to foreground Chrome (name-addressing also falls
-back to a DOM accessible-name match when the tab is hidden).
-
-Target a tab with `--target <idprefix|url:<s>|title:<s>|@N>`, or set it once with `use`.
-Add `--json` for machine-readable output; branch on the exit code (`chrome-cdp exit-codes`).
-
-### Output contract
-
-Every `--json` command emits one envelope:
-
-```json
-{ "ok": true, "command": "eval", "target": {"id":"…","title":"…","url":"…"},
-  "result": { "value": "…" }, "elapsed_ms": 12 }
-```
-
-Failures use the same envelope with `"ok": false` and an `error{code,message,…}`, plus a nonzero exit code: `0` ok · `1` generic · `2` usage · `3` connection · `4` target/timeout · `5` cdp · `6` daemon.
-
-## Skills
-
-An [Agent Skill](https://docs.claude.com/en/docs/claude-code/skills) that teaches an AI agent to drive this CLI ships in [`skills/drive-chrome-cdp`](skills/drive-chrome-cdp/SKILL.md) — the `list → use → snap → act → verify` loop, `--by` addressing, the `select` verb, `session` batching, and the output contract, in one reference.
-See [`skills/README.md`](skills/README.md).
+An [Agent Skill](https://docs.claude.com/en/docs/claude-code/skills) that teaches the whole loop ships in [`skills/drive-chrome-cdp`](skills/drive-chrome-cdp/SKILL.md) — point your harness at it.
 
 ## Configure
 
-Persist the flags you'd otherwise retype in an optional TOML file at `$XDG_CONFIG_HOME/chrome-cdp/config.toml` (usually `~/.config/chrome-cdp/config.toml`).
-See [`config.example.toml`](config.example.toml) for the full set of keys.
+Persist flags you'd otherwise retype in `~/.config/chrome-cdp/config.toml` — see [`config.example.toml`](config.example.toml).
 
 ```toml
 json = true            # default to machine-readable output
 timeout = "10s"
-by = "search"          # default selector syntax
 target = "url:github"  # default tab when neither --target nor `use` is set
-no_daemon = false
 ```
 
-Precedence, highest first: **command-line flags > `CHROME_CDP_*` env vars > config file > built-in defaults**.
-So `CHROME_CDP_BY=id` overrides the file, and an explicit `--by css` overrides everything.
-A malformed config is a warning on stderr, not a fatal error — the CLI still runs on the built-ins.
-
-Shell completion is built in (cobra): `chrome-cdp completion bash|zsh|fish|powershell` — see `chrome-cdp completion --help` for how to load it.
+Precedence, highest first: **command-line flag > `CHROME_CDP_*` env var > config file > built-in default**.
+Shell completion is built in: `chrome-cdp completion bash|zsh|fish|powershell`.
 
 ## Security
 
-- **Loopback only.** chrome-cdp connects to `127.0.0.1` and never binds the debug port to a non-loopback interface.
-  It never suppresses Chrome's "Allow debugging?" consent dialog or the automation banner.
-- **A live debug endpoint = full control** of whatever Chrome is authenticated to.
-  Treat it like a local root shell into your browser's sessions; only enable `chrome://inspect` when you intend to automate.
+A live debug endpoint is **full control** of whatever your Chrome is signed into — treat enabling `chrome://inspect` like opening a local root shell into your browser's sessions, and only do it when you intend to automate.
+
+- **Loopback only.**
+  It connects to `127.0.0.1` and never binds the debug port to a non-loopback interface.
+  It never suppresses Chrome's "Allow debugging?" consent or the automation banner.
 - **Don't pass secrets as arguments.**
-  `type <selector> <text>` takes the text as a positional argument, which is visible in `ps` and shell history.
-  A secret-safe input path (stdin / `--secret-file`) is deferred — until then, don't type passwords through it on a shared machine.
-- The managed-launch fallback uses your system Chrome with a dedicated profile; it does **not** disable the sandbox.
+  `type <selector> <text>` takes text as a positional argument, visible in `ps` and shell history — don't type passwords through it on a shared machine.
+- **Managed-launch fallback** uses your system Chrome with a dedicated profile and does not disable the sandbox.
 
-## Status
+## Documentation
 
-**Implemented & tested:** the connection ladder + `DevToolsActivePort` reader, target-grammar resolution, the uniform envelope + exit-code contract, selector options (`--by` incl.
-`name` = ARIA accessible-name addressing with `--role`/`--nth` (with a DOM accessible-name fallback on a throttled hidden tab), `ref` = snap-issued `e<id>` element refs, `cell` = grid input by `[row|]column` header, `label` = form control by visible label text, `--in-row` = scope a name match to one table row (DOM-based, so it also works on a backgrounded tab), `--wait`, `--no-wait`), the `--on-dialog accept|dismiss` modifier (auto-handle a native alert/confirm/prompt opened during a click/type/fill so it can't wedge the connection), the connection globals (`--port`, `--profile-dir`, `--no-launch`) and output globals (`--json`, `--no-color`, `-v`, `--no-input`, `--quiet`, `--timeout`), and commands `list` (`--url`/`--title` filters), `open` (new tab → navigate → current), `use`, `nav`, `snap` (`--role`/`--grep`/`--region`/`--dedupe` server-side filters), `html`, `text`, `value`, `eval`, `click`, `type`, `fill` (clear-then-set), `select` (prompt/combobox/cascade/native-`<select>`), `grid` (a11y table read), `value --all`, `scroll` (`--dy`/`--to`/`--wheel`), `--wait-text` (act-and-confirm on action verbs), `attr` (get/list/set/rm), `screenshot`, `pdf`, `cookie` (list/set/rm/clear), `headers set`, `emulate` (viewport/geo/reset), `frame list`, `wait` (`--url`/`--visible`/`--gone`/`--text`/`--stable`/`--idle`/`--for`), `session` (NDJSON batch over one held connection), `--pierce` (shadow-DOM/iframe piercing), `raw` (incl.
-`--browser`/`--list`), `doctor`, `daemon` (start/stop/status), `exit-codes`, `version` (and `--version`).
-Plus an optional TOML config file (flags > `CHROME_CDP_*` env > config > defaults), shell completion (`completion`), and goreleaser + Homebrew-cask packaging with a CI matrix (Linux/macOS) and a tag-driven release workflow.
-Verified with unit tests, a golden output-contract test, an in-process + subprocess command-boundary suite, RPC round-trip tests for the daemon, and an integration test that drives a real headless Chrome.
-
-**Deferred (next increments, per the spec):**
-- The streaming/interception verbs: `console`, `network log`, `mock`, `block`, `download wait` (they hang on the always-on observation model), plus `perm` (reachable today via `raw Browser.grantPermissions`).
-- Explicit `--frame <selector>` element scoping (the same-origin `FromNode` two-phase resolve the catalog flagged as its own sub-effort).
-  `frame list` and `--pierce` (which reaches shadow DOM + iframes via DevTools search) are done; cross-origin frames are also reachable today as their own `--target` (they are separate CDP targets).
-- Richer error classification (action failures are currently mapped heuristically to `target/timeout` vs `cdp`).
+- [CLI reference](docs/cli-reference.md) — commands, flags, exit codes, output contract.
+- [Automating a logged-in web app](docs/scenarios/automating-a-logged-in-web-app.md) — the core loop.
+- [Forms and grids](docs/scenarios/forms-and-grids.md) — label / cell addressing and batched fills.
+- [Driving widgets with `select`](docs/scenarios/driving-widgets-with-select.md) — menus, cascades, native selects.
+- [Using chrome-cdp from an AI agent](docs/using-with-ai-agents.md) — the agent-tool design.
 
 ## Develop
 
 ```sh
-go test ./...              # full suite (spawns a headless Chrome for the integration test)
-go test -short ./...       # skip the live-Chrome integration test
+go build -o chrome-cdp ./cmd/chrome-cdp
+go test ./...          # spawns a headless Chrome for the integration tests
+go test -short ./...   # skip the live-Chrome tests
 ```
 
-Architecture: `internal/result` (envelope + exit codes), `internal/target` (grammar), `internal/browser` (connection logic, no chromedp), `internal/chrome` (chromedp-backed `Browser`), `internal/state` (sticky target), `internal/cli` (cobra command tree).
-The full design and rationale live in `.scratch/chrome-cdp-cli/`.
+Architecture: `internal/result` (envelope + exit codes), `internal/target` (target grammar), `internal/browser` (connection logic), `internal/chrome` (chromedp-backed driver), `internal/daemon` (the held-connection RPC), `internal/cli` (the cobra command tree).
+
+## License
+
+Released under the [MIT License](LICENSE).
