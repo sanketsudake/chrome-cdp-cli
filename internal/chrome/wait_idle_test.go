@@ -55,3 +55,55 @@ addEventListener('load', () => setTimeout(() => {
 		t.Errorf("window.__done = %q after wait --idle, want true (idle returned too early, in %v)", got, time.Since(start))
 	}
 }
+
+// wait --idle must still settle when a request is held open indefinitely (a
+// websocket / long-poll / EventSource — the shape that made --idle hang on
+// Workday): inflight never returns to zero, so it settles via the stalled path
+// once the connection goes silent, rather than waiting out --timeout.
+func TestWaitIdleStalledStream(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping live-Chrome integration in -short mode")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	// Build the server BEFORE launching Chrome so its Close() defer runs LAST
+	// (LIFO), after b.Close() tears Chrome down. Otherwise srv.Close() blocks on
+	// the still-open /hang request, which only unblocks when Chrome disconnects
+	// — a teardown deadlock. /hang stays open until the request context is
+	// cancelled (Chrome dropping the connection at b.Close()).
+	mux := http.NewServeMux()
+	mux.HandleFunc("/hang", func(_ http.ResponseWriter, r *http.Request) {
+		<-r.Context().Done()
+	})
+	mux.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) {
+		fmt.Fprint(w, `<!doctype html><title>Stalled</title><body><script>
+addEventListener('load', () => setTimeout(() => { fetch('/hang'); }, 50));
+</script></body>`)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	b, err := launch(true, tmpProfile(t), 0)
+	if err != nil {
+		t.Skipf("cannot launch a managed headless Chrome here: %v", err)
+	}
+	defer b.Close()
+
+	id := firstTab(ctx, t, b)
+	if _, err := b.Navigate(ctx, id, srv.URL); err != nil {
+		t.Fatalf("Navigate: %v", err)
+	}
+
+	// Bound the wait well under the 30s+ a held-open request would otherwise
+	// cost: if the fix works it settles via the stalled path in ~2s.
+	wctx, wcancel := context.WithTimeout(ctx, 10*time.Second)
+	defer wcancel()
+	start := time.Now()
+	if _, err := b.Wait(wctx, id, WaitCond{Idle: true}); err != nil {
+		t.Fatalf("Wait --idle hung on a held-open request: %v", err)
+	}
+	if elapsed := time.Since(start); elapsed >= 8*time.Second {
+		t.Errorf("wait --idle took %v — it waited for the held-open request instead of settling on silence", elapsed)
+	}
+}
