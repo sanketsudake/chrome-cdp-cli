@@ -753,6 +753,13 @@ func (a *App) targetAction(command string, fn func(ctx context.Context, b chrome
 			a.emitErr(command, code, msg, details)
 			return nil
 		}
+		// If the action settled at a new URL (nav, wait --url / redirect), report
+		// that in the envelope's target rather than the pre-action URL.
+		if m, ok := res.(map[string]any); ok {
+			if u, ok := m["url"].(string); ok && u != "" {
+				tgt.URL = u
+			}
+		}
 		// --wait-text folds "act, then confirm the write landed" into one call:
 		// after the action succeeds, block until the page contains the text.
 		if a.actWaitText != "" {

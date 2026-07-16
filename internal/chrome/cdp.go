@@ -1397,10 +1397,13 @@ func (c *CDP) Wait(ctx context.Context, id string, cond WaitCond) (map[string]an
 	default:
 		return nil, fmt.Errorf("wait needs one of --url, --visible, --gone, --text, --stable, --idle, --for")
 	}
-	if err := c.run(ctx, id, action); err != nil {
+	// Also read the URL the tab settled at, so the envelope's target reflects
+	// where a --url / redirect wait actually landed, not the pre-wait URL.
+	var loc string
+	if err := c.run(ctx, id, action, chromedp.Location(&loc)); err != nil {
 		return nil, err
 	}
-	return map[string]any{"waited": what}, nil
+	return map[string]any{"waited": what, "url": loc}, nil
 }
 
 // waitURL polls location.href until it contains substr (or the context ends).
