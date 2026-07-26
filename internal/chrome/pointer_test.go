@@ -486,3 +486,53 @@ func TestPointerSharesClickGeometry(t *testing.T) {
 			res["x"], res["y"], dblPt[0], dblPt[1])
 	}
 }
+
+// A resolved-but-covered element must be reported as ErrOccluded even when the
+// command's deadline expires while a geometry read is in flight.
+//
+// This is a regression test for a CI failure that only appeared on a loaded
+// machine: settledNodePoint kept just the LAST error, so the context error from
+// the final poll masked the occlusion it had already observed, and the verb
+// reported a bare timeout for an element it had successfully measured and found
+// under an overlay. The classification has to survive load, not merely hold on
+// an idle box — a caller that sees "timeout" rewrites its selector, where
+// "occluded" tells it to dismiss the overlay.
+func TestOccludedSurvivesDeadlineDuringGeometryRead(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping live-Chrome integration in -short mode")
+	}
+	b, err := launch(true, tmpProfile(t), 0)
+	if err != nil {
+		t.Skipf("cannot launch a managed headless Chrome here: %v", err)
+	}
+	defer b.Close()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		fmt.Fprint(w, `<!doctype html><title>Occluded</title><body>
+<button id="under" style="position:absolute;left:50px;top:50px;width:100px;height:40px">Under</button>
+<div id="over" style="position:absolute;left:0;top:0;width:400px;height:300px;background:#000"></div>
+</body>`)
+	}))
+	defer srv.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	id := firstTab(ctx, t, b)
+	if _, err := b.Navigate(ctx, id, srv.URL); err != nil {
+		t.Fatalf("Navigate: %v", err)
+	}
+
+	// A deadline short enough that it lands mid-poll, which is exactly the
+	// window that used to produce a context error instead of the diagnosis.
+	for _, d := range []time.Duration{250 * time.Millisecond, 1 * time.Second} {
+		actx, acancel := context.WithTimeout(ctx, d)
+		_, err := b.Pointer(actx, id, "#under", PointerOpts{Action: PointerDblClick})
+		acancel()
+		if err == nil {
+			t.Fatalf("deadline %s: click on a covered element succeeded, want an error", d)
+		}
+		if !IsOccluded(err) {
+			t.Errorf("deadline %s: err = %v, want one IsOccluded recognises", d, err)
+		}
+	}
+}
