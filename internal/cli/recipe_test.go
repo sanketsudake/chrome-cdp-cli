@@ -1,0 +1,646 @@
+package cli
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"reflect"
+	"strings"
+	"testing"
+
+	"github.com/sanketsudake/chrome-cdp-cli/internal/chrome"
+	"github.com/sanketsudake/chrome-cdp-cli/internal/target"
+)
+
+// isolateRecipes points the recipe search path at a temp project directory and
+// a temp config home, so a test never sees (or writes) the developer's real
+// recipes. It uses t.Chdir/t.Setenv rather than an injected seam so the test
+// exercises the real resolution order — which is the thing VS-11 is about — and
+// therefore these tests are not parallel.
+func isolateRecipes(t *testing.T) (project, user string) {
+	t.Helper()
+	root := t.TempDir()
+	proj := filepath.Join(root, "proj")
+	cfg := filepath.Join(root, "config")
+	project = filepath.Join(proj, ".chrome-cdp", "recipes")
+	user = filepath.Join(cfg, "chrome-cdp", "recipes")
+	for _, d := range []string{project, user} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("XDG_CONFIG_HOME", cfg)
+	t.Chdir(proj)
+	return project, user
+}
+
+func writeRecipe(t *testing.T, dir, name, body string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(dir, name+".yaml"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// envelopes parses NDJSON stdout into envelopes, failing on any line that is
+// not one JSON value — the stream contract `session` and `recipe run` share.
+func envelopes(t *testing.T, stdout string) []map[string]any {
+	t.Helper()
+	var out []map[string]any
+	for _, line := range strings.Split(strings.TrimSpace(stdout), "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		var e map[string]any
+		if err := json.Unmarshal([]byte(line), &e); err != nil {
+			t.Fatalf("output line is not JSON: %q (%v)", line, err)
+		}
+		out = append(out, e)
+	}
+	return out
+}
+
+// recordingBrowser records every browser call in order, which is what makes the
+// `recipe run` vs `dry-run | session` equivalence assertable (VS-10).
+type recordingBrowser struct {
+	stubBrowser
+	calls []string
+	// failOn makes the Nth Fill (1-based) fail, for the abort/continue cases.
+	failFillsAt int
+	fills       int
+}
+
+func (b *recordingBrowser) List(context.Context) ([]target.Info, error) {
+	b.calls = append(b.calls, "List")
+	return []target.Info{{ID: "aa11", Title: "App", URL: "https://app.test/"}}, nil
+}
+
+func (b *recordingBrowser) Navigate(_ context.Context, id, url string) (map[string]any, error) {
+	b.calls = append(b.calls, fmt.Sprintf("Navigate(%s,%s)", id, url))
+	return map[string]any{"url": url, "status": 200}, nil
+}
+
+func (b *recordingBrowser) Fill(_ context.Context, id, sel, value string, q chrome.QueryOpts) (map[string]any, error) {
+	b.fills++
+	b.calls = append(b.calls, fmt.Sprintf("Fill(%s,%s,%q,by=%s,role=%s)", id, sel, value, q.By, q.Role))
+	if b.failFillsAt == b.fills {
+		return nil, errors.New("timeout waiting for selector")
+	}
+	return map[string]any{"filled": true}, nil
+}
+
+func (b *recordingBrowser) Wait(_ context.Context, id string, cond chrome.WaitCond) (map[string]any, error) {
+	b.calls = append(b.calls, fmt.Sprintf("Wait(%s,idle=%v,text=%q)", id, cond.Idle, cond.Text))
+	return map[string]any{"waited": "idle"}, nil
+}
+
+func (b *recordingBrowser) Text(_ context.Context, id, sel string, _ chrome.QueryOpts) (map[string]any, error) {
+	b.calls = append(b.calls, fmt.Sprintf("Text(%s,%s)", id, sel))
+	return map[string]any{"text": "hello"}, nil
+}
+
+var _ chrome.Browser = (*recordingBrowser)(nil)
+
+const threeStep = `name: three
+description: Three steps against a stub.
+target: aa11
+steps:
+  - label: open
+    run: ["nav", "https://app.test/one"]
+  - run: ["wait", "--idle"]
+  - label: read
+    run: ["text", "h1"]
+`
+
+// VS-1: a recipe emits one envelope per step, in order, then a summary.
+func TestRecipeRunRoundTrip(t *testing.T) {
+	project, _ := isolateRecipes(t)
+	writeRecipe(t, project, "three", threeStep)
+
+	var out, errb bytes.Buffer
+	app := New(&recordingBrowser{}, &out, &errb)
+	if code := app.Execute("recipe", "run", "three"); code != 0 {
+		t.Fatalf("exit = %d, want 0\nstderr: %s", code, errb.String())
+	}
+
+	envs := envelopes(t, out.String())
+	if len(envs) != 4 {
+		t.Fatalf("got %d envelopes, want 3 steps + 1 summary:\n%s", len(envs), out.String())
+	}
+	wantCmds := []string{"nav", "wait", "text", "recipe"}
+	for i, want := range wantCmds {
+		if envs[i]["command"] != want {
+			t.Errorf("envelope %d command = %v, want %s", i, envs[i]["command"], want)
+		}
+		if envs[i]["ok"] != true {
+			t.Errorf("envelope %d = %v, want ok", i, envs[i])
+		}
+	}
+	// Step envelopes carry step/label so a caller correlates without counting
+	// lines; the summary is the one envelope that carries neither.
+	if envs[0]["step"] != 1.0 || envs[0]["label"] != "open" {
+		t.Errorf("step envelope 1 = %v, want step 1 labelled open", envs[0])
+	}
+	if _, ok := envs[1]["label"]; ok {
+		t.Errorf("unlabelled step carries a label: %v", envs[1])
+	}
+	if envs[2]["step"] != 3.0 || envs[2]["label"] != "read" {
+		t.Errorf("step envelope 3 = %v, want step 3 labelled read", envs[2])
+	}
+
+	res := envs[3]["result"].(map[string]any)
+	if res["recipe"] != "three" || res["steps"] != 3.0 || res["completed"] != 3.0 {
+		t.Errorf("summary = %v, want three/3/3", res)
+	}
+	if res["failed"] != nil {
+		t.Errorf("summary failed = %v, want null", res["failed"])
+	}
+}
+
+// VS-7: the run stops at the first failure, the summary says which step and
+// why, and the process exit is that step's — 4 for a target timeout.
+func TestRecipeAbortsAtFailingStepWithLocation(t *testing.T) {
+	project, _ := isolateRecipes(t)
+	writeRecipe(t, project, "abort", `name: abort
+target: aa11
+steps:
+  - run: ["nav", "https://app.test/"]
+  - label: save
+    run: ["fill", "#a", "1"]
+  - label: never runs
+    run: ["fill", "#b", "2"]
+`)
+	b := &recordingBrowser{failFillsAt: 1}
+	var out, errb bytes.Buffer
+	app := New(b, &out, &errb)
+	if code := app.Execute("recipe", "run", "abort"); code != 4 {
+		t.Fatalf("exit = %d, want 4 (the failing step's code)\n%s", code, out.String())
+	}
+	if b.fills != 1 {
+		t.Errorf("%d fills, want 1: the step after the failure must not run", b.fills)
+	}
+
+	envs := envelopes(t, out.String())
+	summary := envs[len(envs)-1]
+	if summary["ok"] != false {
+		t.Errorf("summary = %v, want ok:false", summary)
+	}
+	res := summary["result"].(map[string]any)
+	if res["completed"] != 1.0 {
+		t.Errorf("completed = %v, want 1", res["completed"])
+	}
+	failed, ok := res["failed"].(map[string]any)
+	if !ok {
+		t.Fatalf("summary has no failed object: %v", res)
+	}
+	if failed["index"] != 2.0 || failed["label"] != "save" || failed["code"] != "target_timeout" {
+		t.Errorf("failed = %v, want index 2, label save, code target_timeout", failed)
+	}
+}
+
+// VS-8: on_error: continue keeps going, but the run is still a failure and the
+// summary still names the first thing that went wrong.
+func TestRecipeOnErrorContinue(t *testing.T) {
+	project, _ := isolateRecipes(t)
+	writeRecipe(t, project, "cont", `name: cont
+target: aa11
+steps:
+  - run: ["nav", "https://app.test/"]
+  - label: optional
+    run: ["fill", "#a", "1"]
+    on_error: continue
+  - label: still runs
+    run: ["fill", "#b", "2"]
+`)
+	b := &recordingBrowser{failFillsAt: 1}
+	var out, errb bytes.Buffer
+	app := New(b, &out, &errb)
+	code := app.Execute("recipe", "run", "cont")
+	if code != 4 {
+		t.Fatalf("exit = %d, want 4 (the failing step's code even when the run continued)", code)
+	}
+	if b.fills != 2 {
+		t.Errorf("%d fills, want 2: on_error continue must run the next step", b.fills)
+	}
+
+	envs := envelopes(t, out.String())
+	summary := envs[len(envs)-1]
+	res := summary["result"].(map[string]any)
+	if summary["ok"] != false {
+		t.Errorf("summary ok = %v, want false", summary["ok"])
+	}
+	if res["completed"] != 2.0 {
+		t.Errorf("completed = %v, want 2 (the successful steps)", res["completed"])
+	}
+	if failed := res["failed"].(map[string]any); failed["index"] != 2.0 {
+		t.Errorf("failed = %v, want the first failure, index 2", failed)
+	}
+}
+
+// VS-9: --dry-run resolves and prints, and the browser is never contacted. The
+// stub fails the test on any call, so this asserts on behaviour and not just on
+// the absence of output.
+func TestRecipeDryRunTouchesNothing(t *testing.T) {
+	project, _ := isolateRecipes(t)
+	writeRecipe(t, project, "three", threeStep)
+
+	var out, errb bytes.Buffer
+	app := New(noCall(t), &out, &errb)
+	if code := app.Execute("recipe", "run", "three", "--dry-run"); code != 0 {
+		t.Fatalf("exit = %d, want 0\nstderr: %s", code, errb.String())
+	}
+	lines := strings.Split(strings.TrimSpace(out.String()), "\n")
+	if len(lines) != 3 {
+		t.Fatalf("got %d lines, want one per step:\n%s", len(lines), out.String())
+	}
+	var first []string
+	if err := json.Unmarshal([]byte(lines[0]), &first); err != nil {
+		t.Fatalf("dry-run line is not a JSON argv array: %q", lines[0])
+	}
+	want := []string{"nav", "https://app.test/one", "--target", "aa11"}
+	if !reflect.DeepEqual(first, want) {
+		t.Errorf("line 1 = %#v, want %#v", first, want)
+	}
+}
+
+// VS-10: the dry-run output is valid `session` input, and running it through
+// `session` drives the browser exactly as `recipe run` does.
+//
+// This is the structural guard on "recipes are `session` with a header": if the
+// runner ever grows a second execution path — an extra flag it applies out of
+// band, a target it resolves differently, a step it synthesises — the two call
+// sequences stop matching and this test fails.
+func TestRecipeRunEqualsDryRunThroughSession(t *testing.T) {
+	project, _ := isolateRecipes(t)
+	writeRecipe(t, project, "equiv", `name: equiv
+target: aa11
+inputs:
+  who: { default: "world" }
+steps:
+  - label: open
+    run: ["nav", "https://app.test/{{who}}"]
+  - run: ["wait", "--idle"]
+  - label: fill it in
+    run: ["fill", "Full name", "{{who}}", "--by", "name", "--role", "textbox"]
+  - run: ["text", "h1"]
+`)
+
+	viaRecipe := &recordingBrowser{}
+	var recipeOut, recipeErr bytes.Buffer
+	if code := New(viaRecipe, &recipeOut, &recipeErr).Execute("recipe", "run", "equiv"); code != 0 {
+		t.Fatalf("recipe run exit = %d\n%s", code, recipeErr.String())
+	}
+
+	var dry, dryErr bytes.Buffer
+	if code := New(noCall(t), &dry, &dryErr).Execute("recipe", "run", "equiv", "--dry-run"); code != 0 {
+		t.Fatalf("dry run exit = %d\n%s", code, dryErr.String())
+	}
+
+	viaSession := &recordingBrowser{}
+	var sessionOut, sessionErr bytes.Buffer
+	sessionApp := New(viaSession, &sessionOut, &sessionErr).WithInput(strings.NewReader(dry.String()))
+	if code := sessionApp.Execute("session"); code != 0 {
+		t.Fatalf("session exit = %d\n%s", code, sessionErr.String())
+	}
+
+	if !reflect.DeepEqual(viaRecipe.calls, viaSession.calls) {
+		t.Errorf("recipe run and dry-run|session drove the browser differently:\n recipe:  %v\n session: %v",
+			viaRecipe.calls, viaSession.calls)
+	}
+	if len(viaRecipe.calls) == 0 {
+		t.Fatal("no browser calls recorded; the equivalence assertion would be vacuous")
+	}
+
+	// The step envelopes are the same stream too, once the recipe's step/label
+	// correlation fields are set aside.
+	recipeEnvs := envelopes(t, recipeOut.String())
+	sessionEnvs := envelopes(t, sessionOut.String())
+	if len(recipeEnvs) != len(sessionEnvs)+1 {
+		t.Fatalf("recipe emitted %d envelopes, session %d (want session + 1 summary)", len(recipeEnvs), len(sessionEnvs))
+	}
+	for i := range sessionEnvs {
+		if recipeEnvs[i]["command"] != sessionEnvs[i]["command"] || recipeEnvs[i]["ok"] != sessionEnvs[i]["ok"] {
+			t.Errorf("envelope %d differs: recipe %v vs session %v", i, recipeEnvs[i], sessionEnvs[i])
+		}
+	}
+}
+
+// VS-4: a missing required input is exit 2 and the browser is never contacted.
+// VS-5, VS-6, VS-12 ride the same table: everything a recipe can get wrong
+// statically fails before a connection exists.
+func TestRecipeValidationNeverConnects(t *testing.T) {
+	cases := map[string]struct {
+		body string
+		argv []string
+		want string // substring of the error message
+	}{
+		"missing required input": { // VS-4
+			body: "name: r\ninputs:\n  week: { required: true }\nsteps:\n  - run: [\"nav\", \"https://x.test/{{week}}\"]\n",
+			argv: []string{"recipe", "run", "r"},
+			want: "week",
+		},
+		"undeclared placeholder": { // VS-5
+			body: "name: r\nsteps:\n  - run: [\"nav\", \"https://x.test/{{nope}}\"]\n",
+			argv: []string{"recipe", "run", "r"},
+			want: "not a declared input",
+		},
+		"unknown --set key": { // VS-6
+			body: "name: r\ninputs:\n  hours: { default: \"8\" }\nsteps:\n  - run: [\"snap\"]\n",
+			argv: []string{"recipe", "run", "r", "--set", "hurs=9"},
+			want: "unknown input",
+		},
+		"--set without a value": {
+			body: "name: r\nsteps:\n  - run: [\"snap\"]\n",
+			argv: []string{"recipe", "run", "r", "--set", "hours"},
+			want: "must be k=v",
+		},
+		"repeated --set": {
+			body: "name: r\ninputs:\n  h: { default: \"1\" }\nsteps:\n  - run: [\"snap\"]\n",
+			argv: []string{"recipe", "run", "r", "--set", "h=1", "--set", "h=2"},
+			want: "more than once",
+		},
+		"malformed yaml": { // VS-12
+			body: "name: r\nsteps: [ unclosed\n",
+			argv: []string{"recipe", "run", "r"},
+			want: "r.yaml",
+		},
+		"run is not an array": { // VS-12
+			body: "name: r\nsteps:\n  - run: \"snap\"\n",
+			argv: []string{"recipe", "run", "r"},
+			want: "must be an array",
+		},
+		"recipe invoking a recipe": { // VS-12
+			body: "name: r\nsteps:\n  - run: [\"recipe\", \"run\", \"other\"]\n",
+			argv: []string{"recipe", "run", "r"},
+			want: "cannot invoke recipes",
+		},
+		"--from-step out of range": {
+			body: "name: r\nsteps:\n  - run: [\"snap\"]\n",
+			argv: []string{"recipe", "run", "r", "--from-step", "5"},
+			want: "out of range",
+		},
+		"unknown recipe": {
+			body: "name: r\nsteps:\n  - run: [\"snap\"]\n",
+			argv: []string{"recipe", "run", "absent"},
+			want: "not found",
+		},
+		"unknown recipe on show": {
+			body: "name: r\nsteps:\n  - run: [\"snap\"]\n",
+			argv: []string{"recipe", "show", "absent"},
+			want: "not found",
+		},
+		"a name that is a path": {
+			body: "name: r\nsteps:\n  - run: [\"snap\"]\n",
+			argv: []string{"recipe", "run", "../../etc/passwd"},
+			want: "invalid recipe name",
+		},
+	}
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			project, _ := isolateRecipes(t)
+			writeRecipe(t, project, "r", c.body)
+
+			var out, errb bytes.Buffer
+			app := New(noCall(t), &out, &errb)
+			if code := app.Execute(append(c.argv, "--json")...); code != 2 {
+				t.Fatalf("exit = %d, want 2 (usage)\nstdout: %s", code, out.String())
+			}
+			env := envelopes(t, out.String())[0]
+			e, ok := env["error"].(map[string]any)
+			if !ok || e["code"] != "usage" {
+				t.Fatalf("envelope = %v, want error.code usage", env)
+			}
+			if msg, _ := e["message"].(string); !strings.Contains(msg, c.want) {
+				t.Errorf("message %q does not contain %q", msg, c.want)
+			}
+		})
+	}
+}
+
+// VS-13: --from-step runs a suffix, and the summary says where it started, so a
+// resumed run is distinguishable from a full one in a log.
+func TestRecipeFromStep(t *testing.T) {
+	project, _ := isolateRecipes(t)
+	writeRecipe(t, project, "four", `name: four
+target: aa11
+steps:
+  - run: ["nav", "https://app.test/1"]
+  - run: ["nav", "https://app.test/2"]
+  - label: third
+    run: ["text", "h1"]
+  - run: ["wait", "--idle"]
+`)
+	b := &recordingBrowser{}
+	var out, errb bytes.Buffer
+	if code := New(b, &out, &errb).Execute("recipe", "run", "four", "--from-step", "3"); code != 0 {
+		t.Fatalf("exit = %d\n%s", code, errb.String())
+	}
+	for _, c := range b.calls {
+		if strings.HasPrefix(c, "Navigate(") {
+			t.Errorf("step before --from-step ran: %s", c)
+		}
+	}
+	envs := envelopes(t, out.String())
+	if len(envs) != 3 {
+		t.Fatalf("got %d envelopes, want 2 steps + summary:\n%s", len(envs), out.String())
+	}
+	if envs[0]["step"] != 3.0 {
+		t.Errorf("first step envelope = %v, want step 3 (its index in the file)", envs[0])
+	}
+	res := envs[2]["result"].(map[string]any)
+	if res["from_step"] != 3.0 || res["steps"] != 2.0 || res["completed"] != 2.0 {
+		t.Errorf("summary = %v, want from_step 3, steps 2, completed 2", res)
+	}
+}
+
+// VS-14: the scaffold `recipe new` writes must load, show, and dry-run cleanly.
+// A template the validator rejects is a terrible first impression.
+func TestRecipeNewScaffoldIsValid(t *testing.T) {
+	isolateRecipes(t)
+
+	var out, errb bytes.Buffer
+	app := New(noCall(t), &out, &errb)
+	if code := app.Execute("recipe", "new", "demo", "--json"); code != 0 {
+		t.Fatalf("recipe new exit = %d\n%s", code, errb.String())
+	}
+	path, _ := envelopes(t, out.String())[0]["result"].(map[string]any)["path"].(string)
+	if path == "" {
+		t.Fatalf("recipe new did not report a path: %s", out.String())
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("recipe new reported %s but %v", path, err)
+	}
+
+	out.Reset()
+	if code := New(noCall(t), &out, &errb).Execute("recipe", "show", "demo"); code != 0 {
+		t.Fatalf("recipe show exit = %d\n%s", code, errb.String())
+	}
+	if !strings.Contains(out.String(), "name: demo") {
+		t.Errorf("recipe show did not print the source:\n%s", out.String())
+	}
+
+	out.Reset()
+	if code := New(noCall(t), &out, &errb).Execute("recipe", "run", "demo", "--dry-run"); code != 0 {
+		t.Fatalf("recipe run --dry-run exit = %d\n%s", code, errb.String())
+	}
+	for _, line := range strings.Split(strings.TrimSpace(out.String()), "\n") {
+		var argv []string
+		if err := json.Unmarshal([]byte(line), &argv); err != nil {
+			t.Fatalf("scaffold dry-run line is not argv: %q", line)
+		}
+	}
+}
+
+// `recipe new` refuses to clobber an existing recipe: the file may be the only
+// copy of an automation someone worked out by hand.
+func TestRecipeNewRefusesToOverwrite(t *testing.T) {
+	isolateRecipes(t)
+	var out, errb bytes.Buffer
+	if code := New(noCall(t), &out, &errb).Execute("recipe", "new", "demo"); code != 0 {
+		t.Fatalf("first recipe new exit = %d", code)
+	}
+	out.Reset()
+	app := New(noCall(t), &out, &errb)
+	if code := app.Execute("recipe", "new", "demo", "--json"); code != 2 {
+		t.Fatalf("second recipe new exit = %d, want 2", code)
+	}
+}
+
+// VS-11 at the CLI: the project copy wins, and `recipe list` marks the source of
+// each entry so a user can see which one they are about to run.
+func TestRecipeListMarksSourceAndPrecedence(t *testing.T) {
+	project, user := isolateRecipes(t)
+	writeRecipe(t, project, "shared", "name: shared\ndescription: from the project\nsteps:\n  - run: [\"snap\"]\n")
+	writeRecipe(t, user, "shared", "name: shared\ndescription: from the user config\nsteps:\n  - run: [\"snap\"]\n")
+	writeRecipe(t, user, "personal", "name: personal\ndescription: only mine\nsteps:\n  - run: [\"snap\"]\n")
+
+	var out, errb bytes.Buffer
+	app := New(noCall(t), &out, &errb)
+	if code := app.Execute("recipe", "list", "--json"); code != 0 {
+		t.Fatalf("exit = %d\n%s", code, errb.String())
+	}
+	rows := envelopes(t, out.String())[0]["result"].(map[string]any)["recipes"].([]any)
+	got := map[string]string{}
+	for _, r := range rows {
+		row := r.(map[string]any)
+		got[row["name"].(string)] = row["source"].(string) + ":" + row["description"].(string)
+	}
+	want := map[string]string{
+		"shared":   "project:from the project",
+		"personal": "user:only mine",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("list = %v, want %v", got, want)
+	}
+
+	// And the project copy is the one that runs.
+	out.Reset()
+	if code := New(noCall(t), &out, &errb).Execute("recipe", "show", "shared"); code != 0 {
+		t.Fatalf("show exit = %d", code)
+	}
+	if !strings.Contains(out.String(), "from the project") {
+		t.Errorf("show resolved the wrong copy:\n%s", out.String())
+	}
+}
+
+// VS-15 end to end: a hostile --set value reaches the browser as one argv
+// element, byte for byte. There is no shell in the path, and this is the test
+// that says so at the boundary that matters.
+func TestRecipeSetValuePassesThroughLiterally(t *testing.T) {
+	project, _ := isolateRecipes(t)
+	writeRecipe(t, project, "inject", `name: inject
+target: aa11
+inputs:
+  value: { required: true }
+steps:
+  - run: ["fill", "#field", "{{value}}"]
+`)
+	const hostile = "; rm -rf / && echo \"pwned\" `id` $(id) | tee /tmp/x\nsecond line\t"
+	b := &recordingBrowser{}
+	var out, errb bytes.Buffer
+	if code := New(b, &out, &errb).Execute("recipe", "run", "inject", "--set", "value="+hostile); code != 0 {
+		t.Fatalf("exit = %d\n%s", code, errb.String())
+	}
+	want := fmt.Sprintf("Fill(aa11,#field,%q,by=css,role=)", hostile)
+	if len(b.calls) < 2 || b.calls[1] != want {
+		t.Errorf("browser saw %v\nwant a single call %s", b.calls, want)
+	}
+}
+
+// Open question 2, resolved: streaming per-step for interactive use, a single
+// summary under --quiet.
+func TestRecipeQuietEmitsOnlyTheSummary(t *testing.T) {
+	project, _ := isolateRecipes(t)
+	writeRecipe(t, project, "three", threeStep)
+
+	var out, errb bytes.Buffer
+	if code := New(&recordingBrowser{}, &out, &errb).Execute("recipe", "run", "three", "--quiet"); code != 0 {
+		t.Fatalf("exit = %d\n%s", code, errb.String())
+	}
+	envs := envelopes(t, out.String())
+	if len(envs) != 1 || envs[0]["command"] != "recipe" {
+		t.Fatalf("--quiet emitted %d envelopes, want just the summary:\n%s", len(envs), out.String())
+	}
+	if res := envs[0]["result"].(map[string]any); res["completed"] != 3.0 {
+		t.Errorf("summary = %v, want completed 3 (the run itself is unchanged)", res)
+	}
+}
+
+// An explicit --target on the run overrides the recipe's header for every step,
+// so one recipe can be pointed at a staging tab without editing the file.
+func TestRecipeRunTargetOverridesHeader(t *testing.T) {
+	project, _ := isolateRecipes(t)
+	writeRecipe(t, project, "t", "name: t\ntarget: url:nowhere\nsteps:\n  - run: [\"text\", \"h1\"]\n")
+
+	var out, errb bytes.Buffer
+	if code := New(&recordingBrowser{}, &out, &errb).Execute("recipe", "run", "t", "--target", "aa11"); code != 0 {
+		t.Fatalf("exit = %d\n%s", code, errb.String())
+	}
+	if !strings.Contains(out.String(), `"text":"hello"`) {
+		t.Errorf("the override did not take effect:\n%s", out.String())
+	}
+}
+
+// A recipe is an ordinary verb, so `session` can run one as a line — the
+// nesting that matters, since the reverse (a recipe invoking `session`) is
+// refused at load. The step envelopes still stream out in order.
+func TestSessionCanRunARecipe(t *testing.T) {
+	project, _ := isolateRecipes(t)
+	writeRecipe(t, project, "three", threeStep)
+
+	var out, errb bytes.Buffer
+	app := New(&recordingBrowser{}, &out, &errb).WithInput(strings.NewReader(`["recipe","run","three"]` + "\n"))
+	if code := app.Execute("session"); code != 0 {
+		t.Fatalf("exit = %d\n%s", code, errb.String())
+	}
+	envs := envelopes(t, out.String())
+	if len(envs) != 4 {
+		t.Fatalf("got %d envelopes, want 3 steps + summary:\n%s", len(envs), out.String())
+	}
+	if res := envs[3]["result"].(map[string]any); res["completed"] != 3.0 {
+		t.Errorf("summary = %v, want completed 3", res)
+	}
+}
+
+// `recipe show --json` returns the parsed recipe, so an agent can read the
+// inputs it must supply without parsing YAML itself.
+func TestRecipeShowJSON(t *testing.T) {
+	project, _ := isolateRecipes(t)
+	writeRecipe(t, project, "three", threeStep)
+
+	var out, errb bytes.Buffer
+	app := New(noCall(t), &out, &errb)
+	if code := app.Execute("recipe", "show", "three", "--json"); code != 0 {
+		t.Fatalf("exit = %d\n%s", code, errb.String())
+	}
+	r := envelopes(t, out.String())[0]["result"].(map[string]any)["recipe"].(map[string]any)
+	if r["name"] != "three" || r["source"] != "project" {
+		t.Errorf("recipe = %v, want name three from source project", r)
+	}
+	if steps, ok := r["steps"].([]any); !ok || len(steps) != 3 {
+		t.Errorf("steps = %v, want 3", r["steps"])
+	}
+}

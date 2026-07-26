@@ -12,6 +12,7 @@ From there:
 - **[Automating a logged-in web app](scenarios/automating-a-logged-in-web-app.md)** — the `list → use → snap → act → verify` loop against an app you're already signed into.
 - **[Forms and grids](scenarios/forms-and-grids.md)** — fill fields by visible label, grid cells by column header, and a whole grid over one batched connection.
 - **[Driving widgets with `select`](scenarios/driving-widgets-with-select.md)** — portal menus, cascade prompts, and native `<select>`s that a plain click can't open.
+- **[Saving an automation as a recipe](scenarios/saving-an-automation-as-a-recipe.md)** — turn a working `session` batch into a named, parameterised file you can re-run, review, and commit for your team.
 
 ## For tool authors
 

@@ -476,6 +476,116 @@ printf '%s\n' \
   | chrome-cdp session
 ```
 
+### Recipes
+
+A **recipe** is a saved `session` script with a small header: a YAML file whose steps are argv arrays, with declared inputs substituted into argv elements.
+It is the unit in which a working automation becomes something you can name, re-run, commit, and hand to a colleague.
+
+| Command | Does |
+|---------|------|
+| `recipe list [--dir <path>]` | list recipes with their description, inputs, and source |
+| `recipe show <name>` | print the recipe's source (read it before you run it) |
+| `recipe new <name>` | write a commented template and print its path |
+| `recipe run <name> [--set k=v]… [--dry-run] [--from-step <n>]` | run it |
+
+```yaml
+# .chrome-cdp/recipes/submit-timesheet.yaml
+name: submit-timesheet
+description: Fill and submit the weekly timesheet.
+inputs:
+  week:  { required: true, description: "Monday of the week, YYYY-MM-DD" }
+  hours: { default: "8",   description: "Hours per weekday" }
+target: url:workday
+steps:
+  - label: open the timesheet
+    run: ["nav", "https://workday.internal/time/{{week}}"]
+  - run: ["wait", "--idle"]
+  - label: save
+    run: ["click", "--by", "name", "Save and Close", "--role", "button", "--wait-text", "saved"]
+    on_error: abort
+```
+
+```sh
+chrome-cdp recipe run submit-timesheet --set week=2026-07-20
+chrome-cdp recipe run submit-timesheet --set week=2026-07-20 --dry-run   # print, run nothing
+```
+
+**The format, in full.**
+`name` (which must match the filename), `description`, `inputs`, `target`, `steps`; each step has `run`, an optional `label`, and an optional `on_error`.
+That is everything — there is no other key, and an unrecognised one is an error rather than a silently ignored typo.
+
+| Field | Means |
+|-------|-------|
+| `run` | an argv array, identical to a `session` stdin line — anything valid in `session` is valid here |
+| `label` | a name for the step, echoed in its envelope and in the failure summary |
+| `on_error` | `abort` (default) or `continue`; there are no retries, conditionals, or loops |
+| `inputs` | `required`, `default`, `description` — no types and no validation expressions |
+| `target` | a default `--target` for every step, overridden by a step's own `--target` or by `--target` on the run |
+
+`{{name}}` substitutes an input **into one argv element**.
+There is no shell anywhere in this design and there is no `shell:` step type, so a value is passed through byte for byte and nothing in it is interpreted.
+Per-step flags a verb already accepts — `--timeout 60s`, `--by name`, `--wait-text` — go in that step's own `run` array, where a reader of the recipe can see them.
+
+**Where recipes live.**
+Resolution order for a name, first match wins:
+
+1. `./.chrome-cdp/recipes/` — project-local; commit this directory and your team gets your internal-app automations from the repo
+2. `$XDG_CONFIG_HOME/chrome-cdp/recipes/` — your own
+3. `--dir <path>`
+
+`recipe list` marks each entry's source, so you can see which copy is about to run.
+`recipe new` writes into the project-local directory unless `--dir` says otherwise.
+
+**Output.**
+`recipe run` emits one NDJSON envelope per step — the same stream `session` produces, plus `step` and `label` fields so a caller can correlate without counting lines — then a summary:
+
+```json
+{"ok":true,"command":"recipe","result":{"recipe":"submit-timesheet","steps":4,"completed":4,
+ "failed":null,"inputs":{"week":"2026-07-20","hours":"8"},"from_step":1,"elapsed_ms":4120}}
+```
+
+A failing step stops the run (unless it says `on_error: continue`), and the summary carries `failed: {"index":3,"label":"save","code":"target_timeout"}`.
+**The process exit code is the failing step's**, so a shell caller branches on the same contract as for a single command.
+Under `--quiet` only the summary is printed.
+
+**Reviewing a recipe someone sent you.**
+A recipe drives the browser you are already signed into, so read one before running it, exactly as you would a shell script:
+
+```sh
+chrome-cdp recipe show their-recipe                    # the source, comments and all
+chrome-cdp recipe run their-recipe --dry-run           # the resolved argv, one array per line
+chrome-cdp recipe run their-recipe --dry-run | chrome-cdp session   # the same thing, executed
+```
+
+The dry run prints the exact bytes `session` consumes.
+That is both a debugging tool and the proof that recipes add no hidden magic: the two paths run the identical commands.
+
+Never put a credential in a recipe.
+The whole premise of `chrome-cdp` is reusing an already-authenticated browser, so a recipe never needs one.
+
+**Errors.**
+Everything a recipe can get wrong statically is exit 2, with Chrome never contacted:
+
+| Situation | `error.code` | Exit |
+|-----------|--------------|------|
+| Recipe not found in any search dir | `usage` | 2 |
+| Malformed YAML, unknown key, `run` not an array of strings | `usage` | 2 |
+| Missing required input, unknown `--set` key, undeclared `{{placeholder}}` | `usage` | 2 |
+| `--from-step` out of range | `usage` | 2 |
+| A step fails | that step's code | that step's exit |
+
+An unknown `--set` key is rejected rather than ignored: silently dropping `--set hurs=9` would run the recipe with the default you were trying to override.
+
+**`--from-step <n>` is a sharp tool.**
+It starts at step *n* (1-based) and assumes every earlier step's effect is already in place.
+That is what you want when a ten-step automation failed at step 8 and re-running from the top would submit a form twice — and it is exactly wrong when the page is not where step *n* expects it.
+Validation still covers the whole file: an undeclared placeholder in a skipped step is still an error.
+
+**What recipes deliberately do not have.**
+Conditionals, loops, retries, branching, and reading one step's output into a later step.
+Recipes cannot invoke recipes, and a recipe is capped at 200 steps.
+If an automation needs control flow, write a program that calls `session` — that is the supported answer, not a bigger recipe format.
+
 ### Capture
 
 | Command | Writes |

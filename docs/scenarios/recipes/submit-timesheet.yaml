@@ -1,0 +1,64 @@
+# submit-timesheet — a worked chrome-cdp recipe.
+#
+# Copy this to .chrome-cdp/recipes/submit-timesheet.yaml in your repo, change
+# the URL and the field names to match your app, and run:
+#
+#   chrome-cdp recipe run submit-timesheet --set week=2026-07-20 --dry-run
+#   chrome-cdp recipe run submit-timesheet --set week=2026-07-20
+#
+# Every `run:` below is exactly the argv you would type after `chrome-cdp`.
+# There is no shell here: an input substitutes into ONE argv element, so a value
+# containing quotes, semicolons, or newlines is passed through untouched.
+#
+# There is no credential in this file, and there must never be one: chrome-cdp
+# drives the Chrome you are already signed into.
+name: submit-timesheet
+description: Fill a week of hours in the timesheet grid and save it.
+
+inputs:
+  week:
+    required: true
+    description: "Monday of the week being submitted, as the grid labels it (e.g. Mon, 7/20)"
+  hours:
+    default: "8"
+    description: "Hours to enter in each weekday cell"
+
+# Every step runs against this tab unless it names its own --target.
+target: url:workday
+
+steps:
+  - label: open the timesheet
+    run: ["nav", "https://workday.internal/time"]
+
+  # An SPA is not loaded when nav returns; wait for the network to settle rather
+  # than for a fixed duration.
+  - label: let the grid load
+    run: ["wait", "--idle"]
+
+  # Confirm the grid is really on screen before typing into it. A missing header
+  # here fails the run with a clear target error instead of filling the wrong page.
+  - label: confirm the week is the one we mean
+    run: ["wait", "--text", "{{week}}"]
+
+  # --by cell addresses a grid input by its column header, so the recipe survives
+  # the app renaming an internal id overnight.
+  - label: fill the weekday hours
+    run: ["fill", "--by", "cell", "{{week}}", "{{hours}}"]
+
+  # Read the row back before committing: this is the step that turns "the click
+  # did not error" into "the value is actually in the field".
+  - label: read the entered hours back
+    run: ["value", "--all", "input[data-automation-id=numericInput]"]
+
+  # --wait-text folds "save, then confirm the save landed" into one call, so a
+  # save that silently failed validation is a failure here and not a surprise
+  # next week.
+  - label: save and confirm
+    run: ["click", "--by", "name", "Save and Close", "--role", "button", "--wait-text", "saved"]
+    on_error: abort
+
+  # Optional tidy-up: a screenshot for the record. on_error: continue means a
+  # failure here does not make an otherwise successful submission look failed.
+  - label: keep a screenshot for the record
+    run: ["screenshot", "-o", "timesheet-{{week}}.png"]
+    on_error: continue
