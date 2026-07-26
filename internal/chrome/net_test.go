@@ -883,6 +883,36 @@ func awaitNet(ctx context.Context, t *testing.T, b *CDP, id string, opts NetOpts
 	}
 }
 
+// netDone reports that a request for sub is present AND finished.
+//
+// `status != nil` is NOT the same condition: responseReceived lands before
+// loadingFinished, and a read in that window sees a record with a status but no
+// `duration_ms` and no retained body. That is not a bug — it is precisely what
+// the envelope's `pending` flag exists to say — so a test asserting on a
+// COMPLETED request has to wait for completion rather than for a status.
+func netDone(sub string) func([]map[string]any) bool {
+	return func(reqs []map[string]any) bool {
+		got := findURL(reqs, sub)
+		return got != nil && got["pending"] == false
+	}
+}
+
+// awaitNetDone blocks until a request matching cond has completed, using the
+// product's own waiting primitive (`net wait` / `wait --request`) rather than a
+// guess about how fast Chrome is.
+//
+// NetWait only answers for a record the buffer already holds as finished — the
+// subscriber is notified after the entry is written — so a `net` read taken
+// afterwards deterministically sees the completed record.
+func awaitNetDone(ctx context.Context, t *testing.T, b *CDP, id string, cond NetCond) {
+	t.Helper()
+	wctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	if _, err := b.NetWait(wctx, id, cond); err != nil {
+		t.Fatalf("no request matching %s completed: %v", cond.describe(), err)
+	}
+}
+
 func findURL(reqs []map[string]any, sub string) map[string]any {
 	for _, r := range reqs {
 		if u, _ := r["url"].(string); strings.Contains(u, sub) {
@@ -893,6 +923,22 @@ func findURL(reqs []map[string]any, sub string) map[string]any {
 }
 
 func hasURL(reqs []map[string]any, sub string) bool { return findURL(reqs, sub) != nil }
+
+// nextStreamed returns the next streamed record whose URL contains sub, skipping
+// any others, or nil if none arrives within the window.
+func nextStreamed(ch <-chan map[string]any, sub string, within time.Duration) map[string]any {
+	deadline := time.After(within)
+	for {
+		select {
+		case r := <-ch:
+			if u, _ := r["url"].(string); strings.Contains(u, sub) {
+				return r
+			}
+		case <-deadline:
+			return nil
+		}
+	}
+}
 
 // netLiveTab launches Chrome, opens the fixture page, and returns the tab.
 func netLiveTab(ctx context.Context, t *testing.T, b *CDP, page string) string {
@@ -921,13 +967,22 @@ func TestNetCapturesACompletedXHR(t *testing.T) {
 	if _, err := b.Pointer(ctx, id, "#ok", PointerOpts{Action: PointerClick}); err != nil {
 		t.Fatalf("Click: %v", err)
 	}
-	_, reqs := awaitNet(ctx, t, b, id, NetOpts{Types: []string{"xhr", "fetch"}, Limit: 100}, func(r []map[string]any) bool {
-		got := findURL(r, "/api/ok")
-		return got != nil && got["status"] != nil
-	})
+	// The scenario is a COMPLETED XHR, so block on completion with the verb that
+	// exists for exactly that. Reading as soon as a status appears races
+	// loadingFinished and reports a still-pending record with no duration.
+	awaitNetDone(ctx, t, b, id, NetCond{URL: "/api/ok", Status: "2xx"})
+
+	res, err := b.Net(ctx, id, NetOpts{Types: []string{"xhr", "fetch"}, Limit: 100})
+	if err != nil {
+		t.Fatalf("Net: %v", err)
+	}
+	reqs := netRequests(t, res)
 	got := findURL(reqs, "/api/ok")
 	if got == nil {
 		t.Fatalf("the fetch was not captured; --xhr returned %v", reqs)
+	}
+	if got["pending"] != false {
+		t.Errorf("pending = %v after the request completed; the rest of this scenario is about a finished request", got["pending"])
 	}
 	if got["method"] != "GET" {
 		t.Errorf("method = %v, want GET", got["method"])
@@ -1039,11 +1094,18 @@ func TestNetBodiesAreOptIn(t *testing.T) {
 	if _, err := b.Pointer(ctx, id, "#post", PointerOpts{Action: PointerClick}); err != nil {
 		t.Fatalf("Click: %v", err)
 	}
+	// Bodies are fetched lazily at read time, and Chrome only retains one for a
+	// request that has finished — so the read has to happen after completion, not
+	// merely after a status. Waiting is the caller's job and `net wait` is how it
+	// is expressed.
+	awaitNetDone(ctx, t, b, id, NetCond{URL: "/api/ok", Methods: []string{"POST"}, Status: "2xx"})
+
 	base := NetOpts{URL: "/api/ok", Limit: 10}
-	_, reqs := awaitNet(ctx, t, b, id, base, func(r []map[string]any) bool {
-		got := findURL(r, "/api/ok")
-		return got != nil && got["status"] != nil
-	})
+	plain, err := b.Net(ctx, id, base)
+	if err != nil {
+		t.Fatalf("Net: %v", err)
+	}
+	reqs := netRequests(t, plain)
 	if len(reqs) == 0 {
 		t.Fatal("the POST was not captured")
 	}
@@ -1084,12 +1146,14 @@ func TestNetRedactsLiveCredentialsInTheEnvelope(t *testing.T) {
 		t.Fatalf("Click: %v", err)
 	}
 	opts := NetOpts{URL: "/api/ok", Headers: true, Limit: 10}
+	// Wait for the whole exchange, not just the request half: the Set-Cookie
+	// assertion below is about RESPONSE headers, and asserting a secret is absent
+	// from headers that have not arrived yet proves nothing.
 	res, reqs := awaitNet(ctx, t, b, id, opts, func(r []map[string]any) bool {
-		got := findURL(r, "/api/ok")
-		if got == nil {
+		if !netDone("/api/ok")(r) {
 			return false
 		}
-		h, _ := got["request_headers"].(map[string]string)
+		h, _ := findURL(r, "/api/ok")["request_headers"].(map[string]string)
 		_, ok := h["Authorization"]
 		return ok
 	})
@@ -1203,12 +1267,12 @@ func TestNetWaitDoesNotMissAnAlreadyCompletedRequest(t *testing.T) {
 	if _, err := b.Pointer(ctx, id, "#ok", PointerOpts{Action: PointerClick}); err != nil {
 		t.Fatalf("Click: %v", err)
 	}
-	// Let it finish and be buffered, so the wait below is answered entirely from
-	// history — nothing new will arrive for it.
-	awaitNet(ctx, t, b, id, NetOpts{URL: "/api/ok", Limit: 10}, func(r []map[string]any) bool {
-		got := findURL(r, "/api/ok")
-		return got != nil && got["status"] != nil
-	})
+	// Let it FINISH and be buffered, so the wait below is answered entirely from
+	// history — nothing new will arrive for it. Polling `net` rather than using
+	// NetWait keeps the setup independent of the primitive under test; waiting
+	// only for a status would leave the request still in flight, and the wait
+	// below would then be answered by the subscription it is supposed to bypass.
+	awaitNet(ctx, t, b, id, NetOpts{URL: "/api/ok", Limit: 10}, netDone("/api/ok"))
 
 	wctx, wcancel := context.WithTimeout(ctx, 5*time.Second)
 	defer wcancel()
@@ -1326,10 +1390,10 @@ func TestNetBodyUnavailableIsMarkedNotErrored(t *testing.T) {
 	if _, err := b.Pointer(ctx, id, "#ok", PointerOpts{Action: PointerClick}); err != nil {
 		t.Fatalf("Click: %v", err)
 	}
-	awaitNet(ctx, t, b, id, NetOpts{URL: "/api/ok", Limit: 10}, func(r []map[string]any) bool {
-		got := findURL(r, "/api/ok")
-		return got != nil && got["status"] != nil
-	})
+	// Wait for completion first: a body missing because the request has not
+	// finished yet is a different thing from one evicted by the navigation, and
+	// only the second is what this scenario is about.
+	awaitNet(ctx, t, b, id, NetOpts{URL: "/api/ok", Limit: 10}, netDone("/api/ok"))
 	// Navigate away: the renderer that held the response body is gone.
 	if _, err := b.Navigate(ctx, id, srv.URL+"/api/ok"); err != nil {
 		t.Fatalf("Navigate away: %v", err)
@@ -1406,12 +1470,12 @@ func TestNetStreamDeliversCompletedRequestsOnce(t *testing.T) {
 	defer cancel()
 
 	id := netLiveTab(ctx, t, b, page)
-	got := make(chan map[string]any, 16)
-	streamCtx, streamCancel := context.WithTimeout(ctx, 12*time.Second)
+	got := make(chan map[string]any, 64)
+	streamCtx, streamCancel := context.WithTimeout(ctx, 60*time.Second)
 	defer streamCancel()
 	done := make(chan error, 1)
 	go func() {
-		done <- b.NetStream(streamCtx, id, NetOpts{URL: "/api/ok"}, func(v any) error {
+		done <- b.NetStream(streamCtx, id, NetOpts{URL: "/api/"}, func(v any) error {
 			reqs := v.(map[string]any)["requests"].([]any)
 			select {
 			case got <- reqs[0].(map[string]any):
@@ -1421,27 +1485,41 @@ func TestNetStreamDeliversCompletedRequestsOnce(t *testing.T) {
 		})
 	}()
 
-	time.Sleep(500 * time.Millisecond) // let the subscription land
+	// Establish that the subscription is LIVE before making the request under
+	// test, by clicking a decoy endpoint until one comes back. Sleeping for a
+	// fixed interval and hoping is the same race as reading a buffer straight
+	// after an action — it just fails one layer up, as a stream that delivered
+	// nothing.
+	live := false
+	for deadline := time.Now().Add(20 * time.Second); !live && time.Now().Before(deadline); {
+		if _, err := b.Pointer(ctx, id, "#boom", PointerOpts{Action: PointerClick}); err != nil {
+			t.Fatalf("Click: %v", err)
+		}
+		live = nextStreamed(got, "/api/boom", time.Second) != nil
+	}
+	if !live {
+		t.Fatal("the stream never delivered anything, so it was not listening")
+	}
+
+	// Now the request under test happens exactly once, with the stream known to
+	// be running — so "delivered once" is a claim about the stream and not about
+	// how many clicks landed.
 	if _, err := b.Pointer(ctx, id, "#ok", PointerOpts{Action: PointerClick}); err != nil {
 		t.Fatalf("Click: %v", err)
 	}
-
-	select {
-	case r := <-got:
-		if s, _ := r["status"].(int64); s != 200 {
-			t.Errorf("streamed status = %v, want 200 — a follow reports outcomes, so the record must be complete", r["status"])
-		}
-		if r["pending"] != false {
-			t.Errorf("streamed a pending record: %v", r)
-		}
-	case <-time.After(10 * time.Second):
+	r := nextStreamed(got, "/api/ok", 15*time.Second)
+	if r == nil {
 		t.Fatal("the stream delivered nothing for a request made while it was running")
 	}
+	if s, _ := r["status"].(int64); s != 200 {
+		t.Errorf("streamed status = %v, want 200 — a follow reports outcomes, so the record must be complete", r["status"])
+	}
+	if r["pending"] != false {
+		t.Errorf("streamed a pending record: %v", r)
+	}
 	// The same request must not be announced again as its remaining events land.
-	select {
-	case r := <-got:
-		t.Errorf("the same request was streamed twice: %v", r)
-	case <-time.After(1500 * time.Millisecond):
+	if dup := nextStreamed(got, "/api/ok", 2*time.Second); dup != nil {
+		t.Errorf("the same request was streamed twice: %v", dup)
 	}
 
 	streamCancel()

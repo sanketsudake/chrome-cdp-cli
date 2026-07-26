@@ -558,7 +558,7 @@ func TestConsoleStreamDeliversNewMessages(t *testing.T) {
 	}
 
 	got := make(chan string, 8)
-	streamCtx, streamCancel := context.WithTimeout(ctx, 8*time.Second)
+	streamCtx, streamCancel := context.WithTimeout(ctx, 45*time.Second)
 	defer streamCancel()
 	done := make(chan error, 1)
 	go func() {
@@ -572,18 +572,25 @@ func TestConsoleStreamDeliversNewMessages(t *testing.T) {
 		})
 	}()
 
-	time.Sleep(500 * time.Millisecond) // let the subscription land
-	if _, err := b.Pointer(ctx, id, "#go", PointerOpts{Action: PointerClick}); err != nil {
-		t.Fatalf("Click: %v", err)
-	}
-
-	select {
-	case text := <-got:
-		if text != "clicked once" {
-			t.Errorf("streamed %q, want %q", text, "clicked once")
+	// Click until the stream delivers, rather than sleeping for a fixed interval
+	// and hoping the subscription landed inside it: on a loaded machine that is a
+	// race, and an extra click only repeats the one message this stream is
+	// filtered to.
+	var text string
+	for deadline := time.Now().Add(20 * time.Second); text == "" && time.Now().Before(deadline); {
+		if _, err := b.Pointer(ctx, id, "#go", PointerOpts{Action: PointerClick}); err != nil {
+			t.Fatalf("Click: %v", err)
 		}
-	case <-time.After(6 * time.Second):
+		select {
+		case text = <-got:
+		case <-time.After(time.Second):
+		}
+	}
+	if text == "" {
 		t.Fatal("the stream delivered nothing for a message logged while it was running")
+	}
+	if text != "clicked once" {
+		t.Errorf("streamed %q, want %q", text, "clicked once")
 	}
 
 	streamCancel()
