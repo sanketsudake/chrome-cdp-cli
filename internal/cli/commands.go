@@ -86,11 +86,15 @@ func (a *App) classifyWithTabHint(b chrome.Browser, id string, err error) (strin
 	// An element that resolved but never presented an unoccluded centre is a
 	// timeout, not a protocol error: it is covered by an overlay, or still
 	// animating. Reporting it as `occluded` tells a caller to dismiss whatever is
-	// on top rather than to fix a selector that was already correct. Every
-	// pointer-driven verb — click, type, fill, and the RFC-0005 verbs — resolves
-	// its centre through the same primitive, so they classify it identically.
+	// on top rather than to fix a selector that was already correct.
 	if chrome.IsOccluded(err) {
 		return result.CodeTargetTimeout, err.Error(), map[string]any{"occluded": true}
+	}
+	// "no entry in that direction" is a missing target, not a generic CDP
+	// failure — checking the history before moving exists precisely so `nav
+	// --back` at the start of a history says so instead of timing out.
+	if chrome.IsNoHistory(err) {
+		return result.CodeTargetNotFound, err.Error(), map[string]any{"no_history": true}
 	}
 	code := classifyActionErr(err)
 	if code != result.CodeTargetTimeout || !a.ariaAddressing() {
@@ -152,10 +156,7 @@ func (a *App) cmdList() *cobra.Command {
 			// stable @N target even when a filter is applied.
 			rows := []tabRow{}
 			for i, t := range tabs {
-				if urlSub != "" && !strings.Contains(strings.ToLower(t.URL), strings.ToLower(urlSub)) {
-					continue
-				}
-				if titleSub != "" && !strings.Contains(strings.ToLower(t.Title), strings.ToLower(titleSub)) {
+				if !containsFold(t.URL, urlSub) || !containsFold(t.Title, titleSub) {
 					continue
 				}
 				rows = append(rows, tabRow{Idx: i + 1, ID: t.ID, Title: t.Title, URL: t.URL})
@@ -175,10 +176,7 @@ func (a *App) cmdUse() *cobra.Command {
 		RunE: func(_ *cobra.Command, args []string) error {
 			ctx, cancel := a.ctx()
 			defer cancel()
-			saved := a.targetFlag
-			a.targetFlag = args[0]
-			tgt, _, rerr := a.resolveTarget(ctx)
-			a.targetFlag = saved
+			tgt, _, rerr := a.resolvePositional(ctx, args)
 			if rerr != nil {
 				a.emitErr("use", rerr.Code, rerr.Message, nil)
 				return nil
@@ -233,7 +231,7 @@ func (a *App) cmdNav() *cobra.Command {
 	c := &cobra.Command{
 		Use: "nav [url]", Short: "Navigate the target tab and wait for load, or move through its history (--back/--forward/--reload)",
 		Args: cobra.MaximumNArgs(1),
-		RunE: func(_ *cobra.Command, args []string) error {
+		RunE: func(cmd *cobra.Command, args []string) error {
 			// The modes are mutually exclusive, and that is checked BEFORE
 			// resolving a target or connecting: a malformed nav is exit 2 with
 			// Chrome never contacted.
@@ -241,12 +239,11 @@ func (a *App) cmdNav() *cobra.Command {
 				a.emitErr("nav", result.CodeUsage, msg, nil)
 				return nil
 			}
-			a.runNav(&nf, args)
-			return nil
+			return a.targetAction("nav", nf.act)(cmd, args)
 		},
 	}
 	nf.register(c)
-	return c
+	return a.withWaitText(c)
 }
 
 func (a *App) cmdEval() *cobra.Command {
@@ -504,15 +501,6 @@ func (a *App) runResolved(command string, fn func(ctx context.Context, b chrome.
 	_ = a.targetAction(command, func(ctx context.Context, b chrome.Browser, id string, _ []string) (any, error) {
 		return fn(ctx, b, id)
 	})(nil, nil)
-}
-
-func (a *App) cmdClick() *cobra.Command {
-	return a.withWaitText(&cobra.Command{
-		Use: "click <selector>", Short: "Click an element (auto-waits)", Args: cobra.ExactArgs(1),
-		RunE: a.targetAction("click", func(ctx context.Context, b chrome.Browser, id string, args []string) (any, error) {
-			return b.Click(ctx, id, args[0], a.queryOpts())
-		}),
-	})
 }
 
 func (a *App) cmdType() *cobra.Command {

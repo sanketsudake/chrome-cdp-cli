@@ -14,6 +14,9 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/chromedp/cdproto/page"
+	"github.com/chromedp/chromedp"
 )
 
 // liveCDP launches a throwaway managed headless Chrome, or skips.
@@ -148,6 +151,38 @@ func TestCloseTabsLive(t *testing.T) {
 	}
 }
 
+// A close that half worked reports both halves — and does not then sit waiting
+// for the tab it failed to close, which never leaves the list and would burn the
+// whole awaitGone cap before returning a result already known.
+func TestCloseTabsPartialFailureDoesNotWaitLive(t *testing.T) {
+	b := liveCDP(t)
+	srv, _ := tabFixtures(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+
+	victim := openTab(ctx, t, b, srv.URL+"/p1")
+
+	start := time.Now()
+	res, err := b.CloseTabs(ctx, []string{victim, "nosuchtargetid"})
+	elapsed := time.Since(start)
+	if err != nil {
+		t.Fatalf("CloseTabs with one bad id: %v (a partial success must not be an error)", err)
+	}
+	if res["count"] != 1 {
+		t.Errorf("count = %v, want 1 (result: %v)", res["count"], res)
+	}
+	failed, _ := res["failed"].([]any)
+	if len(failed) != 1 {
+		t.Fatalf("failed = %v, want the one id that could not be closed", res["failed"])
+	}
+	if got := failed[0].(map[string]any)["id"]; got != "nosuchtargetid" {
+		t.Errorf("failed id = %v, want nosuchtargetid", got)
+	}
+	if elapsed >= 2*time.Second {
+		t.Errorf("CloseTabs took %v: it waited for the tab it never closed", elapsed)
+	}
+}
+
 // VS-8 / VS-9 / VS-10: history navigation moves and reports the settled URL,
 // and running out of history is a typed error rather than a timeout.
 func TestHistoryNavigationLive(t *testing.T) {
@@ -185,7 +220,7 @@ func TestHistoryNavigationLive(t *testing.T) {
 	// a fresh tab starts with varies, so the test drains the history rather than
 	// assuming it; what must hold is that running out is ErrNoHistory quickly,
 	// not a navigation that never settles.
-	for i := 0; i < 8; i++ {
+	for range 8 {
 		step, scancel := context.WithTimeout(ctx, 10*time.Second)
 		_, err = b.History(step, id, -1)
 		scancel()
@@ -195,6 +230,106 @@ func TestHistoryNavigationLive(t *testing.T) {
 	}
 	if !IsNoHistory(err) {
 		t.Errorf("draining the history gave %v, want ErrNoHistory (a clean typed error, not a timeout)", err)
+	}
+}
+
+// historyFixtureDelay is how long the same-URL fixture takes to serve its
+// document. It only has to outlast the round-trip the test makes right after
+// History returns; it is what turns "did the tab actually navigate?" from a race
+// into an assertion.
+const historyFixtureDelay = 700 * time.Millisecond
+
+// historySameURLFixture serves a page at a stable URL, plus a redirect to it, so
+// a tab can hold two ADJACENT history entries carrying the SAME url. That is a
+// routine shape, not a contrivance: an SPA does `history.pushState(state, ”,
+// location.href)` to make a modal back-dismissable, and a form POST that
+// re-renders in place produces it too.
+//
+// Every response embeds a fresh load id, and the document is slow and
+// uncacheable — `no-store` also keeps it out of the back/forward cache — so the
+// load id can only change once a new document has actually committed.
+func historySameURLFixture(t *testing.T) *httptest.Server {
+	t.Helper()
+	var loads atomic.Int64
+	mux := http.NewServeMux()
+	mux.HandleFunc("/same", func(w http.ResponseWriter, _ *http.Request) {
+		n := loads.Add(1)
+		time.Sleep(historyFixtureDelay)
+		w.Header().Set("Cache-Control", "no-store")
+		fmt.Fprintf(w, `<!doctype html><title>Same</title><body><script>window.__load = %d;</script></body>`, n)
+	})
+	mux.HandleFunc("/go", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/same", http.StatusFound)
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// navEntries reads the tab's navigation history — the current index and the
+// entries — the same way History does before it moves.
+func navEntries(ctx context.Context, t *testing.T, b *CDP, id string) (int64, []*page.NavigationEntry) {
+	t.Helper()
+	var cur int64
+	var entries []*page.NavigationEntry
+	if err := b.run(ctx, id, chromedp.NavigationEntries(&cur, &entries)); err != nil {
+		t.Fatalf("NavigationEntries: %v", err)
+	}
+	return cur, entries
+}
+
+// A history move must not report success until the tab has actually moved, and
+// the case with no margin for error is two adjacent entries that share a URL:
+// settleAt's poll accepts `got == want`, which the PRE-navigation document also
+// satisfies, so nothing in the condition itself distinguishes "arrived" from
+// "hasn't left yet".
+//
+// What closes the gap is Chrome, not the condition: it defers Runtime.evaluate
+// for a frame with a cross-document navigation in flight, so the first poll
+// cannot answer until the new document has committed. That is load-bearing and
+// invisible in the code, which is exactly why it is pinned here — the fixture's
+// document is deliberately slow, so a settle that ever did observe the old page
+// would report a load id that had not changed.
+func TestHistoryBackSettlesWhenBothEntriesShareAURLLive(t *testing.T) {
+	b := liveCDP(t)
+	srv := historySameURLFixture(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+
+	same := srv.URL + "/same"
+	id := firstTab(ctx, t, b)
+	for _, u := range []string{same, srv.URL + "/go"} {
+		if _, err := b.Navigate(ctx, id, u); err != nil {
+			t.Fatalf("Navigate %s: %v", u, err)
+		}
+	}
+
+	// Without two adjacent same-URL entries the regression cannot occur, so the
+	// precondition is checked rather than assumed.
+	cur, entries := navEntries(ctx, t, b, id)
+	if cur < 1 || entries[cur].URL != entries[cur-1].URL {
+		urls := make([]string, len(entries))
+		for i, e := range entries {
+			urls[i] = e.URL
+		}
+		t.Fatalf("fixture produced no pair of adjacent same-URL entries (index %d of %v)", cur, urls)
+	}
+
+	before := pointerEval(ctx, t, b, id, "window.__load")
+	res, err := b.History(ctx, id, -1)
+	if err != nil {
+		t.Fatalf("History(-1): %v", err)
+	}
+	if after := pointerEval(ctx, t, b, id, "window.__load"); after == before {
+		t.Errorf("History(-1) returned while the tab was still on load #%v of %s: "+
+			"the settle accepted the pre-navigation document because both entries share a URL, "+
+			"so the next command would run against the page it meant to leave", before, same)
+	}
+	if got := res["url"]; got != same {
+		t.Errorf("settled url = %v, want %s", got, same)
+	}
+	if idx, _ := navEntries(ctx, t, b, id); idx != cur-1 {
+		t.Errorf("history index = %d, want %d — the tab did not move back", idx, cur-1)
 	}
 }
 

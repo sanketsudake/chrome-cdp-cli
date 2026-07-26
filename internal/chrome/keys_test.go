@@ -91,14 +91,17 @@ func TestParseKeys(t *testing.T) {
 			want: []KeyStroke{{Key: "a", Code: "KeyA", KeyCode: 65, Text: "a", Modifiers: modMeta}},
 		},
 		{
+			// Shift is held, so the key the page sees is "K" — which is what a
+			// browser reports for a real ctrl+shift+k, and what a handler
+			// comparing e.key === "K" is written against.
 			name: "multi-modifier chord",
 			spec: "ctrl+shift+k",
-			want: []KeyStroke{{Key: "k", Code: "KeyK", KeyCode: 75, Text: "k", Modifiers: modCtrl | modShift}},
+			want: []KeyStroke{{Key: "K", Code: "KeyK", KeyCode: 75, Text: "K", Modifiers: modCtrl | modShift}},
 		},
 		{
 			name: "modifier order does not matter",
 			spec: "shift+ctrl+k",
-			want: []KeyStroke{{Key: "k", Code: "KeyK", KeyCode: 75, Text: "k", Modifiers: modCtrl | modShift}},
+			want: []KeyStroke{{Key: "K", Code: "KeyK", KeyCode: 75, Text: "K", Modifiers: modCtrl | modShift}},
 		},
 		{
 			name: "modifiers are case-insensitive",
@@ -109,6 +112,39 @@ func TestParseKeys(t *testing.T) {
 			name: "chord on a named key",
 			spec: "shift+Home",
 			want: []KeyStroke{{Key: "Home", Code: "Home", KeyCode: 36, Modifiers: modShift}},
+		},
+		{
+			// Shift does not just set a bit: it changes which character the key
+			// produces. A real shift+a is key "A" inserting "A"; dispatching key
+			// "a" with text "a" and the Shift bit set types a lowercase letter and
+			// never fires a handler written `if (e.key === "A")`.
+			name: "shift on a letter resolves the SHIFTED character",
+			spec: "shift+a",
+			want: []KeyStroke{{Key: "A", Code: "KeyA", KeyCode: 65, Text: "A", Modifiers: modShift}},
+		},
+		{
+			name: "shift on a digit resolves its symbol",
+			spec: "shift+1",
+			want: []KeyStroke{{Key: "!", Code: "Digit1", KeyCode: 49, Text: "!", Modifiers: modShift}},
+		},
+		{
+			// The physical key is the same one, so the virtual keycode and code
+			// stay the digit's — only the produced character shifts.
+			name: "shift on a digit keeps the physical key",
+			spec: "shift+/",
+			want: []KeyStroke{{Key: "?", Code: "Slash", KeyCode: 191, Text: "?", Modifiers: modShift}},
+		},
+		{
+			// A named key has no shifted twin, which is why the live tests never
+			// caught the letter case: shift+Home carries no text at all.
+			name: "shift on a named key is unaffected",
+			spec: "shift+Tab",
+			want: []KeyStroke{{Key: "Tab", Code: "Tab", KeyCode: 9, Modifiers: modShift}},
+		},
+		{
+			name: "shift alongside another modifier still shifts the character",
+			spec: "cmd+shift+a",
+			want: []KeyStroke{{Key: "A", Code: "KeyA", KeyCode: 65, Text: "A", Modifiers: modMeta | modShift}},
 		},
 		{
 			name: "sequence",
@@ -199,6 +235,9 @@ func TestParseKeysRoundTrip(t *testing.T) {
 		"cmd+a",
 		"ctrl+shift+k",
 		"shift+ctrl+k",
+		"shift+a",
+		"shift+1",
+		"shift+Home",
 		"CMD+ALT+Escape",
 		"escape",
 		"End shift+Home Backspace",
@@ -222,6 +261,36 @@ func TestParseKeysRoundTrip(t *testing.T) {
 			}
 			if again := FormatKeys(second); again != formatted {
 				t.Errorf("FormatKeys is not idempotent: %q -> %q -> %q", spec, formatted, again)
+			}
+		})
+	}
+}
+
+// `shift+a` and `A` are two spellings of the same physical press, so they must
+// parse to the IDENTICAL stroke — key, code, virtual keycode, inserted text and
+// modifier mask alike. Anything less means one of the two spellings dispatches a
+// press no keyboard can produce.
+func TestShiftChordEqualsTheShiftedCharacter(t *testing.T) {
+	t.Parallel()
+	for _, c := range []struct{ chord, shifted string }{
+		{"shift+a", "A"},
+		{"shift+1", "!"},
+		{"shift+/", "?"},
+		{"shift+=", "+"},
+	} {
+		t.Run(c.chord, func(t *testing.T) {
+			t.Parallel()
+			chord, err := ParseKeys(c.chord)
+			if err != nil {
+				t.Fatalf("ParseKeys(%q): %v", c.chord, err)
+			}
+			shifted, err := ParseKeys(c.shifted)
+			if err != nil {
+				t.Fatalf("ParseKeys(%q): %v", c.shifted, err)
+			}
+			if !reflect.DeepEqual(chord, shifted) {
+				t.Errorf("ParseKeys(%q) = %+v, want it identical to ParseKeys(%q) = %+v",
+					c.chord, chord, c.shifted, shifted)
 			}
 		})
 	}

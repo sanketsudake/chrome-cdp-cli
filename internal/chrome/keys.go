@@ -9,17 +9,10 @@ import (
 	"github.com/chromedp/chromedp/kb"
 )
 
-// This file is the `key` verb's grammar: a pure parser with no context, no
-// browser, and no I/O. The CLI runs it BEFORE resolving a target, so a malformed
-// keyspec is a usage error (exit 2) that never launches or touches Chrome — the
-// contract agents rely on to know "your call was wrong, don't retry".
-//
-// The grammar is:
-//
-//	keyspec  := token (" " token)*        "End shift+Home Backspace"
-//	token    := modifier* key             "cmd+a", "ctrl+shift+k", "Escape", "/"
-//	modifier := ctrl | shift | alt | cmd (aliases: meta, super)
-//	key      := a known named key (case-insensitively) | one printable character
+// This file is the `key` verb's grammar (see ParseKeys): a pure parser with no
+// context, no browser, and no I/O. The CLI runs it BEFORE resolving a target, so a
+// malformed keyspec is a usage error (exit 2) that never launches or touches
+// Chrome — the contract agents rely on to know "your call was wrong, don't retry".
 //
 // A multi-character token that is not a known name is REJECTED rather than
 // silently typed as literal text: `key Ecsape` is a typo, and pressing E-c-s-a-p-e
@@ -41,17 +34,26 @@ var modifierBits = map[string]int64{
 	"super": int64(input.ModifierMeta),
 }
 
-// modifierNames is the canonical spelling and print order used when a stroke is
-// formatted back into a keyspec, so formatting is stable regardless of the order
-// the caller wrote the modifiers in.
-var modifierNames = []struct {
-	bit  int64
-	name string
+// modifierTable is the one row per modifier bit: its canonical keyspec spelling
+// (and the print order a formatted stroke uses, so formatting is stable whatever
+// order the caller wrote the modifiers in), plus the DOM key/code/virtual-keycode
+// tuple dispatchKeyStroke presses the physical modifier with.
+//
+// The virtual key codes are the ones browsers report for a real press
+// (Shift 16, Control 17, Alt 18, Meta 91). kb's table carries the *Left variants
+// (160/162/164) because it describes scan codes, not the event.keyCode a page
+// reads — a handler comparing e.keyCode === 17 must still see the Ctrl press.
+var modifierTable = []struct {
+	bit     int64
+	name    string // keyspec spelling
+	key     string // DOM KeyboardEvent.key for the physical modifier
+	code    string
+	keyCode int64
 }{
-	{int64(input.ModifierCtrl), "ctrl"},
-	{int64(input.ModifierAlt), "alt"},
-	{int64(input.ModifierShift), "shift"},
-	{int64(input.ModifierMeta), "cmd"},
+	{int64(input.ModifierCtrl), "ctrl", "Control", "ControlLeft", 17},
+	{int64(input.ModifierAlt), "alt", "Alt", "AltLeft", 18},
+	{int64(input.ModifierShift), "shift", "Shift", "ShiftLeft", 16},
+	{int64(input.ModifierMeta), "cmd", "Meta", "MetaLeft", 91},
 }
 
 // namedKeys maps every accepted spelling of a named key (lower-cased) to the
@@ -156,7 +158,7 @@ func ParseModifiers(s string) (int64, error) {
 		return 0, nil
 	}
 	var mods int64
-	for _, part := range strings.Split(s, "+") {
+	for part := range strings.SplitSeq(s, "+") {
 		bit, err := modifierBit(strings.TrimSpace(part))
 		if err != nil {
 			return 0, err
@@ -164,6 +166,20 @@ func ParseModifiers(s string) (int64, error) {
 		mods |= bit
 	}
 	return mods, nil
+}
+
+// modifierNames renders a CDP modifier bitmask back into the canonical names, in
+// modifierTable's order, so a mask never round-trips into a spelling
+// ParseModifiers would reject. It returns an empty (never nil) slice, so the JSON
+// is `[]` rather than `null`.
+func modifierNames(mask int64) []string {
+	names := make([]string, 0, len(modifierTable))
+	for _, m := range modifierTable {
+		if mask&m.bit != 0 {
+			names = append(names, m.name)
+		}
+	}
+	return names
 }
 
 func modifierBit(name string) (int64, error) {
@@ -199,7 +215,7 @@ func parseKeyToken(tok string) (KeyStroke, error) {
 		mods |= bit
 	}
 
-	k, err := keyStrokeFor(key)
+	k, err := keyStrokeFor(key, mods)
 	if err != nil {
 		return KeyStroke{}, err
 	}
@@ -208,19 +224,73 @@ func parseKeyToken(tok string) (KeyStroke, error) {
 }
 
 // keyStrokeFor resolves a single key part — a named key or one printable
-// character — to its DOM key/code/keycode tuple.
-func keyStrokeFor(key string) (KeyStroke, error) {
+// character — to its DOM key/code/keycode tuple, for a press held with mods.
+//
+// The modifiers are not decoration here. Shift does not merely set a bit: it
+// changes which character the physical key produces, so `shift+a` must resolve
+// to "A" (inserting "A") exactly as the bare `A` spelling does. Resolving the
+// base rune and OR-ing Shift on afterwards dispatches key "a" with text "a" and
+// the Shift bit set — a press no keyboard can make, which types a lowercase
+// letter and never fires a handler written `if (e.key === "A")`.
+func keyStrokeFor(key string, mods int64) (KeyStroke, error) {
+	r, err := keyRune(key)
+	if err != nil {
+		return KeyStroke{}, err
+	}
+	if mods&int64(input.ModifierShift) != 0 {
+		if shifted, ok := shiftTwin[r]; ok {
+			r = shifted
+		}
+	}
+	return strokeForRune(r), nil
+}
+
+// keyRune resolves a key part to the rune kb's table is keyed by — a named key's
+// sentinel rune, or the single character itself.
+func keyRune(key string) (rune, error) {
 	if r, ok := namedKeys[strings.ToLower(key)]; ok {
-		return strokeForRune(r), nil
+		return r, nil
 	}
 	runes := []rune(key)
 	if len(runes) != 1 {
-		return KeyStroke{}, fmt.Errorf("unknown key name %q: a multi-character key must be a known name (Escape, Enter, Tab, Space, Home, PageDown, ArrowUp, F1…F24, …); use `type` to send literal text", key)
+		return 0, fmt.Errorf("unknown key name %q: a multi-character key must be a known name (Escape, Enter, Tab, Space, Home, PageDown, ArrowUp, F1…F24, …); use `type` to send literal text", key)
 	}
 	if _, known := kb.Keys[runes[0]]; !known && !unicode.IsPrint(runes[0]) {
-		return KeyStroke{}, fmt.Errorf("key %q is neither a known key name nor a printable character", key)
+		return 0, fmt.Errorf("key %q is neither a known key name nor a printable character", key)
 	}
-	return strokeForRune(runes[0]), nil
+	return runes[0], nil
+}
+
+// shiftTwin maps a character to the one the SAME physical key produces with
+// Shift held — 'a'→'A', '1'→'!', '/'→'?'. It is derived from kb's own table
+// (two entries sharing a Code, one with Shift set) rather than hand-written, so
+// it stays correct for every key Chrome knows about and needs no upkeep.
+//
+// Named keys are absent by construction: Home, Tab and the rest have no shifted
+// character, which is why `shift+Home` is unaffected — and why the live tests,
+// which only ever pressed shift with named keys, never caught this.
+var shiftTwin = buildShiftTwin()
+
+func buildShiftTwin() map[rune]rune {
+	base := map[string]rune{}
+	shifted := map[string]rune{}
+	for r, v := range kb.Keys {
+		if v.Code == "" {
+			continue
+		}
+		if v.Shift {
+			shifted[v.Code] = r
+		} else {
+			base[v.Code] = r
+		}
+	}
+	m := make(map[rune]rune, len(shifted))
+	for code, s := range shifted {
+		if b, ok := base[code]; ok {
+			m[b] = s
+		}
+	}
+	return m
 }
 
 // strokeForRune builds the stroke for a rune, taking the key/code/keycode tuple
@@ -255,11 +325,9 @@ func (k KeyStroke) String() string {
 		mods &^= int64(input.ModifierShift)
 	}
 	var b strings.Builder
-	for _, m := range modifierNames {
-		if mods&m.bit != 0 {
-			b.WriteString(m.name)
-			b.WriteByte('+')
-		}
+	for _, name := range modifierNames(mods) {
+		b.WriteString(name)
+		b.WriteByte('+')
 	}
 	b.WriteString(keyName(k))
 	return b.String()
@@ -267,11 +335,7 @@ func (k KeyStroke) String() string {
 
 // FormatKeys renders a sequence of strokes as a single keyspec.
 func FormatKeys(keys []KeyStroke) string {
-	parts := make([]string, len(keys))
-	for i, k := range keys {
-		parts[i] = k.String()
-	}
-	return strings.Join(parts, " ")
+	return strings.Join(KeyNames(keys), " ")
 }
 
 // KeyNames returns the canonical name for every stroke, in order — the `keys`

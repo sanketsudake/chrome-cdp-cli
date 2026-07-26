@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"runtime"
+	"slices"
 	"strings"
 	"time"
 
@@ -21,25 +22,6 @@ import (
 // field would turn a successful press into a timeout.
 const focusedReadTimeout = 2 * time.Second
 
-// modifierKeys are the physical modifier keys held around a chord, in press
-// order (release is the reverse).
-//
-// The virtual key codes are the ones browsers report for a real press
-// (Shift 16, Control 17, Alt 18, Meta 91). kb's table carries the *Left variants
-// (160/162/164) because it describes scan codes, not the event.keyCode a page
-// reads — a handler comparing e.keyCode === 17 must still see the Ctrl press.
-var modifierKeys = []struct {
-	bit     int64
-	key     string
-	code    string
-	keyCode int64
-}{
-	{int64(input.ModifierCtrl), "Control", "ControlLeft", 17},
-	{int64(input.ModifierAlt), "Alt", "AltLeft", 18},
-	{int64(input.ModifierShift), "Shift", "ShiftLeft", 16},
-	{int64(input.ModifierMeta), "Meta", "MetaLeft", 91},
-}
-
 // Key dispatches keyboard events that are not literal text — named keys, modifier
 // chords, and repeats.
 //
@@ -54,10 +36,7 @@ func (c *CDP) Key(ctx context.Context, id, selector string, keys []KeyStroke, op
 	if len(keys) == 0 {
 		return nil, errors.New("no keys to press")
 	}
-	repeat := opts.Repeat
-	if repeat < 1 {
-		repeat = 1
-	}
+	repeat := max(opts.Repeat, 1)
 
 	core := chromedp.ActionFunc(func(actx context.Context) error {
 		if selector != "" {
@@ -92,7 +71,6 @@ func (c *CDP) Key(ctx context.Context, id, selector string, keys []KeyStroke, op
 	}
 
 	res := map[string]any{"keys": KeyNames(keys), "repeat": repeat}
-	// Best-effort only: an omitted `focused` is not a failure. See focusedDesc.
 	if f := c.focusedDesc(ctx, id); f != "" {
 		res["focused"] = f
 	}
@@ -110,7 +88,7 @@ func (c *CDP) Key(ctx context.Context, id, selector string, keys []KeyStroke, op
 func dispatchKeyStroke(ctx context.Context, k KeyStroke) error {
 	mods := input.Modifier(k.Modifiers)
 
-	for _, m := range modifierKeys {
+	for _, m := range modifierTable {
 		if k.Modifiers&m.bit == 0 {
 			continue
 		}
@@ -137,8 +115,7 @@ func dispatchKeyStroke(ctx context.Context, k KeyStroke) error {
 		return err
 	}
 
-	for i := len(modifierKeys) - 1; i >= 0; i-- {
-		m := modifierKeys[i]
+	for _, m := range slices.Backward(modifierTable) {
 		if k.Modifiers&m.bit == 0 {
 			continue
 		}

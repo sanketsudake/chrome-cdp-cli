@@ -55,7 +55,7 @@ func TestKeyInsideSessionBatch(t *testing.T) {
 	}
 
 	var envs []map[string]any
-	for _, line := range strings.Split(strings.TrimSpace(out.String()), "\n") {
+	for line := range strings.SplitSeq(strings.TrimSpace(out.String()), "\n") {
 		if strings.TrimSpace(line) == "" {
 			continue
 		}

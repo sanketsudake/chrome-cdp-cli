@@ -1,8 +1,12 @@
 package cli
 
-// The pointer verbs — hover, dblclick, rclick, drag (RFC-0005). Four commands
-// over one driver method: they differ only in the PointerAction they select and
-// the flags they accept.
+// The pointer verbs — click, hover, dblclick, rclick, drag (RFC-0005). Five
+// commands over one driver method: they differ only in the PointerAction they
+// select and the flags they accept.
+//
+// `click` belongs here rather than in commands.go because it is the same
+// gesture: routing it through Pointer is what gives it --modifiers (RFC-0005
+// US-6, the multi-select) without a second click implementation to keep in step.
 
 import (
 	"context"
@@ -25,6 +29,25 @@ const (
 
 const modifiersUsage = "modifier keys held during the action, +-joined (ctrl+shift+alt+cmd)"
 
+func (a *App) cmdClick() *cobra.Command {
+	var mods string
+	c := &cobra.Command{
+		Use:   "click <selector>",
+		Short: "Click an element (auto-waits)",
+		Long: "Click an element at its live, occlusion-verified centre.\n\n" +
+			"--modifiers holds keys during the press, which is how a grid or file list\n" +
+			"is multi-selected:\n\n" +
+			"  chrome-cdp click --by name \"Row 2\" --modifiers cmd",
+		Args: cobra.ExactArgs(1),
+		RunE: func(_ *cobra.Command, args []string) error {
+			a.runPointerVerb("click", chrome.PointerClick, args[0], mods, nil)
+			return nil
+		},
+	}
+	c.Flags().StringVar(&mods, "modifiers", "", modifiersUsage)
+	return a.withWaitText(c)
+}
+
 func (a *App) cmdHover() *cobra.Command {
 	var mods string
 	var hold time.Duration
@@ -40,13 +63,9 @@ func (a *App) cmdHover() *cobra.Command {
 			"  chrome-cdp click --by name \"Delete\" --in-row \"Invoice 4102\"",
 		Args: cobra.ExactArgs(1),
 		RunE: func(_ *cobra.Command, args []string) error {
-			opts, rerr := a.pointerOpts(chrome.PointerHover, mods)
-			if rerr != nil {
-				a.emitErr("hover", rerr.Code, rerr.Message, nil)
-				return nil
-			}
-			opts.Hold = hold
-			a.runPointer("hover", args[0], opts)
+			a.runPointerVerb("hover", chrome.PointerHover, args[0], mods, func(o *chrome.PointerOpts) {
+				o.Hold = hold
+			})
 			return nil
 		},
 	}
@@ -62,7 +81,7 @@ func (a *App) cmdDblClick() *cobra.Command {
 		Short: "Double-click an element (enters edit mode in most data grids)",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(_ *cobra.Command, args []string) error {
-			a.runPointerVerb("dblclick", chrome.PointerDblClick, args[0], mods)
+			a.runPointerVerb("dblclick", chrome.PointerDblClick, args[0], mods, nil)
 			return nil
 		},
 	}
@@ -80,7 +99,7 @@ func (a *App) cmdRClick() *cobra.Command {
 			"swallow the next command's click. Close it with `key Escape`.",
 		Args: cobra.ExactArgs(1),
 		RunE: func(_ *cobra.Command, args []string) error {
-			a.runPointerVerb("rclick", chrome.PointerRClick, args[0], mods)
+			a.runPointerVerb("rclick", chrome.PointerRClick, args[0], mods, nil)
 			return nil
 		},
 	}
@@ -122,19 +141,10 @@ func (a *App) cmdDrag() *cobra.Command {
 					fmt.Sprintf("--steps must be between %d and %d, got %d", dragStepsMin, dragStepsMax, steps), nil)
 				return nil
 			}
-			opts, rerr := a.pointerOpts(chrome.PointerDrag, mods)
-			if rerr != nil {
-				a.emitErr("drag", rerr.Code, rerr.Message, nil)
-				return nil
-			}
-			opts.To, opts.Dx, opts.Dy, opts.Steps, opts.Hold = to, dx, dy, steps, hold
-			// The drop target inherits the source's addressing unless --to-by
-			// overrides it, so `drag --by name A --to B` needs no second mode flag.
-			opts.ToQuery = opts.Query
-			if toBy != "" {
-				opts.ToQuery.By = toBy
-			}
-			a.runPointer("drag", args[0], opts)
+			a.runPointerVerb("drag", chrome.PointerDrag, args[0], mods, func(o *chrome.PointerOpts) {
+				o.To, o.Dx, o.Dy, o.Steps, o.Hold = to, dx, dy, steps, hold
+				o.ToQuery = toQueryFrom(o.Query, toBy)
+			})
 			return nil
 		},
 	}
@@ -148,33 +158,43 @@ func (a *App) cmdDrag() *cobra.Command {
 	return a.withWaitText(c)
 }
 
-// runPointerVerb is the whole body of the pointer verbs that take nothing but a
-// selector and --modifiers.
-func (a *App) runPointerVerb(command string, action chrome.PointerAction, selector, mods string) {
-	opts, rerr := a.pointerOpts(action, mods)
-	if rerr != nil {
-		a.emitErr(command, rerr.Code, rerr.Message, nil)
-		return
+// toQueryFrom builds the drop target's addressing from the source's, so
+// `drag --by name A --to B` needs no second mode flag.
+//
+// It inherits only how to READ a selector — the --by mode, the --wait state, and
+// --pierce — and deliberately drops every flag that NARROWS a match: --role,
+// --nth, --match, --in-row. Those describe which of several candidates the
+// SOURCE is, and mean nothing about the destination. --in-row is the one that
+// bites: it scopes a name match to one table row (and byFor short-circuits on
+// it), so a leaked --in-row makes any drop target outside that row unresolvable
+// — `drag --by name "Task A" --in-row "Backlog" --to "Done"` would fail
+// target_timeout on a correct command, blaming the selector for a scope the
+// caller never asked to apply there. A refiner reaches the drop target only when
+// a --to-* counterpart exists to ask for it; today that is --to-by alone.
+func toQueryFrom(src chrome.QueryOpts, toBy string) chrome.QueryOpts {
+	to := chrome.QueryOpts{By: src.By, Wait: src.Wait, Pierce: src.Pierce}
+	if toBy != "" {
+		to.By = toBy
 	}
-	a.runPointer(command, selector, opts)
+	return to
 }
 
-// pointerOpts builds the driver options from the shared selector flags plus
-// --modifiers. An unknown modifier name is a usage error raised here, before any
-// connection is attempted.
-func (a *App) pointerOpts(action chrome.PointerAction, mods string) (chrome.PointerOpts, *result.Err) {
+// runPointerVerb is the whole body of every pointer verb: build the driver
+// options from the shared selector flags plus --modifiers, let the verb add the
+// options only it has (set may be nil), then dispatch and emit.
+//
+// An unknown modifier name is a usage error raised here, before any connection is
+// attempted.
+func (a *App) runPointerVerb(command string, action chrome.PointerAction, selector, mods string, set func(*chrome.PointerOpts)) {
 	mask, err := chrome.ParseModifiers(mods)
 	if err != nil {
-		return chrome.PointerOpts{}, &result.Err{Code: result.CodeUsage, Message: err.Error()}
+		a.emitErr(command, result.CodeUsage, err.Error(), nil)
+		return
 	}
-	return chrome.PointerOpts{Action: action, Modifiers: mask, Query: a.queryOpts()}, nil
-}
-
-// runPointer resolves the target, dispatches the gesture, and emits the
-// envelope. The `occluded` classification lives in classifyWithTabHint, which
-// every action verb already routes through, so click/type/fill report a covered
-// element the same way these verbs do.
-func (a *App) runPointer(command, selector string, opts chrome.PointerOpts) {
+	opts := chrome.PointerOpts{Action: action, Modifiers: mask, Query: a.queryOpts()}
+	if set != nil {
+		set(&opts)
+	}
 	a.runResolved(command, func(ctx context.Context, b chrome.Browser, id string) (any, error) {
 		return b.Pointer(ctx, id, selector, opts)
 	})

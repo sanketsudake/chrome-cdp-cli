@@ -170,7 +170,7 @@ chrome-cdp value --all "input.hours"            # every hour cell in one call
 | `scroll [selector] [--dx <p>] [--dy <p>] [--to] [--wheel]` | scroll by a delta, `--to` a selector into view, or a real `--wheel` |
 | `attr get\|list\|set\|rm <selector> [name] [value]` | read/write element attributes |
 
-All the pointer verbs resolve the same occlusion-verified centre `click` does, and take `--modifiers` (`ctrl`/`shift`/`alt`/`cmd`, joined with `+`) — `click --modifiers cmd` is the multi-select in a table.
+`click`, `hover`, `dblclick`, `rclick` and `drag` are one driver method behind five names: they resolve the identical occlusion-verified centre and all take `--modifiers` (`ctrl`/`shift`/`alt`/`cmd`, joined with `+`) — `click --modifiers cmd` is the multi-select in a table.
 An element that resolves but never presents an unoccluded centre fails as `target_timeout` with `occluded: true`, so it's distinguishable from "not found".
 
 `key` takes a named key, a printable character, a chord, or a space-separated sequence of those, and works with no selector at all — which is what makes it usable when nothing is addressable:
@@ -188,6 +188,7 @@ An element that resolves but never presents an unoccluded centre fails as `targe
 | `--delay <dur>` | pause between repeats, for apps that debounce |
 
 `cmd` maps to Meta on every platform — the *page* decides which modifier it listens for, so the CLI never rewrites `cmd` to `ctrl` for you.
+`shift+<character>` presses the character that key actually produces, so `shift+a` is the same press as `A` (and `shift+1` is `!`) rather than a lowercase `a` with a Shift bit set.
 An unknown key name is a `usage` error rather than being typed as literal characters.
 
 `drag` takes either a drop target or a pixel delta, never both:
@@ -201,6 +202,7 @@ An unknown key name is a `usage` error rather than being typed as literal charac
 | `--hold <dur>` | pause after pressing before moving, for long-press-to-drag UIs |
 
 The intermediate moves aren't cosmetic: a press and release at two points is silently a click to most drag implementations.
+The drop target inherits only *how* to read a selector — `--by` (overridable with `--to-by`), `--wait`, `--pierce` — and never the flags that narrow a match (`--role`, `--nth`, `--match`, `--in-row`), which describe which candidate the *source* is: a `--in-row` applied to the drop target would scope it to the source's row and make any target elsewhere unresolvable.
 
 ```sh
 chrome-cdp key Escape                                # close the open dialog
@@ -212,7 +214,7 @@ chrome-cdp drag --by name "Task A" --to "Done" --to-by name
 chrome-cdp click --by name "Row 2" --modifiers cmd   # add to the selection
 ```
 
-`click` / `type` / `fill` / `select` also take **`--wait-text "<substr>"`** — after the action, block until the page contains the text (a `Saved` toast), folding act-and-confirm into one call.
+Every acting verb — `nav`, `click`, `type`, `fill`, `select`, `key`, `hover`, `dblclick`, `rclick`, `drag` — also takes **`--wait-text "<substr>"`**: after the action, block until the page contains the text (a `Saved` toast), folding act-and-confirm into one call.
 
 `select` addresses the field by accessible name by default; a cascade path is `>`-separated:
 

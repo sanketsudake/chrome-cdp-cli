@@ -89,14 +89,16 @@ func (a *App) cmdClose() *cobra.Command {
 				a.emitErr("close", classifyActionErr(err), err.Error(), nil)
 				return nil
 			}
-			if res == nil {
-				res = map[string]any{}
-			}
-			res["sticky_cleared"] = a.clearStickyIfClosed(ids)
+			// Only the tabs the driver actually closed count. CloseTabs succeeds on
+			// a partial failure and lists the refused tabs under `failed`; treating
+			// a refused tab as closed would wipe the sticky pointer at a tab that
+			// is still open and still listed, stranding every later command on
+			// no_current_target — the inversion of what US-7 exists to prevent.
+			res["sticky_cleared"] = a.clearStickyIfClosed(closedIDs(res))
 			// The envelope's `target` describes exactly one tab, and a bulk close has
 			// none — `closed` carries the list instead.
 			var tgt *result.TargetInfo
-			if !all && len(victims) == 1 {
+			if len(victims) == 1 {
 				t := victims[0]
 				tgt = &t
 			}
@@ -198,6 +200,22 @@ func (a *App) clearStickyIfClosed(ids []string) bool {
 	return false
 }
 
+// closedIDs reads back the ids CloseTabs reports as actually closed. It is
+// deliberately tolerant of a payload that has been through the daemon's JSON
+// round-trip (where every entry is a map[string]any) and of a driver that closed
+// nothing at all.
+func closedIDs(res map[string]any) []string {
+	entries, _ := res["closed"].([]any)
+	ids := make([]string, 0, len(entries))
+	for _, e := range entries {
+		m, _ := e.(map[string]any)
+		if id, _ := m["id"].(string); id != "" {
+			ids = append(ids, id)
+		}
+	}
+	return ids
+}
+
 // containsFold reports whether s contains sub, case-insensitively. An empty sub
 // is "no constraint", matching how `list` treats an unset filter.
 func containsFold(s, sub string) bool {
@@ -276,37 +294,4 @@ func (n *navFlags) act(ctx context.Context, b chrome.Browser, id string, args []
 	default:
 		return b.Navigate(ctx, id, args[0])
 	}
-}
-
-// runNav resolves the target, runs the selected nav action, and emits.
-//
-// It does not reuse targetAction because "no entry in that direction" must reach
-// the caller as target_not_found + no_history rather than being classified as a
-// generic CDP failure — the whole point of checking the history before moving.
-func (a *App) runNav(nf *navFlags, args []string) {
-	ctx, cancel := a.ctx()
-	defer cancel()
-	tgt, b, rerr := a.resolveTarget(ctx)
-	if rerr != nil {
-		a.emitErr("nav", rerr.Code, rerr.Message, nil)
-		return
-	}
-	res, err := nf.act(ctx, b, tgt.ID, args)
-	if err != nil {
-		if chrome.IsNoHistory(err) {
-			a.emitErr("nav", result.CodeTargetNotFound, err.Error(), map[string]any{"no_history": true})
-			return
-		}
-		code, msg, details := a.classifyWithTabHint(b, tgt.ID, err)
-		a.emitErr("nav", code, msg, details)
-		return
-	}
-	// Report the SETTLED url, so a redirect (or a history entry that resolved
-	// elsewhere) updates target.url rather than echoing the request.
-	if m, ok := res.(map[string]any); ok {
-		if u, ok := m["url"].(string); ok && u != "" {
-			tgt.URL = u
-		}
-	}
-	a.emitOK("nav", tgt, res)
 }

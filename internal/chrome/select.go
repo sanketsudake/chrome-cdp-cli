@@ -290,16 +290,18 @@ func settledNodePoint(ctx context.Context, nid cdp.NodeID) (float64, float64, er
 			if lastErr != nil {
 				return 0, 0, lastErr
 			}
-			return 0, 0, errNoSettledPoint
+			return 0, 0, ErrOccluded
 		case <-t.C:
 		}
 	}
 }
 
-// errNoSettledPoint reports that an element resolved but never presented an
-// unoccluded centre. Pointer verbs surface it as `occluded: true` in the error
-// details, so a caller can tell "covered by an overlay" from "not found".
-var errNoSettledPoint = errors.New("element has no settled, unoccluded clickable centre")
+// ErrOccluded reports that an element resolved but never presented an unoccluded
+// centre — it is covered by an overlay, or it never stopped animating. Pointer
+// verbs surface it as `occluded: true` in the error details, so a caller can tell
+// "covered by an overlay" from "not found"; match it with IsOccluded rather than
+// errors.Is at call sites.
+var ErrOccluded = errors.New("element has no settled, unoccluded clickable centre")
 
 // nodeCoord returns the element's clamped centre and whether that point is
 // hit-testable on the element (or a descendant) — i.e. not occluded.

@@ -60,7 +60,7 @@ func TestElementRefAddressing(t *testing.T) {
 	}
 
 	// Click by ref resolves the exact node snap reported.
-	if _, err := b.Click(ctx, id, saveRef, QueryOpts{By: "ref"}); err != nil {
+	if _, err := clickVia(ctx, b, id, saveRef, QueryOpts{By: "ref"}); err != nil {
 		t.Fatalf("Click --by ref %q: %v", saveRef, err)
 	}
 	got, err := b.Eval(ctx, id, "window.__saved")
@@ -75,7 +75,7 @@ func TestElementRefAddressing(t *testing.T) {
 	// fails fast instead of polling to the outer deadline).
 	badCtx, badCancel := context.WithTimeout(ctx, 3*time.Second)
 	defer badCancel()
-	if _, err := b.Click(badCtx, id, "not-a-ref", QueryOpts{By: "ref"}); err == nil {
+	if _, err := clickVia(badCtx, b, id, "not-a-ref", QueryOpts{By: "ref"}); err == nil {
 		t.Error("Click --by ref with a bad ref returned nil error, want an error")
 	}
 }

@@ -27,37 +27,24 @@ const dragMoveInterval = 8 * time.Millisecond
 // page sees a hover, not a drag.
 const leftButtonMask int64 = 1
 
-// ErrOccluded reports that an element resolved but never presented an
-// unoccluded centre to aim at — it is covered by an overlay, or it never stopped
-// animating. It is exported so the CLI can tell that apart from "not found" and
-// report `occluded: true` in the error details; use IsOccluded, which also
-// recognises the condition after the error has crossed the daemon's RPC boundary
-// and lost its Go type.
-var ErrOccluded = errNoSettledPoint
-
-// IsOccluded reports whether err is the "no settled, unoccluded centre"
-// condition. It matches on the sentinel first, then on its message: an error
-// raised in the daemon reaches the CLI as a plain string, so the message match is
-// what keeps the classification working under the default (daemon) connection
-// path.
-func IsOccluded(err error) bool {
-	if err == nil {
-		return false
-	}
-	if errors.Is(err, ErrOccluded) {
-		return true
-	}
-	return strings.Contains(err.Error(), ErrOccluded.Error())
+// errIs reports whether err is target, including after the daemon RPC has
+// flattened it to a plain message and lost its Go type. Every sentinel the CLI
+// classifies on is matched through here, so the message fallback exists once.
+func errIs(err, target error) bool {
+	return err != nil && (errors.Is(err, target) || strings.Contains(err.Error(), target.Error()))
 }
 
-// Pointer dispatches one pointer gesture — hover, double-click, right-click, or
-// drag — at an element's live, occlusion-verified centre.
+// IsOccluded reports whether err is ErrOccluded.
+func IsOccluded(err error) bool { return errIs(err, ErrOccluded) }
+
+// Pointer dispatches one pointer gesture — click, hover, double-click,
+// right-click, or drag — at an element's live, occlusion-verified centre.
 //
-// All four verbs share `click`'s centre resolution (settledNodePoint) rather
-// than recomputing geometry: a second box-model read would drift from click on
-// overlapped elements and is simply wrong on a hidden tab. Modifiers are set on
-// every dispatched event, so the page's handlers see event.metaKey / shiftKey and
-// a modified click multi-selects the way a human's does.
+// All five verbs share one centre resolution (settledNodePoint) rather than
+// recomputing geometry: a second box-model read would drift on overlapped
+// elements and is simply wrong on a hidden tab. Modifiers are set on every
+// dispatched event, so the page's handlers see event.metaKey / shiftKey and a
+// modified click multi-selects the way a human's does.
 func (c *CDP) Pointer(ctx context.Context, id, selector string, opts PointerOpts) (map[string]any, error) {
 	var out map[string]any
 	core := chromedp.ActionFunc(func(actx context.Context) error {
@@ -72,6 +59,16 @@ func (c *CDP) Pointer(ctx context.Context, id, selector string, opts PointerOpts
 		mods := input.Modifier(opts.Modifiers)
 
 		switch opts.Action {
+		case PointerClick:
+			if err := pointerClickSeq(actx, x, y, input.Left, 1, mods); err != nil {
+				return err
+			}
+			// click's payload predates the pointer verbs and is public API — the
+			// Agent Skill and the human formatter both read `clicked`. Routing the
+			// verb through this method must not change what it emits, so it keeps
+			// its own shape instead of adopting the x/y/name one.
+			out = map[string]any{"clicked": selector}
+			return nil
 		case PointerHover:
 			// Dispatch the move and return. Whether the app rendered a tooltip is
 			// the caller's problem (--wait-text, or `wait --visible`); the verb
@@ -113,7 +110,7 @@ func (c *CDP) Pointer(ctx context.Context, id, selector string, opts PointerOpts
 			"x":         x,
 			"y":         y,
 			"name":      selector,
-			"modifiers": pointerModifierNames(opts.Modifiers),
+			"modifiers": modifierNames(opts.Modifiers),
 		}
 		return nil
 	})
@@ -150,7 +147,7 @@ func dragResult(selector string, fx, fy, tx, ty float64, steps int, opts Pointer
 		"from":      map[string]any{"x": fx, "y": fy, "name": selector},
 		"to":        to,
 		"steps":     steps,
-		"modifiers": pointerModifierNames(opts.Modifiers),
+		"modifiers": modifierNames(opts.Modifiers),
 	}
 }
 
@@ -240,18 +237,4 @@ func pointerHold(ctx context.Context, d time.Duration) error {
 	case <-t.C:
 		return nil
 	}
-}
-
-// pointerModifierNames renders a CDP modifier bitmask back into the canonical
-// names for the result envelope, reusing the same table ParseModifiers formats
-// from so a mask never round-trips into a spelling the CLI would reject. It
-// returns an empty (never nil) slice, so the JSON is `[]` rather than `null`.
-func pointerModifierNames(mask int64) []string {
-	names := make([]string, 0, len(modifierNames))
-	for _, m := range modifierNames {
-		if mask&m.bit != 0 {
-			names = append(names, m.name)
-		}
-	}
-	return names
 }

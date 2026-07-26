@@ -15,6 +15,14 @@ import (
 	"time"
 )
 
+// clickVia dispatches the `click` verb the way the CLI does — through the one
+// Pointer method that backs every pointer gesture. There is no Browser.Click:
+// keeping click on the same driver method as hover/dblclick/rclick/drag is what
+// gives it --modifiers without a second implementation to keep in step.
+func clickVia(ctx context.Context, b *CDP, id, selector string, q QueryOpts) (map[string]any, error) {
+	return b.Pointer(ctx, id, selector, PointerOpts{Action: PointerClick, Query: q})
+}
+
 // pointerFixture serves one HTML page for the length of a test.
 func pointerFixture(t *testing.T, html string) *httptest.Server {
 	t.Helper()
@@ -103,14 +111,14 @@ func TestPointerModifierNames(t *testing.T) {
 		1 | 2 | 4 | 8: {"ctrl", "alt", "shift", "cmd"},
 	}
 	for mask, want := range cases {
-		got := pointerModifierNames(mask)
+		got := modifierNames(mask)
 		if len(got) != len(want) {
-			t.Errorf("pointerModifierNames(%d) = %v, want %v", mask, got, want)
+			t.Errorf("modifierNames(%d) = %v, want %v", mask, got, want)
 			continue
 		}
 		for i := range want {
 			if got[i] != want[i] {
-				t.Errorf("pointerModifierNames(%d) = %v, want %v", mask, got, want)
+				t.Errorf("modifierNames(%d) = %v, want %v", mask, got, want)
 				break
 			}
 		}
@@ -170,7 +178,7 @@ func TestPointerVerbsDriveRealEvents(t *testing.T) {
 	// somewhere else. Bounded so it fails fast.
 	noHoverCtx, noHoverCancel := context.WithTimeout(ctx, 3*time.Second)
 	defer noHoverCancel()
-	if _, err := b.Click(noHoverCtx, id, "#del", QueryOpts{}); err == nil {
+	if _, err := clickVia(noHoverCtx, b, id, "#del", QueryOpts{}); err == nil {
 		t.Error("clicking a hover-only button without hovering succeeded, want a failure")
 	}
 
@@ -184,7 +192,7 @@ func TestPointerVerbsDriveRealEvents(t *testing.T) {
 	}
 
 	// VS-2, second half: with the row hovered, the revealed button is clickable.
-	if _, err := b.Click(ctx, id, "#del", QueryOpts{}); err != nil {
+	if _, err := clickVia(ctx, b, id, "#del", QueryOpts{}); err != nil {
 		t.Fatalf("click on the hover-revealed button: %v", err)
 	}
 	if got := pointerEval(ctx, t, b, id, "window.__deleted"); got != true {
@@ -222,6 +230,30 @@ func TestPointerVerbsDriveRealEvents(t *testing.T) {
 	}
 	if e["ctrl"] == true || e["alt"] == true {
 		t.Errorf("mousedown = %v, want ctrl/alt unset", e)
+	}
+
+	// RFC-0005 US-6 / VS-5 for `click` itself — the case the whole flag exists
+	// for: cmd-clicking a row must reach the page with metaKey set, or the app
+	// replaces the selection instead of adding to it. Asserted on the `click`
+	// event (detail 1: still a single click, not a double).
+	pointerClearLog(ctx, t, b, id)
+	res, err = b.Pointer(ctx, id, "#cell", PointerOpts{Action: PointerClick, Modifiers: 4})
+	if err != nil {
+		t.Fatalf("click with modifiers: %v", err)
+	}
+	if res["clicked"] != "#cell" {
+		t.Errorf("click result = %v, want {clicked: #cell} — click's payload is public API", res)
+	}
+	e = pointerLastOfType(pointerLog(ctx, t, b, id), "click")
+	switch {
+	case e == nil:
+		t.Error("a modified click fired no click event")
+	case e["meta"] != true:
+		t.Errorf("click event = %v, want metaKey true (--modifiers cmd)", e)
+	case e["detail"] != 1.0:
+		t.Errorf("click event detail = %v, want 1 — a modified click is still one click", e["detail"])
+	case e["shift"] == true || e["ctrl"] == true || e["alt"] == true:
+		t.Errorf("click event = %v, want only meta held", e)
 	}
 
 	// VS-4: right-click raises contextmenu with the right button.
@@ -431,7 +463,7 @@ func TestPointerSharesClickGeometry(t *testing.T) {
 	}
 
 	q := QueryOpts{}
-	if _, err := b.Click(ctx, id, "#target", q); err != nil {
+	if _, err := clickVia(ctx, b, id, "#target", q); err != nil {
 		t.Fatalf("Click: %v", err)
 	}
 	res, err := b.Pointer(ctx, id, "#target", PointerOpts{Action: PointerDblClick, Query: q})

@@ -7,7 +7,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strings"
 	"time"
 
 	cdpbrowser "github.com/chromedp/cdproto/browser"
@@ -24,16 +23,12 @@ import (
 // a wizard script that quietly failed to go back would carry on against the
 // wrong page.
 //
-// Its message is part of the contract because the daemon RPC flattens errors to
-// strings on the way back to the CLI, so the wrapper is unwrappable there; match
-// with IsNoHistory rather than errors.Is at call sites.
+// Its message is part of the contract: match it with IsNoHistory rather than
+// errors.Is at call sites.
 var ErrNoHistory = errors.New("no history entry in that direction")
 
-// IsNoHistory reports whether err is ErrNoHistory, including after a daemon
-// round-trip has reduced it to its message.
-func IsNoHistory(err error) bool {
-	return err != nil && (errors.Is(err, ErrNoHistory) || strings.Contains(err.Error(), ErrNoHistory.Error()))
-}
+// IsNoHistory reports whether err is ErrNoHistory.
+func IsNoHistory(err error) bool { return errIs(err, ErrNoHistory) }
 
 // CloseTabs closes each tab by id (Target.closeTarget at the browser level) and
 // reports what went, so a caller that closed by filter can see exactly which
@@ -53,6 +48,7 @@ func (c *CDP) CloseTabs(ctx context.Context, targetIDs []string) (map[string]any
 	}
 
 	closed := make([]any, 0, len(targetIDs))
+	closedIDs := make([]string, 0, len(targetIDs))
 	var failed []any
 	var firstErr error
 	for _, id := range targetIDs {
@@ -64,13 +60,17 @@ func (c *CDP) CloseTabs(ctx context.Context, targetIDs []string) (map[string]any
 			continue
 		}
 		c.forget(id)
+		closedIDs = append(closedIDs, id)
 		t := known[id]
 		closed = append(closed, map[string]any{"id": id, "url": t.URL, "title": t.Title})
 	}
 	if len(closed) == 0 && firstErr != nil {
 		return nil, firstErr
 	}
-	c.awaitGone(ctx, targetIDs)
+	// Only the tabs that actually closed are worth waiting on: a tab whose close
+	// FAILED never leaves the list, so including it would burn the whole cap
+	// before returning a result already known.
+	c.awaitGone(ctx, closedIDs)
 	res := map[string]any{"closed": closed, "count": len(closed)}
 	if len(failed) > 0 {
 		res["failed"] = failed
@@ -93,8 +93,6 @@ func (c *CDP) CloseTabs(ctx context.Context, targetIDs []string) (map[string]any
 func (c *CDP) Activate(ctx context.Context, targetID string) (map[string]any, error) {
 	wasActive := c.tabVisible(ctx, targetID)
 
-	// Reuse the shared best-effort action the input verbs use, so there is one
-	// authored Page.bringToFront in this package.
 	if err := c.run(ctx, targetID, bringToFront()); err != nil {
 		return nil, err
 	}
@@ -113,7 +111,9 @@ func (c *CDP) Activate(ctx context.Context, targetID string) (map[string]any, er
 }
 
 // History navigates the tab by delta entries (-1 back, +1 forward) and reports
-// the settled URL.
+// the settled URL. Unlike Reload it reports no `status`: a history move restored
+// from the back/forward cache issues no request, so there is no HTTP response of
+// its own to report — reporting the previous page's status would be a lie.
 //
 // The entry is looked up with Page.getNavigationHistory BEFORE navigating, so
 // "there is nothing in that direction" is a clean typed error instead of a
@@ -243,7 +243,6 @@ func (c *CDP) awaitGone(ctx context.Context, ids []string) {
 	}
 }
 
-// closeTarget issues Target.closeTarget for one tab.
 func (c *CDP) closeTarget(ctx context.Context, id string) error {
 	return c.onBrowser(ctx, func(bctx context.Context) error {
 		return cdptarget.CloseTarget(cdptarget.ID(id)).Do(bctx)

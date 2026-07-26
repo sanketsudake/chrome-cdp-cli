@@ -150,7 +150,7 @@ Back/forward with no entry is deliberately an error rather than a silent no-op �
 - **History navigation** uses `Page.getNavigationHistory` to determine whether an entry exists in the requested direction *before* navigating, so `no_history` is a clean typed error rather than a timeout.
 - **Reload with `--hard`** maps to `Page.reload{ignoreCache: true}`.
 - **Settle behaviour** matches `nav`'s existing semantics — wait for load — so `--back` composes with `wait --idle` the same way.
-- **Stub defaults:** `Close` → `{"closed": []any{}, "count": 0}`; `Activate` → `{"activated": true, "was_active": false}`; `History`/`Reload` → `{"url": "https://example.com/", "status": 200}`.
+- **Stub defaults:** `Close` → `{"closed": []any{}, "count": 0}`; `Activate` → `{"activated": true, "was_active": false}`; `Reload` → `{"url": "https://example.com/", "status": 200}`; `History` → `{"url": "https://example.com/"}` (a history move has no HTTP response of its own, so it reports no `status`).
 
 ## Verification scenarios
 

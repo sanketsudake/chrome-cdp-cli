@@ -89,9 +89,10 @@ type KeyOpts struct {
 	Query  QueryOpts
 }
 
-// PointerOpts controls the pointer verbs — hover, dblclick, rclick, and drag.
-// One driver method backs all four so they share the identical occlusion-verified
-// centre resolution `click` uses; Action selects which.
+// PointerOpts controls the pointer verbs — click, hover, dblclick, rclick, and
+// drag. One driver method backs all five, so they share the identical
+// occlusion-verified centre resolution and the identical modifier handling;
+// Action selects which gesture is dispatched.
 type PointerOpts struct {
 	Action    PointerAction
 	Modifiers int64 // held during the press (alt 1, ctrl 2, meta 4, shift 8)
@@ -117,6 +118,7 @@ type PointerAction string
 
 // The pointer actions a single Pointer call can dispatch.
 const (
+	PointerClick    PointerAction = "click"
 	PointerHover    PointerAction = "hover"
 	PointerDblClick PointerAction = "dblclick"
 	PointerRClick   PointerAction = "rclick"
@@ -182,8 +184,11 @@ type Browser interface {
 	Reload(ctx context.Context, targetID string, hard bool) (map[string]any, error)
 	Eval(ctx context.Context, targetID, expr string) (any, error)
 	Snapshot(ctx context.Context, targetID string, opts SnapOpts) (any, error)
-	Click(ctx context.Context, targetID, selector string, q QueryOpts) (map[string]any, error)
 	Key(ctx context.Context, targetID, selector string, keys []KeyStroke, opts KeyOpts) (map[string]any, error)
+	// Pointer dispatches every pointer gesture — click included. There is no
+	// separate Click: one method means one centre resolution and one place
+	// modifiers are applied, which is what lets `click --modifiers cmd`
+	// multi-select without a second implementation drifting from the first.
 	Pointer(ctx context.Context, targetID, selector string, opts PointerOpts) (map[string]any, error)
 	Select(ctx context.Context, targetID, field, option string, opts SelectOpts) (map[string]any, error)
 	Grid(ctx context.Context, targetID, selector string, q QueryOpts) (any, error)

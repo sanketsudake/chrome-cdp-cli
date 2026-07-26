@@ -43,7 +43,7 @@ func TestOnDialog(t *testing.T) {
 	// the modal) within the action timeout.
 	actx, acancel := context.WithTimeout(ctx, 12*time.Second)
 	defer acancel()
-	res, err := b.Click(actx, id, "#c", QueryOpts{By: "css", OnDialog: "accept"})
+	res, err := clickVia(actx, b, id, "#c", QueryOpts{By: "css", OnDialog: "accept"})
 	if err != nil {
 		t.Fatalf("Click #c --on-dialog accept: %v", err)
 	}
@@ -57,7 +57,7 @@ func TestOnDialog(t *testing.T) {
 	// dismiss -> confirm() returns false.
 	dctx, dcancel := context.WithTimeout(ctx, 12*time.Second)
 	defer dcancel()
-	if _, err := b.Click(dctx, id, "#c", QueryOpts{By: "css", OnDialog: "dismiss"}); err != nil {
+	if _, err := clickVia(dctx, b, id, "#c", QueryOpts{By: "css", OnDialog: "dismiss"}); err != nil {
 		t.Fatalf("Click #c --on-dialog dismiss: %v", err)
 	}
 	if v := evalString(ctx, t, b, id, "window.__r"); v != "no" {
@@ -68,7 +68,7 @@ func TestOnDialog(t *testing.T) {
 	// post-alert statement runs.
 	lctx, lcancel := context.WithTimeout(ctx, 12*time.Second)
 	defer lcancel()
-	if _, err := b.Click(lctx, id, "#a", QueryOpts{By: "css", OnDialog: "accept"}); err != nil {
+	if _, err := clickVia(lctx, b, id, "#a", QueryOpts{By: "css", OnDialog: "accept"}); err != nil {
 		t.Fatalf("Click #a (alert) --on-dialog accept: %v", err)
 	}
 	if v := evalString(ctx, t, b, id, "document.getElementById('out').textContent"); v != "alerted" {

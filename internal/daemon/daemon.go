@@ -165,8 +165,6 @@ func (s *server) dispatch(ctx context.Context, method string, args []json.RawMes
 		return b.Eval(ctx, argStr(args, 0), argStr(args, 1))
 	case "Snapshot":
 		return b.Snapshot(ctx, argStr(args, 0), argSnap(args, 1))
-	case "Click":
-		return b.Click(ctx, argStr(args, 0), argStr(args, 1), argQ(args, 2))
 	case "Key":
 		return b.Key(ctx, argStr(args, 0), argStr(args, 1), argKeys(args, 2), argKeyOpts(args, 3))
 	case "Pointer":
@@ -235,9 +233,6 @@ func (s *server) dispatch(ctx context.Context, method string, args []json.RawMes
 // where a zero value (and the resulting Chrome-side error) is acceptable. It is
 // NOT a substitute for validating user input, which happens in the CLI before
 // the RPC is ever made.
-//
-// Every typed decoder below is a one-line alias, so a new option struct costs
-// one line rather than another copy of this body.
 func arg[T any](a []json.RawMessage, i int) T {
 	var v T
 	if i < len(a) {
@@ -383,10 +378,6 @@ func (r *remoteBrowser) Eval(ctx context.Context, id, expr string) (any, error) 
 func (r *remoteBrowser) Snapshot(ctx context.Context, id string, opts chrome.SnapOpts) (any, error) {
 	var out any
 	return out, r.c.call(ctx, "Snapshot", &out, id, opts)
-}
-func (r *remoteBrowser) Click(ctx context.Context, id, sel string, q chrome.QueryOpts) (map[string]any, error) {
-	var out map[string]any
-	return out, r.c.call(ctx, "Click", &out, id, sel, q)
 }
 func (r *remoteBrowser) Key(ctx context.Context, id, sel string, keys []chrome.KeyStroke, opts chrome.KeyOpts) (map[string]any, error) {
 	var out map[string]any

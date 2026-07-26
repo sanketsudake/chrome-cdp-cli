@@ -177,6 +177,98 @@ func TestCloseOtherTabLeavesStickyAlone(t *testing.T) {
 	}
 }
 
+// partialCloseBrowser refuses one id and closes the rest — what CloseTabs
+// reports when Target.closeTarget is rejected for a tab (one with an attached
+// debugger, or wedged in beforeunload). It is a SUCCESS: a close that half
+// worked is not an error, and the refused tab is listed under `failed`.
+type partialCloseBrowser struct {
+	fakeBrowser
+	refuse string
+}
+
+func (p *partialCloseBrowser) CloseTabs(_ context.Context, ids []string) (map[string]any, error) {
+	closed := make([]any, 0, len(ids))
+	var failed []any
+	for _, id := range ids {
+		if id == p.refuse {
+			failed = append(failed, map[string]any{"id": id, "error": "Target.closeTarget refused"})
+			continue
+		}
+		closed = append(closed, map[string]any{"id": id, "url": "u", "title": "t"})
+	}
+	res := map[string]any{"closed": closed, "count": len(closed)}
+	if len(failed) > 0 {
+		res["failed"] = failed
+	}
+	return res, nil
+}
+
+// stickyApp wires an App to an in-memory sticky target and returns the app plus
+// a pointer to the stored value, so a test can assert what survived.
+func stickyApp(b chrome.Browser, out, errb *bytes.Buffer, sticky *string) *App {
+	return New(b, out, errb).WithStickyTarget(
+		func(ConnOpts) string { return *sticky },
+		func(_ ConnOpts, spec string) error { *sticky = spec; return nil },
+	)
+}
+
+// The sticky tab's close was REFUSED, so the tab is still open and still listed.
+// Clearing the sticky pointer anyway strands every later command on
+// no_current_target while the tab it named is alive — the exact inversion of
+// RFC-0007 US-7, which exists to avoid stranding the user.
+func TestCloseKeepsStickyWhenItsTabRefusedToClose(t *testing.T) {
+	t.Parallel()
+	b := &partialCloseBrowser{fakeBrowser: fakeBrowser{tabs: twoTabs()}, refuse: "aa11"}
+	sticky := "aa11"
+	var out, errb bytes.Buffer
+	app := stickyApp(b, &out, &errb, &sticky)
+
+	if code := app.Execute("close", "--url", "staging.internal", "--all", "--json"); code != 0 {
+		t.Fatalf("close exit = %d, want 0 — a partial close still succeeds (stderr: %s)", code, errb.String())
+	}
+	env := decodeEnvelope(t, out.String())
+	res := env["result"].(map[string]any)
+	if res["count"] != float64(1) {
+		t.Fatalf("result.count = %v, want 1 (only bb22 closed): %v", res["count"], res)
+	}
+	if _, ok := res["failed"]; !ok {
+		t.Fatalf("result.failed missing — the fixture must report the refused tab: %v", res)
+	}
+	if got := res["sticky_cleared"]; got != false {
+		t.Errorf("result.sticky_cleared = %v, want false: %s is still open", got, sticky)
+	}
+	if sticky != "aa11" {
+		t.Errorf("sticky target = %q, want aa11 — its tab never closed", sticky)
+	}
+
+	// And the proof that it is still usable: the next command resolves it.
+	out.Reset()
+	if code := app.Execute("eval", "1+1", "--json"); code != 0 {
+		t.Errorf("follow-up exit = %d, want 0 — the sticky tab is still open", code)
+	}
+}
+
+// The mirror case: when the sticky tab is among the ones that DID close, it is
+// cleared even though a different tab failed.
+func TestCloseClearsStickyWhenItsTabActuallyClosed(t *testing.T) {
+	t.Parallel()
+	b := &partialCloseBrowser{fakeBrowser: fakeBrowser{tabs: twoTabs()}, refuse: "bb22"}
+	sticky := "aa11"
+	var out, errb bytes.Buffer
+	app := stickyApp(b, &out, &errb, &sticky)
+
+	if code := app.Execute("close", "--url", "staging.internal", "--all", "--json"); code != 0 {
+		t.Fatalf("close exit = %d, want 0 (stderr: %s)", code, errb.String())
+	}
+	env := decodeEnvelope(t, out.String())
+	if got := env["result"].(map[string]any)["sticky_cleared"]; got != true {
+		t.Errorf("result.sticky_cleared = %v, want true — aa11 did close", got)
+	}
+	if sticky != "" {
+		t.Errorf("sticky target = %q, want it cleared", sticky)
+	}
+}
+
 // With no sticky setter wired at all there is nothing to clear, and the envelope
 // must say so rather than claim a clear that never happened.
 func TestCloseWithoutStickyStoreReportsNotCleared(t *testing.T) {

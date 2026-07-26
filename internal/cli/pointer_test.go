@@ -110,6 +110,7 @@ func TestDragStepsRangeIsValidatedBeforeConnecting(t *testing.T) {
 func TestBadModifierNeverConnects(t *testing.T) {
 	t.Parallel()
 	cases := [][]string{
+		{"click", "#x", "--modifiers", "command"},
 		{"hover", "#x", "--modifiers", "command"},
 		{"dblclick", "#x", "--modifiers", "command"},
 		{"rclick", "#x", "--modifiers", "command"},
@@ -139,6 +140,7 @@ func TestPointerVerbsMapToActions(t *testing.T) {
 		args []string
 		want chrome.PointerAction
 	}{
+		{"click", []string{"click", "#x"}, chrome.PointerClick},
 		{"hover", []string{"hover", "#x"}, chrome.PointerHover},
 		{"dblclick", []string{"dblclick", "#x"}, chrome.PointerDblClick},
 		{"rclick", []string{"rclick", "#x"}, chrome.PointerRClick},
@@ -168,6 +170,53 @@ func TestPointerVerbsMapToActions(t *testing.T) {
 	}
 }
 
+// RFC-0005 US-6: `click --modifiers` is the multi-select, and the worked example
+// in cli-reference.md and the Agent Skill is exactly this command. It was
+// documented but never registered, so it failed with `unknown flag: --modifiers`
+// — exit 2, and no envelope at all, because the error escaped through the root
+// fallback handler before --json had even been parsed.
+func TestClickTakesModifiers(t *testing.T) {
+	t.Parallel()
+	b := newPointerCapture()
+	env, _, code := run(t, b, "click", "Row 2", "--by", "name", "--modifiers", "cmd", "--target", "aa11", "--json")
+	if code != 0 {
+		t.Fatalf("click --modifiers exit = %d, want 0", code)
+	}
+	if env["command"] != "click" {
+		t.Errorf("envelope command = %v, want click", env["command"])
+	}
+	if b.gotOpts.Action != chrome.PointerClick {
+		t.Errorf("Action = %q, want %q", b.gotOpts.Action, chrome.PointerClick)
+	}
+	if b.gotOpts.Modifiers != 4 {
+		t.Errorf("Modifiers = %d, want 4 (cmd is Meta)", b.gotOpts.Modifiers)
+	}
+	if b.gotSelector != "Row 2" || b.gotOpts.Query.By != "name" {
+		t.Errorf("selector %q by %q, want \"Row 2\" by name", b.gotSelector, b.gotOpts.Query.By)
+	}
+}
+
+// An unmodified click is unchanged: no modifiers held, and the result still
+// carries `clicked` — the key the human formatter and the Agent Skill read.
+func TestPlainClickIsUnchanged(t *testing.T) {
+	t.Parallel()
+	b := &queryCapture{fakeBrowser: fakeBrowser{tabs: []target.Info{{ID: "aa11", Title: "A", URL: "u"}}}}
+	env, _, code := run(t, b, "click", "#x", "--target", "aa11", "--json")
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0", code)
+	}
+	if got := env["result"].(map[string]any)["clicked"]; got != "#x" {
+		t.Errorf("result.clicked = %v, want #x", got)
+	}
+	p := newPointerCapture()
+	if _, _, code := run(t, p, "click", "#x", "--target", "aa11", "--json"); code != 0 {
+		t.Fatalf("exit = %d, want 0", code)
+	}
+	if p.gotOpts.Modifiers != 0 {
+		t.Errorf("Modifiers = %d, want 0 when --modifiers is not given", p.gotOpts.Modifiers)
+	}
+}
+
 // --modifiers is pure arithmetic, so exhaust it: every subset of the four
 // modifier keys must produce its CDP bitmask (alt 1, ctrl 2, meta 4, shift 8).
 func TestModifiersParseToBitmask(t *testing.T) {
@@ -176,7 +225,7 @@ func TestModifiersParseToBitmask(t *testing.T) {
 		mask int64
 		name string
 	}{{1, "alt"}, {2, "ctrl"}, {4, "meta"}, {8, "shift"}}
-	for mask := int64(0); mask < 16; mask++ {
+	for mask := range int64(16) {
 		var names []string
 		for _, b := range bits {
 			if mask&b.mask != 0 {
@@ -237,6 +286,37 @@ func TestDragToByDefaultsToBy(t *testing.T) {
 			t.Errorf("Query.By = %q, want name — --to-by must not change the source's addressing", b.gotOpts.Query.By)
 		}
 	})
+}
+
+// The drop target inherits how to READ a selector (--by/--wait/--pierce), never
+// how to narrow one. --in-row is the sharp edge: it scopes a name match to one
+// table row, and byFor short-circuits on it, so a leaked --in-row makes the drop
+// target unresolvable anywhere outside the source's row —
+// `drag --by name "Task A" --in-row "Backlog" --to "Done" --to-by name` would
+// fail target_timeout on a correct-looking command, blaming the selector for a
+// scope the caller never asked to apply there.
+func TestDragDropTargetDoesNotInheritNameRefiners(t *testing.T) {
+	t.Parallel()
+	b := newPointerCapture()
+	_, _, code := run(t, b, "drag", "Task A", "--to", "Done", "--to-by", "name",
+		"--by", "name", "--in-row", "Backlog", "--role", "row", "--nth", "2", "--match", "contains",
+		"--wait", "ready", "--pierce", "--target", "aa11", "--json")
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0", code)
+	}
+	to := b.gotOpts.ToQuery
+	if to.InRow != "" || to.Role != "" || to.Nth != 0 || to.Match != "" {
+		t.Errorf("ToQuery = %+v, want no inherited name refiners (InRow/Role/Nth/Match)", to)
+	}
+	// The addressing half still carries over, so `--to-by` stays the only flag a
+	// name-addressed drag needs.
+	if to.By != "name" || to.Wait != "ready" || !to.Pierce {
+		t.Errorf("ToQuery = %+v, want By/Wait/Pierce inherited from the source", to)
+	}
+	// And the source keeps every refiner it was given.
+	if q := b.gotOpts.Query; q.InRow != "Backlog" || q.Role != "row" || q.Nth != 2 || q.Match != "contains" {
+		t.Errorf("Query = %+v, want the refiners applied to the SOURCE", q)
+	}
 }
 
 // --steps, --hold, --dx/--dy and the selector flags all reach the driver.
@@ -376,7 +456,7 @@ func TestPointerVerbsComposeInsideSession(t *testing.T) {
 	}
 
 	var envs []map[string]any
-	for _, line := range strings.Split(strings.TrimSpace(out.String()), "\n") {
+	for line := range strings.SplitSeq(strings.TrimSpace(out.String()), "\n") {
 		if strings.TrimSpace(line) == "" {
 			continue
 		}
