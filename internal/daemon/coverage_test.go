@@ -25,13 +25,12 @@ var notDispatched = map[string]string{
 func TestDispatchCoversBrowser(t *testing.T) {
 	t.Parallel()
 
-	iface := reflect.TypeOf((*chrome.Browser)(nil)).Elem()
 	// A permissive stub, so a routed method runs harmlessly; the arg decoders
 	// yield zero values for the nil arg list.
 	s := &server{b: chrometest.StubBrowser{}}
 
-	for i := 0; i < iface.NumMethod(); i++ {
-		name := iface.Method(i).Name
+	for m := range reflect.TypeFor[chrome.Browser]().Methods() {
+		name := m.Name
 		if reason, ok := notDispatched[name]; ok {
 			t.Logf("skipping %s: %s", name, reason)
 			continue

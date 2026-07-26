@@ -67,9 +67,10 @@ func (a *App) newRoot() *cobra.Command {
 	pf.BoolVar(&a.noInput, "no-input", false, "never prompt (the CLI is non-interactive already)")
 
 	root.AddCommand(
-		a.cmdList(), a.cmdOpen(), a.cmdUse(), a.cmdNav(), a.cmdEval(), a.cmdSnap(),
+		a.cmdList(), a.cmdOpen(), a.cmdUse(), a.cmdNav(), a.cmdActivate(), a.cmdClose(), a.cmdEval(), a.cmdSnap(),
 		a.cmdHTML(), a.cmdText(), a.cmdValue(),
-		a.cmdClick(), a.cmdType(), a.cmdFill(), a.cmdSelect(), a.cmdGrid(), a.cmdScroll(), a.cmdAttr(), a.cmdScreenshot(), a.cmdPDF(),
+		a.cmdClick(), a.cmdHover(), a.cmdDblClick(), a.cmdRClick(), a.cmdDrag(), a.cmdKey(),
+		a.cmdType(), a.cmdFill(), a.cmdSelect(), a.cmdGrid(), a.cmdScroll(), a.cmdAttr(), a.cmdScreenshot(), a.cmdPDF(),
 		a.cmdCookie(), a.cmdHeaders(), a.cmdEmulate(), a.cmdFrame(), a.cmdWait(), a.cmdRaw(),
 		a.cmdSession(), a.cmdDoctor(), a.cmdDaemon(), a.cmdExitCodes(), a.cmdVersion(),
 	)
@@ -82,6 +83,15 @@ func (a *App) newRoot() *cobra.Command {
 // It surfaces that as a `tab_hidden` detail + an actionable message instead of a
 // bare timeout, so a caller knows to foreground Chrome (or use --by css).
 func (a *App) classifyWithTabHint(b chrome.Browser, id string, err error) (string, string, map[string]any) {
+	// An element that resolved but never presented an unoccluded centre is a
+	// timeout, not a protocol error: it is covered by an overlay, or still
+	// animating. Reporting it as `occluded` tells a caller to dismiss whatever is
+	// on top rather than to fix a selector that was already correct. Every
+	// pointer-driven verb — click, type, fill, and the RFC-0005 verbs — resolves
+	// its centre through the same primitive, so they classify it identically.
+	if chrome.IsOccluded(err) {
+		return result.CodeTargetTimeout, err.Error(), map[string]any{"occluded": true}
+	}
 	code := classifyActionErr(err)
 	if code != result.CodeTargetTimeout || !a.ariaAddressing() {
 		return code, err.Error(), nil
@@ -217,12 +227,26 @@ func (a *App) cmdOpen() *cobra.Command {
 }
 
 func (a *App) cmdNav() *cobra.Command {
-	return &cobra.Command{
-		Use: "nav <url>", Short: "Navigate the target tab and wait for load", Args: cobra.ExactArgs(1),
-		RunE: a.targetAction("nav", func(ctx context.Context, b chrome.Browser, id string, args []string) (any, error) {
-			return b.Navigate(ctx, id, args[0])
-		}),
+	// nf is per-command (rebuilt by newRoot on every Execute), so the flags reset
+	// between `session` lines like every other flag.
+	var nf navFlags
+	c := &cobra.Command{
+		Use: "nav [url]", Short: "Navigate the target tab and wait for load, or move through its history (--back/--forward/--reload)",
+		Args: cobra.MaximumNArgs(1),
+		RunE: func(_ *cobra.Command, args []string) error {
+			// The modes are mutually exclusive, and that is checked BEFORE
+			// resolving a target or connecting: a malformed nav is exit 2 with
+			// Chrome never contacted.
+			if msg := nf.validate(len(args)); msg != "" {
+				a.emitErr("nav", result.CodeUsage, msg, nil)
+				return nil
+			}
+			a.runNav(&nf, args)
+			return nil
+		},
 	}
+	nf.register(c)
+	return c
 }
 
 func (a *App) cmdEval() *cobra.Command {
