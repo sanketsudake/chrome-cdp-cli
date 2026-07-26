@@ -153,12 +153,24 @@ func (s *server) dispatch(ctx context.Context, method string, args []json.RawMes
 		return b.Open(ctx, argStr(args, 0))
 	case "Navigate":
 		return b.Navigate(ctx, argStr(args, 0), argStr(args, 1))
+	case "CloseTabs":
+		return b.CloseTabs(ctx, argStrs(args, 0))
+	case "Activate":
+		return b.Activate(ctx, argStr(args, 0))
+	case "History":
+		return b.History(ctx, argStr(args, 0), argInt(args, 1))
+	case "Reload":
+		return b.Reload(ctx, argStr(args, 0), argBool(args, 1))
 	case "Eval":
 		return b.Eval(ctx, argStr(args, 0), argStr(args, 1))
 	case "Snapshot":
 		return b.Snapshot(ctx, argStr(args, 0), argSnap(args, 1))
 	case "Click":
 		return b.Click(ctx, argStr(args, 0), argStr(args, 1), argQ(args, 2))
+	case "Key":
+		return b.Key(ctx, argStr(args, 0), argStr(args, 1), argKeys(args, 2), argKeyOpts(args, 3))
+	case "Pointer":
+		return b.Pointer(ctx, argStr(args, 0), argStr(args, 1), argPointer(args, 2))
 	case "Select":
 		return b.Select(ctx, argStr(args, 0), argStr(args, 1), argStr(args, 2), argSel(args, 3))
 	case "Fill":
@@ -216,81 +228,41 @@ func (s *server) dispatch(ctx context.Context, method string, args []json.RawMes
 	}
 }
 
-// The arg decoders return the zero value for a missing or malformed argument.
-// This is safe because both ends of the protocol are the same binary: the
-// remoteBrowser marshals exactly the positional args each method expects, so a
-// decode can only fail on a genuine internal mismatch, where a zero value (and
-// the resulting Chrome-side error) is an acceptable fail-soft.
-func argStr(a []json.RawMessage, i int) string {
-	var v string
+// arg decodes the i'th positional argument, yielding the zero value when it is
+// missing or malformed. That fail-soft is safe because both ends of the protocol
+// are the same binary: remoteBrowser marshals exactly the positional args each
+// method expects, so a decode can only fail on a genuine internal mismatch,
+// where a zero value (and the resulting Chrome-side error) is acceptable. It is
+// NOT a substitute for validating user input, which happens in the CLI before
+// the RPC is ever made.
+//
+// Every typed decoder below is a one-line alias, so a new option struct costs
+// one line rather than another copy of this body.
+func arg[T any](a []json.RawMessage, i int) T {
+	var v T
 	if i < len(a) {
 		_ = json.Unmarshal(a[i], &v)
 	}
 	return v
 }
-func argBool(a []json.RawMessage, i int) bool {
-	var v bool
-	if i < len(a) {
-		_ = json.Unmarshal(a[i], &v)
-	}
-	return v
-}
-func argI64(a []json.RawMessage, i int) int64 {
-	var v int64
-	if i < len(a) {
-		_ = json.Unmarshal(a[i], &v)
-	}
-	return v
-}
-func argF64(a []json.RawMessage, i int) float64 {
-	var v float64
-	if i < len(a) {
-		_ = json.Unmarshal(a[i], &v)
-	}
-	return v
-}
-func argQ(a []json.RawMessage, i int) chrome.QueryOpts {
-	var v chrome.QueryOpts
-	if i < len(a) {
-		_ = json.Unmarshal(a[i], &v)
-	}
-	return v
-}
-func argWait(a []json.RawMessage, i int) chrome.WaitCond {
-	var v chrome.WaitCond
-	if i < len(a) {
-		_ = json.Unmarshal(a[i], &v)
-	}
-	return v
-}
-func argSel(a []json.RawMessage, i int) chrome.SelectOpts {
-	var v chrome.SelectOpts
-	if i < len(a) {
-		_ = json.Unmarshal(a[i], &v)
-	}
-	return v
-}
-func argScroll(a []json.RawMessage, i int) chrome.ScrollOpts {
-	var v chrome.ScrollOpts
-	if i < len(a) {
-		_ = json.Unmarshal(a[i], &v)
-	}
-	return v
-}
-func argSnap(a []json.RawMessage, i int) chrome.SnapOpts {
-	var v chrome.SnapOpts
-	if i < len(a) {
-		_ = json.Unmarshal(a[i], &v)
-	}
-	return v
-}
-func argMap(a []json.RawMessage, i int) map[string]string {
-	var v map[string]string
-	if i < len(a) {
-		_ = json.Unmarshal(a[i], &v)
-	}
-	return v
-}
+
+func argStr(a []json.RawMessage, i int) string    { return arg[string](a, i) }
+func argBool(a []json.RawMessage, i int) bool     { return arg[bool](a, i) }
+func argI64(a []json.RawMessage, i int) int64     { return arg[int64](a, i) }
+func argInt(a []json.RawMessage, i int) int       { return arg[int](a, i) }
+func argF64(a []json.RawMessage, i int) float64   { return arg[float64](a, i) }
+func argStrs(a []json.RawMessage, i int) []string { return arg[[]string](a, i) }
+
+func argQ(a []json.RawMessage, i int) chrome.QueryOpts         { return arg[chrome.QueryOpts](a, i) }
+func argWait(a []json.RawMessage, i int) chrome.WaitCond       { return arg[chrome.WaitCond](a, i) }
+func argSel(a []json.RawMessage, i int) chrome.SelectOpts      { return arg[chrome.SelectOpts](a, i) }
+func argScroll(a []json.RawMessage, i int) chrome.ScrollOpts   { return arg[chrome.ScrollOpts](a, i) }
+func argSnap(a []json.RawMessage, i int) chrome.SnapOpts       { return arg[chrome.SnapOpts](a, i) }
+func argKeys(a []json.RawMessage, i int) []chrome.KeyStroke    { return arg[[]chrome.KeyStroke](a, i) }
+func argKeyOpts(a []json.RawMessage, i int) chrome.KeyOpts     { return arg[chrome.KeyOpts](a, i) }
+func argPointer(a []json.RawMessage, i int) chrome.PointerOpts { return arg[chrome.PointerOpts](a, i) }
+func argMap(a []json.RawMessage, i int) map[string]string      { return arg[map[string]string](a, i) }
+
 func argRaw(a []json.RawMessage, i int) json.RawMessage {
 	if i < len(a) {
 		return a[i]
@@ -388,6 +360,22 @@ func (r *remoteBrowser) Navigate(ctx context.Context, id, url string) (map[strin
 	var out map[string]any
 	return out, r.c.call(ctx, "Navigate", &out, id, url)
 }
+func (r *remoteBrowser) CloseTabs(ctx context.Context, ids []string) (map[string]any, error) {
+	var out map[string]any
+	return out, r.c.call(ctx, "CloseTabs", &out, ids)
+}
+func (r *remoteBrowser) Activate(ctx context.Context, id string) (map[string]any, error) {
+	var out map[string]any
+	return out, r.c.call(ctx, "Activate", &out, id)
+}
+func (r *remoteBrowser) History(ctx context.Context, id string, delta int) (map[string]any, error) {
+	var out map[string]any
+	return out, r.c.call(ctx, "History", &out, id, delta)
+}
+func (r *remoteBrowser) Reload(ctx context.Context, id string, hard bool) (map[string]any, error) {
+	var out map[string]any
+	return out, r.c.call(ctx, "Reload", &out, id, hard)
+}
 func (r *remoteBrowser) Eval(ctx context.Context, id, expr string) (any, error) {
 	var out any
 	return out, r.c.call(ctx, "Eval", &out, id, expr)
@@ -399,6 +387,14 @@ func (r *remoteBrowser) Snapshot(ctx context.Context, id string, opts chrome.Sna
 func (r *remoteBrowser) Click(ctx context.Context, id, sel string, q chrome.QueryOpts) (map[string]any, error) {
 	var out map[string]any
 	return out, r.c.call(ctx, "Click", &out, id, sel, q)
+}
+func (r *remoteBrowser) Key(ctx context.Context, id, sel string, keys []chrome.KeyStroke, opts chrome.KeyOpts) (map[string]any, error) {
+	var out map[string]any
+	return out, r.c.call(ctx, "Key", &out, id, sel, keys, opts)
+}
+func (r *remoteBrowser) Pointer(ctx context.Context, id, sel string, opts chrome.PointerOpts) (map[string]any, error) {
+	var out map[string]any
+	return out, r.c.call(ctx, "Pointer", &out, id, sel, opts)
 }
 func (r *remoteBrowser) Type(ctx context.Context, id, sel, text string, q chrome.QueryOpts) (map[string]any, error) {
 	var out map[string]any

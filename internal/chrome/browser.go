@@ -6,6 +6,7 @@ package chrome
 import (
 	"context"
 	"encoding/json"
+	"time"
 
 	"github.com/sanketsudake/chrome-cdp-cli/internal/target"
 )
@@ -64,6 +65,64 @@ type SelectOpts struct {
 	Sep string
 }
 
+// KeyStroke is one resolved keyboard press: the key to dispatch plus the modifier
+// bitmask held during it. It is produced by ParseKeys from a `key` verb argument
+// and carries the DOM `key`/`code`/virtual-keycode tuple, because frameworks read
+// all three and a page that checks `event.code` ignores a press that only sets
+// `event.key`.
+type KeyStroke struct {
+	Key       string // DOM KeyboardEvent.key ("Escape", "a", "ArrowDown")
+	Code      string // DOM KeyboardEvent.code ("Escape", "KeyA", "ArrowDown")
+	KeyCode   int64  // windowsVirtualKeyCode
+	Text      string // the text a printable key inserts ("" for non-printable)
+	Modifiers int64  // CDP modifier bitmask (alt 1, ctrl 2, meta 4, shift 8)
+}
+
+// KeyOpts controls the `key` verb — dispatching keyboard events that are not
+// literal text (named keys, modifier chords, repeats). Query addresses an
+// optional element to focus first; when the selector is empty the keys go to
+// whatever the page currently has focused, which is what makes `key Escape` work
+// when nothing is addressable.
+type KeyOpts struct {
+	Repeat int           // press the sequence this many times (1..100)
+	Delay  time.Duration // pause between repeats, for apps that debounce
+	Query  QueryOpts
+}
+
+// PointerOpts controls the pointer verbs — hover, dblclick, rclick, and drag.
+// One driver method backs all four so they share the identical occlusion-verified
+// centre resolution `click` uses; Action selects which.
+type PointerOpts struct {
+	Action    PointerAction
+	Modifiers int64 // held during the press (alt 1, ctrl 2, meta 4, shift 8)
+
+	// Drag targeting: either To (a drop-target selector, resolved with ToQuery)
+	// or a (Dx, Dy) pixel delta from the source's centre. Exactly one is set.
+	To      string
+	ToQuery QueryOpts
+	Dx, Dy  float64
+
+	// Steps is the number of interpolated move events dispatched between the
+	// press and the release. It is not cosmetic: drag implementations require
+	// movement to register a drag at all, and a press-then-release at two points
+	// is silently a click.
+	Steps int
+	Hold  time.Duration // pause after press before moving (long-press-to-drag UIs)
+
+	Query QueryOpts
+}
+
+// PointerAction names a pointer verb.
+type PointerAction string
+
+// The pointer actions a single Pointer call can dispatch.
+const (
+	PointerHover    PointerAction = "hover"
+	PointerDblClick PointerAction = "dblclick"
+	PointerRClick   PointerAction = "rclick"
+	PointerDrag     PointerAction = "drag"
+)
+
 // SnapOpts filters an accessibility snapshot server-side, so a read returns just
 // the relevant nodes instead of the whole tree. Alerts/focused stay page-wide.
 type SnapOpts struct {
@@ -108,9 +167,24 @@ type Browser interface {
 	List(ctx context.Context) ([]target.Info, error)
 	Open(ctx context.Context, url string) (map[string]any, error)
 	Navigate(ctx context.Context, targetID, url string) (map[string]any, error)
+	// CloseTabs closes tabs by id. It is not Close, which tears down the whole
+	// connection.
+	CloseTabs(ctx context.Context, targetIDs []string) (map[string]any, error)
+	// Activate foregrounds a tab within its window and raises that window, which
+	// is the documented remedy for the accessibility-tree throttling that makes
+	// --by name/ref/cell stall on a backgrounded tab (`tab_hidden`).
+	Activate(ctx context.Context, targetID string) (map[string]any, error)
+	// History navigates the tab by delta entries (-1 back, +1 forward). A delta
+	// with no entry in that direction is an error, not a silent no-op: a wizard
+	// script that quietly failed to go back would act against the wrong page.
+	History(ctx context.Context, targetID string, delta int) (map[string]any, error)
+	// Reload reloads the tab, optionally bypassing the cache.
+	Reload(ctx context.Context, targetID string, hard bool) (map[string]any, error)
 	Eval(ctx context.Context, targetID, expr string) (any, error)
 	Snapshot(ctx context.Context, targetID string, opts SnapOpts) (any, error)
 	Click(ctx context.Context, targetID, selector string, q QueryOpts) (map[string]any, error)
+	Key(ctx context.Context, targetID, selector string, keys []KeyStroke, opts KeyOpts) (map[string]any, error)
+	Pointer(ctx context.Context, targetID, selector string, opts PointerOpts) (map[string]any, error)
 	Select(ctx context.Context, targetID, field, option string, opts SelectOpts) (map[string]any, error)
 	Grid(ctx context.Context, targetID, selector string, q QueryOpts) (any, error)
 	Scroll(ctx context.Context, targetID, selector string, opts ScrollOpts) (map[string]any, error)

@@ -110,11 +110,30 @@ Modifiers that refine a `--by name` match:
 | `open <url>` | new tab → navigate → make it current; returns its id |
 | `use <target>` | set the sticky current tab |
 | `nav <url>` | navigate the target tab, wait for load |
+| `nav --back` \| `--forward` | move through the tab's history (errors if there's no entry that way) |
+| `nav --reload [--hard]` | reload; `--hard` bypasses the cache |
+| `activate [<target>]` | bring the tab to the foreground — the fix for `tab_hidden` |
+| `close [<target>] [--url <s>] [--title <s>] [--all]` | close a tab; `--all` closes every match |
 
 ```sh
 chrome-cdp list --url outlook          # just the Outlook tabs
 chrome-cdp open https://example.com    # returns the new tab's id
+chrome-cdp nav --back                  # back one step in a wizard
+chrome-cdp close --url staging --all   # tidy up after a batch job
 ```
+
+`close` refuses to guess: when a filter matches more than one tab without `--all`, it closes **nothing** and exits `ambiguous_target`.
+Closing the sticky tab clears it (`sticky_cleared: true`), so the next command reports `no_current_target` rather than failing against a dead id.
+
+**Recovering from `tab_hidden`.**
+Chrome throttles the accessibility tree on a tab it can't foreground, so `--by name` / `ref` / `cell` stall there and return `tab_hidden: true`.
+`activate` is the remedy, and it makes the failure recoverable without a human switching tabs:
+
+```sh
+chrome-cdp snap --by name … || { chrome-cdp activate && chrome-cdp snap --by name …; }
+```
+
+`activate` reports `was_active` so a retry loop can tell "I fixed it" from "it was already foreground, so the stall has another cause", and `window_focused: false` when the OS refused to raise the window.
 
 ### Reading the page
 
@@ -140,11 +159,58 @@ chrome-cdp value --all "input.hours"            # every hour cell in one call
 | Command | Does |
 |---------|------|
 | `click <selector>` | click at the element's occlusion-verified centre |
+| `hover <selector>` | move the pointer there without pressing — reveals hover-only menus and tooltips |
+| `dblclick <selector>` | double-click (one `dblclick` event, `detail: 2`) — grid cells that edit on double-click |
+| `rclick <selector>` | right-click, opening the context menu |
+| `drag <selector> (--to <sel> \| --dx <p> --dy <p>)` | press, move, release — reordering, kanban, sliders |
+| `key [selector] <keyspec>` | press keys that aren't literal text (`Escape`, `Tab`, `cmd+a`, `ArrowDown`) |
 | `type <selector> <text>` | type via real keystrokes (**appends**; end with `\n` to press Enter) |
 | `fill <selector> <value>` | set a field, **replacing** its content (clears, then types) |
 | `select <field> <option>` | choose an option in a prompt / combobox / cascade / native `<select>` |
 | `scroll [selector] [--dx <p>] [--dy <p>] [--to] [--wheel]` | scroll by a delta, `--to` a selector into view, or a real `--wheel` |
 | `attr get\|list\|set\|rm <selector> [name] [value]` | read/write element attributes |
+
+All the pointer verbs resolve the same occlusion-verified centre `click` does, and take `--modifiers` (`ctrl`/`shift`/`alt`/`cmd`, joined with `+`) — `click --modifiers cmd` is the multi-select in a table.
+An element that resolves but never presents an unoccluded centre fails as `target_timeout` with `occluded: true`, so it's distinguishable from "not found".
+
+`key` takes a named key, a printable character, a chord, or a space-separated sequence of those, and works with no selector at all — which is what makes it usable when nothing is addressable:
+
+| Form | Example |
+|------|---------|
+| named key | `Escape`, `Tab`, `ArrowDown`, `F2`, `Space` |
+| printable character | `a`, `/` |
+| chord | `cmd+a`, `ctrl+shift+k` |
+| sequence | `"End shift+Home Backspace"` |
+
+| `key` flag | Purpose |
+|------------|---------|
+| `--repeat <n>` | press the sequence *n* times (1–100) |
+| `--delay <dur>` | pause between repeats, for apps that debounce |
+
+`cmd` maps to Meta on every platform — the *page* decides which modifier it listens for, so the CLI never rewrites `cmd` to `ctrl` for you.
+An unknown key name is a `usage` error rather than being typed as literal characters.
+
+`drag` takes either a drop target or a pixel delta, never both:
+
+| `drag` flag | Purpose |
+|-------------|---------|
+| `--to <selector>` | drop target |
+| `--to-by <mode>` | `--by` mode for the drop target (defaults to `--by`) |
+| `--dx`, `--dy <px>` | pixel delta from the source's centre |
+| `--steps <n>` | interpolated move events, default `10` |
+| `--hold <dur>` | pause after pressing before moving, for long-press-to-drag UIs |
+
+The intermediate moves aren't cosmetic: a press and release at two points is silently a click to most drag implementations.
+
+```sh
+chrome-cdp key Escape                                # close the open dialog
+chrome-cdp key --repeat 3 ArrowDown                  # walk a listbox
+chrome-cdp key --by name "Description" cmd+a         # select all, then retype
+chrome-cdp hover --by name "Invoice 4102"            # reveal the row's actions
+chrome-cdp dblclick --by cell "Mon, 7/13"            # edit a grid cell
+chrome-cdp drag --by name "Task A" --to "Done" --to-by name
+chrome-cdp click --by name "Row 2" --modifiers cmd   # add to the selection
+```
 
 `click` / `type` / `fill` / `select` also take **`--wait-text "<substr>"`** — after the action, block until the page contains the text (a `Saved` toast), folding act-and-confirm into one call.
 

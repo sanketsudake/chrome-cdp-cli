@@ -3,6 +3,7 @@ package chrome
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -251,12 +252,29 @@ func coordClickNode(ctx context.Context, nid cdp.NodeID) error {
 // coordClickNodeN is coordClickNode with a click count (3 = triple-click to
 // select all text in an input).
 func coordClickNodeN(ctx context.Context, nid cdp.NodeID, count int64) error {
-	obj, err := dom.ResolveNode().WithNodeID(nid).Do(ctx)
+	x, y, err := settledNodePoint(ctx, nid)
 	if err != nil {
 		return err
 	}
+	return coordClickN(ctx, x, y, count)
+}
+
+// settledNodePoint waits for a node's centre to settle on the node itself (or a
+// descendant) and returns that viewport point. It is the geometry half of
+// coordClickNode, factored out so every pointer verb — click, hover, dblclick,
+// right-click, and both ends of a drag — targets the identical, occlusion-
+// verified point rather than each recomputing its own.
+//
+// The centre is computed in JS (getBoundingClientRect / elementFromPoint), which
+// works on a hidden tab where the box model isn't laid out; an occluding overlay
+// or a mid-animation element is waited out rather than mis-targeted.
+func settledNodePoint(ctx context.Context, nid cdp.NodeID) (float64, float64, error) {
+	obj, err := dom.ResolveNode().WithNodeID(nid).Do(ctx)
+	if err != nil {
+		return 0, 0, err
+	}
 	if obj == nil || obj.ObjectID == "" {
-		return fmt.Errorf("node has no remote object")
+		return 0, 0, fmt.Errorf("node has no remote object")
 	}
 	t := time.NewTicker(100 * time.Millisecond)
 	defer t.Stop()
@@ -264,19 +282,24 @@ func coordClickNodeN(ctx context.Context, nid cdp.NodeID, count int64) error {
 	for {
 		x, y, ok, err := nodeCoord(ctx, obj.ObjectID)
 		if err == nil && ok {
-			return coordClickN(ctx, x, y, count)
+			return x, y, nil
 		}
 		lastErr = err
 		select {
 		case <-ctx.Done():
 			if lastErr != nil {
-				return lastErr
+				return 0, 0, lastErr
 			}
-			return fmt.Errorf("element has no settled, unoccluded clickable centre")
+			return 0, 0, errNoSettledPoint
 		case <-t.C:
 		}
 	}
 }
+
+// errNoSettledPoint reports that an element resolved but never presented an
+// unoccluded centre. Pointer verbs surface it as `occluded: true` in the error
+// details, so a caller can tell "covered by an overlay" from "not found".
+var errNoSettledPoint = errors.New("element has no settled, unoccluded clickable centre")
 
 // nodeCoord returns the element's clamped centre and whether that point is
 // hit-testable on the element (or a descendant) — i.e. not occluded.
