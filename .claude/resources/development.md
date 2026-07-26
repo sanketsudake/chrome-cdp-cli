@@ -19,7 +19,12 @@ Before pushing, run `gofmt -l .` (must be empty), `go vet ./...`, and `go test -
 ## The live-Chrome tests
 
 Tests in `internal/chrome/*_test.go` drive a **real** Chrome the test spawns.
-They guard themselves with `if testing.Short() { t.Skip(...) }` and also skip gracefully when no Chrome binary is present (so `macos-latest` in CI, which has no Chrome, is green without running them).
+They guard themselves with `if testing.Short() { t.Skip(...) }` and also skip gracefully when no Chrome binary is present.
+
+**`macos-latest` DOES ship Chrome, so the live suite runs on both CI legs.**
+Do not assume otherwise when writing a live test — that assumption was in this file for a while and it cost real debugging time. macOS runners are slower and more contended than the ubuntu ones, so they are where timing-sensitive live tests fail first.
+Treat a macOS-only failure as a genuine race in the test or the code, not as flake: two real bugs and four vacuously-passing tests were found exactly that way.
+Never wait on an intermediate state (an HTTP status arriving) when the thing you assert on needs a later event (the request finishing) — wait on the product's own settle primitive instead, and never paper over it with a sleep.
 CI runs the live path on `ubuntu-latest` (it ships `google-chrome-stable`).
 When iterating on non-driver code, prefer `go test -short ./...` — it's fast and needs no browser.
 

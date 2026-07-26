@@ -109,7 +109,10 @@ The tiers, in the order they should exist:
 | Stub-backed | `internal/cli` | yes | envelope shape, exit codes, validation-before-connect |
 | Live Chrome | `internal/chrome` | **no** (`testing.Short()` guard) | anything needing a real renderer |
 
-Live tests are not parallel — they share the spawned browser — and must skip gracefully when no Chrome binary exists, so macOS CI stays green.
+Live tests are not parallel — they share the spawned browser — and must skip gracefully when no Chrome binary exists.
+
+Both CI legs run them: `macos-latest` ships Chrome too, and being slower and more contended it is where a timing-sensitive live test fails first.
+A macOS-only failure is a real race, not flake.
 
 Drive live tests from `data:` fixture pages that record events into `window.__log`, then read them back with `eval`.
 Assert on structure and sampled values, never on byte-for-byte image equality or exact frame counts.
@@ -122,7 +125,7 @@ Write the regression guard for existing behaviour **before** changing a signatur
 gofmt -l .          # must be empty
 go vet ./...
 go test -race ./...
-go test -short ./... # the no-Chrome path CI runs on macOS
+go test -short ./... # the no-Chrome path (both CI legs also run the live suite)
 ```
 
 CI is exactly these four steps on ubuntu + macOS; there is no Makefile and no golangci config.
