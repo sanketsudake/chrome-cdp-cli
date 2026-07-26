@@ -14,6 +14,8 @@ import (
 	"time"
 
 	"github.com/BurntSushi/toml"
+
+	"github.com/sanketsudake/chrome-cdp-cli/internal/chrome"
 )
 
 // Defaults are the effective global-flag defaults after the config file and
@@ -44,6 +46,14 @@ type Defaults struct {
 	// not exist, and an unreadable file becomes a Malformed policy the CLI
 	// refuses to run with rather than a policy silently absent.
 	Policy Policy
+
+	// Event-capture bounds for the observability verbs. They size the buffers
+	// the connection holder retains per tab, so they are read by the daemon (or
+	// by a --no-daemon connect) rather than by a command flag.
+	ConsoleBuffer   int // retained console messages per tab
+	ConsoleMaxEntry int // per-message text cap, in bytes
+	NetBuffer       int // retained network records per tab
+	NetMaxBody      int // per-body cap, in bytes (request and response)
 }
 
 // Policy mirrors the [policy] table. It is raw, unvalidated data — parsing the
@@ -85,7 +95,11 @@ type Policy struct {
 // Builtin returns the hard-coded defaults used when neither the config file nor
 // the environment sets a value.
 func Builtin() Defaults {
-	return Defaults{Timeout: 30 * time.Second, By: "css", Wait: "visible"}
+	return Defaults{
+		Timeout: 30 * time.Second, By: "css", Wait: "visible",
+		ConsoleBuffer: chrome.DefaultConsoleBuffer, ConsoleMaxEntry: chrome.DefaultConsoleMaxEntry,
+		NetBuffer: chrome.DefaultNetBuffer, NetMaxBody: chrome.DefaultNetMaxBody,
+	}
 }
 
 // file mirrors the TOML schema; pointer fields distinguish "set in file" from
@@ -101,6 +115,11 @@ type file struct {
 	NoDaemon   *bool   `toml:"no_daemon"`
 	JSON       *bool   `toml:"json"`
 	NoColor    *bool   `toml:"no_color"`
+
+	ConsoleBuffer   *int `toml:"console_buffer"`
+	ConsoleMaxEntry *int `toml:"console_max_entry"`
+	NetBuffer       *int `toml:"net_buffer"`
+	NetMaxBody      *int `toml:"net_max_body"`
 
 	Policy *policyFile `toml:"policy"`
 }
@@ -236,6 +255,18 @@ func applyFile(d *Defaults, path string) error {
 	if f.NoColor != nil {
 		d.NoColor = *f.NoColor
 	}
+	if f.ConsoleBuffer != nil {
+		d.ConsoleBuffer = *f.ConsoleBuffer
+	}
+	if f.ConsoleMaxEntry != nil {
+		d.ConsoleMaxEntry = *f.ConsoleMaxEntry
+	}
+	if f.NetBuffer != nil {
+		d.NetBuffer = *f.NetBuffer
+	}
+	if f.NetMaxBody != nil {
+		d.NetMaxBody = *f.NetMaxBody
+	}
 	return nil
 }
 
@@ -345,10 +376,26 @@ func applyEnv(d *Defaults, getenv func(string) string) {
 	if v := getenv("CHROME_CDP_PROFILE"); v != "" {
 		d.ProfileDir = v
 	}
+	setInt(getenv("CHROME_CDP_CONSOLE_BUFFER"), &d.ConsoleBuffer)
+	setInt(getenv("CHROME_CDP_CONSOLE_MAX_ENTRY"), &d.ConsoleMaxEntry)
+	setInt(getenv("CHROME_CDP_NET_BUFFER"), &d.NetBuffer)
+	setInt(getenv("CHROME_CDP_NET_MAX_BODY"), &d.NetMaxBody)
 	setBool(getenv("CHROME_CDP_NO_LAUNCH"), &d.NoLaunch)
 	setBool(getenv("CHROME_CDP_NO_DAEMON"), &d.NoDaemon)
 	setBool(getenv("CHROME_CDP_JSON"), &d.JSON)
 	setBool(getenv("CHROME_CDP_NO_COLOR"), &d.NoColor)
+}
+
+// setInt overlays a numeric env var, LEAVING the existing value in place when
+// it is malformed — a bad number is a warning-shaped mistake, not a reason to
+// brick the CLI, matching how a malformed config file is handled.
+func setInt(v string, dst *int) {
+	if v == "" {
+		return
+	}
+	if n, err := strconv.Atoi(v); err == nil {
+		*dst = n
+	}
 }
 
 func setBool(v string, dst *bool) {

@@ -91,11 +91,17 @@ var verbClass = map[string]Class{
 	"policy init": Exempt,
 
 	// Reading.
-	"snap":        Reading,
-	"html":        Reading,
-	"text":        Reading,
-	"value":       Reading,
-	"grid":        Reading,
+	"snap":  Reading,
+	"html":  Reading,
+	"text":  Reading,
+	"value": Reading,
+	"grid":  Reading,
+	// The observability verbs read what the page already logged or requested.
+	// They are Reading, not Exempt: a console line or a request URL is page
+	// content, and a read_only origin still gets to withhold it.
+	"console":     Reading,
+	"net":         Reading,
+	"net wait":    Reading,
 	"screenshot":  Reading,
 	"pdf":         Reading,
 	"frame list":  Reading,

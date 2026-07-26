@@ -21,6 +21,10 @@ func TestExitCodeFor(t *testing.T) {
 		{"cdp_error", ExitCDP},
 		{"daemon_error", ExitDaemon},
 		{"permission_denied", ExitPermission},
+		// An assertion verdict is nonzero but deliberately NOT a distinct exit
+		// code: `--fail-on-match` has to fail a CI step the same way any other
+		// failure does, while error.code still says which it was.
+		{"assertion_failed", ExitGeneric},
 		{"something_unknown", ExitGeneric},
 		{"", ExitGeneric},
 	}

@@ -332,12 +332,136 @@ Prefer a condition over a fixed `--for` sleep.
 | `--text <substr>` | the accessibility tree (incl. alerts) contains the text |
 | `--stable` | the accessibility tree stops changing (page settled) |
 | `--idle` | network activity settles (no in-flight requests) — for SPA loads |
+| `--request <substr>` | a matching HTTP request **completes** (see [Network](#network)) |
 | `--for <dur>` | a fixed duration (fallback) |
 
 ```sh
-chrome-cdp wait --idle                 # after nav/open on an SPA
-chrome-cdp wait --text "Success"       # confirm a write landed
+chrome-cdp wait --idle                            # after nav/open on an SPA
+chrome-cdp wait --text "Success"                  # confirm a write landed
+chrome-cdp wait --request "/api/save" --status 2xx # confirm the write actually POSTed
 ```
+
+`--idle` and `--request` answer different questions.
+`--idle` is "the page settled"; `--request` is "this specific call finished with this outcome", which is the sharper tool on a page whose polling or long-lived stream never lets the network go quiet.
+
+### Console
+
+`console` reads what the page said: `console.*` output and uncaught exceptions, with their stack.
+
+Capture starts when the connection **attaches to a tab**, not when `console` first runs.
+That is what makes it useful after the fact: the exception behind a failed `click` is already buffered by the time you go looking for it.
+
+| Flag | Default | Purpose |
+|------|---------|---------|
+| `--grep <re>` | — | only messages whose text matches this regex |
+| `--level <l>` | all | `debug`\|`log`\|`info`\|`warn`\|`error`; repeatable |
+| `--only-errors` | off | shorthand for `--level error` (uncaught exceptions are reported at error level) |
+| `--limit <n>` | `100` | most recent *n* matching messages |
+| `--since <dur>` | — | only messages newer than this (e.g. `30s`) |
+| `--clear` | off | drop the buffered messages after reading |
+| `--follow` | off | stream new messages as NDJSON until `--timeout` or interrupt |
+| `--fail-on-match` | off | exit 1 if at least one message is returned |
+
+```sh
+chrome-cdp console --only-errors                       # what broke
+chrome-cdp console --grep "\[Checkout\]" --limit 20    # one subsystem
+chrome-cdp console --clear                             # reset before an action
+chrome-cdp console --follow --level error              # watch while you work
+```
+
+Every filter is applied where the buffer lives, before the result is built, so a chatty app cannot flood a caller's context.
+The result carries `messages`, `count` (after filtering), `buffered` (held for this tab), `dropped`, and `truncated` (`--limit` cut the list).
+Each message carries `level`, `source` (`console` \| `exception` \| `log`), `text`, `ts`, and — for an exception — its `stack`.
+
+**`dropped > 0` means you read too late**: the ring buffer evicted older messages before this read.
+Raise `console_buffer`, or read closer to the action.
+
+**`--fail-on-match` exits 1 and still reports the messages** (`error.code` is `assertion_failed`), so a CI log shows *what* failed, not just that something did.
+
+**`--follow`** writes one JSON envelope per line, the same shape `session` streams.
+It cannot combine with `--fail-on-match`, and it is a usage error inside `session`, where it would break the one-envelope-per-line contract.
+
+**`--no-daemon` has no retained history.**
+Without the daemon there was no process alive to receive the tab's earlier events, so the read reports `"buffered": 0` and carries a `note` saying so, rather than passing an empty list off as a quiet page.
+
+The buffer is bounded by `console_buffer` (messages per tab, default 1000) and `console_max_entry` (per-message text cap, default 8192 bytes); see [Configuration](#configuration).
+
+### Network
+
+`net` reads the HTTP requests the tab made: method, URL, status, timing, sizes, and — on request — headers and bodies.
+
+Like `console`, capture starts when the connection **attaches to a tab**, not when `net` first runs, so the 401 behind an empty screen is already buffered by the time you go looking for it.
+
+| Flag | Default | Purpose |
+|------|---------|---------|
+| `--url <s>` | — | substring match; a `re:` prefix switches to regex |
+| `--method <m>` | all | `GET`, `POST`, …; repeatable |
+| `--status <spec>` | all | `200`, `2xx`, `>=400`, `!2xx` |
+| `--type <t>` | all | `document`\|`xhr`\|`fetch`\|`script`\|`stylesheet`\|`image`\|`font`\|`websocket`\|`other`; repeatable |
+| `--xhr` | off | shorthand for `--type xhr --type fetch` |
+| `--failed` | off | non-2xx **or** network-level failure |
+| `--limit <n>` | `100` | most recent *n* matching |
+| `--since <dur>` | — | only requests newer than this |
+| `--headers` | off | include request and response headers |
+| `--body` | off | include request and response bodies (size-capped) |
+| `--no-redact` | off | do **not** redact credential-shaped values |
+| `--clear` | off | drop the buffered requests after reading |
+| `--follow` | off | stream completed requests as NDJSON |
+| `--fail-on-match` | off | exit 1 if any request matched |
+
+```sh
+chrome-cdp net --xhr --limit 20                          # recent API calls
+chrome-cdp net --failed                                  # what broke
+chrome-cdp net --url "/api/save" --method POST --body    # inspect the payload
+chrome-cdp net --clear && chrome-cdp click "#save" && chrome-cdp net --xhr
+```
+
+Every filter is applied where the buffer lives, before the result is built, so a chatty page cannot flood a caller's context.
+The result carries `requests`, `count` (after filtering), `buffered`, `dropped`, `truncated`, and `pending`.
+
+**`pending` counts requests that started but have not finished**, so you can tell "nothing matched" from "not finished yet" — an empty listing during a slow save is otherwise indistinguishable from a save that never fired.
+
+Each request carries `id`, `method`, `url`, `type`, `status`, `status_text`, `started_ms` (milliseconds since capture began on this tab), `duration_ms`, `request_size`, `response_size`, `from_cache`, `failed`, and `error`.
+`status`, `duration_ms`, and `error` are `null` when they do not exist yet; `failed` means a non-2xx status **or** a network-level failure, so a delivered 500 and a DNS failure both show up under `--failed`.
+
+**Redaction is on by default.**
+This CLI drives your real, logged-in Chrome, so its buffers hold live session credentials by construction.
+The values of `authorization`, `cookie`, `set-cookie`, `x-api-key`, `proxy-authorization`, and any header whose name contains `token`, `secret`, or `password` are replaced with `<redacted>` — the name stays, so a 401 is still diagnosable.
+Credential-shaped URL query and fragment parameters (`access_token`, `api_key`, `sig`, `code`, `key`, …) are redacted the same way.
+`--no-redact` is the explicit, deliberate opt-out.
+
+**Headers and bodies are absent, not null, unless you ask.**
+Without `--headers` / `--body` those keys do not appear at all, so a routine listing stays small and does not spill tokens or PII into a log.
+
+**Response bodies are fetched lazily, never buffered.**
+They are pulled with `Network.getResponseBody` at read time, only when `--body` is passed — buffering every body would multiply the daemon's memory and retain payloads you never asked to see.
+The consequence: **a body may already be gone** if the page navigated away, or if it is not UTF-8 text.
+That is reported as `"response_body": null` with `"body_unavailable": true`, and the read still succeeds — a partial answer beats no answer.
+Bodies over `net_max_body` (default 65536 bytes) are cut, with `"body_truncated": true`.
+Request bodies arrive inline with the request, so they are retained and available retroactively.
+
+**`net wait` / `wait --request`** blocks until one specific request completes.
+
+```sh
+chrome-cdp wait --request "/api/save" --status 2xx   # the primary form
+chrome-cdp net wait --url "/api/save" --status 2xx   # the alias
+```
+
+It matches **already-buffered** requests first, so a request that completed between the action and the wait is not missed.
+It needs a URL substring or `--failed` to identify the request; `--method`, `--status`, and `--type` only narrow the match.
+The matched record rides in `result.request`, in the same shape a listing uses.
+No match before `--timeout` is `target_timeout` / exit 4.
+
+**`--fail-on-match` exits 1 and still reports the requests** (`error.code` is `assertion_failed`), so `chrome-cdp net --failed --fail-on-match` is a usable CI assertion that shows *what* failed.
+
+**`--follow`** writes one JSON envelope per **completed** request, the same shape `session` streams.
+It cannot combine with `--fail-on-match`, and it is a usage error inside `session`.
+
+**`--no-daemon` has no retained history**, exactly as with `console`: the read reports `"buffered": 0` and carries a `note` rather than passing an empty list off as a quiet page.
+
+Bad `--status` / `--type` / `--url` regex / `--since` values are `usage` / exit 2, validated before anything connects to Chrome.
+
+The buffer is bounded by `net_buffer` (records per tab, default 500) and `net_max_body` (per-body cap, default 65536 bytes); see [Configuration](#configuration).
 
 ### Batch mode
 

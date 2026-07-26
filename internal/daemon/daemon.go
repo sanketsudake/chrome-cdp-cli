@@ -11,6 +11,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net"
 	"sync"
 	"time"
@@ -29,9 +30,15 @@ type Request struct {
 }
 
 // Response is the method result (or an error string).
+//
+// A unary call answers with exactly one Response. A STREAMING call (see
+// streamDispatch) answers with one Response per emitted value followed by a
+// terminator carrying Done, so the client knows the stream ended rather than
+// guessing from a closed socket.
 type Response struct {
 	Result json.RawMessage `json:"result,omitempty"`
 	Error  string          `json:"error,omitempty"`
+	Done   bool            `json:"done,omitempty"`
 }
 
 // server holds the real Browser and serializes dispatch (chromedp calls are not
@@ -115,6 +122,14 @@ func (s *server) handle(conn net.Conn) {
 		defer cancel()
 	}
 	s.mu.Lock()
+	// A streaming method writes its own responses as they arrive; a unary one
+	// answers once. Both hold the dispatch mutex for their whole run, exactly
+	// as a long `wait` already does.
+	if handled, serr := s.streamDispatch(ctx, conn, req.Method, req.Args); handled {
+		s.mu.Unlock()
+		finishStream(conn, serr)
+		return
+	}
 	res, err := s.dispatch(ctx, req.Method, req.Args)
 	s.mu.Unlock()
 	reply(conn, res, err)
@@ -131,6 +146,42 @@ func reply(conn net.Conn, res any, err error) {
 		} else {
 			resp.Error = mErr.Error()
 		}
+	}
+	_ = json.NewEncoder(conn).Encode(resp)
+}
+
+// streamDispatch routes the STREAMING Browser methods — the ones that emit many
+// values over the life of one call, which the unary one-request/one-response
+// protocol cannot carry because the emit callback does not cross the socket.
+// Each emitted value is written as its own Response on the same connection;
+// finishStream writes the terminator.
+//
+// It reports false for anything that is not a streaming method, so the caller
+// falls through to dispatch.
+func (s *server) streamDispatch(ctx context.Context, conn net.Conn, method string, args []json.RawMessage) (bool, error) {
+	enc := json.NewEncoder(conn)
+	emit := func(v any) error {
+		b, err := json.Marshal(v)
+		if err != nil {
+			return err
+		}
+		return enc.Encode(Response{Result: b})
+	}
+	switch method {
+	case "ConsoleStream":
+		return true, s.b.ConsoleStream(ctx, argStr(args, 0), argConsole(args, 1), emit)
+	case "NetStream":
+		return true, s.b.NetStream(ctx, argStr(args, 0), argNet(args, 1), emit)
+	}
+	return false, nil
+}
+
+// finishStream terminates a streaming response, carrying the error the stream
+// ended with (if any).
+func finishStream(conn net.Conn, err error) {
+	resp := Response{Done: true}
+	if err != nil {
+		resp.Error = err.Error()
 	}
 	_ = json.NewEncoder(conn).Encode(resp)
 }
@@ -209,6 +260,20 @@ func (s *server) dispatch(ctx context.Context, method string, args []json.RawMes
 		return b.Frames(ctx, argStr(args, 0))
 	case "Wait":
 		return b.Wait(ctx, argStr(args, 0), argWait(args, 1))
+	case "Console":
+		return b.Console(ctx, argStr(args, 0), argConsole(args, 1))
+	case "ConsoleStream":
+		// Reachable over the RPC, but via streamDispatch (many responses on one
+		// connection) — a unary call has nowhere to put the emitted values.
+		return nil, errors.New("ConsoleStream is a streaming method: call it over the streaming RPC path")
+	case "Net":
+		return b.Net(ctx, argStr(args, 0), argNet(args, 1))
+	case "NetWait":
+		return b.NetWait(ctx, argStr(args, 0), argNetCond(args, 1))
+	case "NetStream":
+		// Reachable over the RPC, but via streamDispatch — a unary call has
+		// nowhere to put the emitted values.
+		return nil, errors.New("NetStream is a streaming method: call it over the streaming RPC path")
 	case "Screenshot":
 		return capture(b.Screenshot(ctx, argStr(args, 0), argShot(args, 1)))
 	case "PDF":
@@ -281,6 +346,9 @@ func argShot(a []json.RawMessage, i int) chrome.ShotOpts       { return arg[chro
 func argPDF(a []json.RawMessage, i int) chrome.PDFOpts         { return arg[chrome.PDFOpts](a, i) }
 func argUpload(a []json.RawMessage, i int) chrome.UploadOpts   { return arg[chrome.UploadOpts](a, i) }
 func argMap(a []json.RawMessage, i int) map[string]string      { return arg[map[string]string](a, i) }
+func argConsole(a []json.RawMessage, i int) chrome.ConsoleOpts { return arg[chrome.ConsoleOpts](a, i) }
+func argNet(a []json.RawMessage, i int) chrome.NetOpts         { return arg[chrome.NetOpts](a, i) }
+func argNetCond(a []json.RawMessage, i int) chrome.NetCond     { return arg[chrome.NetCond](a, i) }
 
 func argRaw(a []json.RawMessage, i int) json.RawMessage {
 	if i < len(a) {
@@ -295,37 +363,11 @@ type Client struct {
 }
 
 func (c *Client) call(ctx context.Context, method string, out any, args ...any) error {
-	raw := make([]json.RawMessage, len(args))
-	for i, a := range args {
-		b, err := json.Marshal(a)
-		if err != nil {
-			return err
-		}
-		raw[i] = b
-	}
-
-	// Hand the daemon our remaining deadline so a slow action fails cleanly
-	// there rather than blocking us; a socket deadline (the action deadline plus
-	// grace for its response, or a default cap) keeps a wedged daemon from
-	// hanging us indefinitely.
-	var timeoutMs int64
-	sockDeadline := time.Now().Add(30 * time.Second)
-	if dl, ok := ctx.Deadline(); ok {
-		if timeoutMs = time.Until(dl).Milliseconds(); timeoutMs <= 0 {
-			return context.DeadlineExceeded
-		}
-		sockDeadline = dl.Add(2 * time.Second)
-	}
-
-	conn, err := net.Dial("unix", c.path)
+	conn, err := c.dial(ctx, method, args)
 	if err != nil {
 		return err
 	}
 	defer conn.Close()
-	_ = conn.SetDeadline(sockDeadline)
-	if err := json.NewEncoder(conn).Encode(Request{Method: method, Args: raw, TimeoutMs: timeoutMs}); err != nil {
-		return err
-	}
 	var resp Response
 	if err := json.NewDecoder(conn).Decode(&resp); err != nil {
 		return err
@@ -337,6 +379,75 @@ func (c *Client) call(ctx context.Context, method string, out any, args ...any) 
 		return json.Unmarshal(resp.Result, out)
 	}
 	return nil
+}
+
+// dial opens a connection for one call, sends the request, and returns the
+// connection to read the response(s) from. It also hands the daemon our
+// remaining deadline (so a slow action fails there rather than blocking us) and
+// sets a socket deadline (so a wedged daemon cannot hang us indefinitely).
+func (c *Client) dial(ctx context.Context, method string, args []any) (net.Conn, error) {
+	raw := make([]json.RawMessage, len(args))
+	for i, a := range args {
+		b, err := json.Marshal(a)
+		if err != nil {
+			return nil, err
+		}
+		raw[i] = b
+	}
+
+	var timeoutMs int64
+	sockDeadline := time.Now().Add(30 * time.Second)
+	if dl, ok := ctx.Deadline(); ok {
+		if timeoutMs = time.Until(dl).Milliseconds(); timeoutMs <= 0 {
+			return nil, context.DeadlineExceeded
+		}
+		sockDeadline = dl.Add(2 * time.Second)
+	}
+
+	conn, err := net.Dial("unix", c.path)
+	if err != nil {
+		return nil, err
+	}
+	_ = conn.SetDeadline(sockDeadline)
+	if err := json.NewEncoder(conn).Encode(Request{Method: method, Args: raw, TimeoutMs: timeoutMs}); err != nil {
+		_ = conn.Close()
+		return nil, err
+	}
+	return conn, nil
+}
+
+// stream calls a streaming method, handing each emitted value to onValue as it
+// arrives. It returns when the daemon writes the terminator, when the stream
+// errors, or when the connection ends — a closed connection after a clean run
+// is the end of the stream, not a failure.
+func (c *Client) stream(ctx context.Context, method string, onValue func(json.RawMessage) error, args ...any) error {
+	conn, err := c.dial(ctx, method, args)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+
+	dec := json.NewDecoder(conn)
+	for {
+		var resp Response
+		if err := dec.Decode(&resp); err != nil {
+			if errors.Is(err, io.EOF) {
+				return nil
+			}
+			return err
+		}
+		if resp.Error != "" {
+			return errors.New(resp.Error)
+		}
+		if len(resp.Result) > 0 {
+			if err := onValue(resp.Result); err != nil {
+				return err
+			}
+		}
+		if resp.Done {
+			return nil
+		}
+	}
 }
 
 // Status pings the daemon; nil error means it's alive.
@@ -495,6 +606,36 @@ func (r *remoteBrowser) Screenshot(ctx context.Context, id string, opts chrome.S
 	var out captureResult
 	err := r.c.call(ctx, "Screenshot", &out, id, opts)
 	return out.Data, out.Meta, err
+}
+func (r *remoteBrowser) Console(ctx context.Context, id string, opts chrome.ConsoleOpts) (any, error) {
+	var out any
+	return out, r.c.call(ctx, "Console", &out, id, opts)
+}
+func (r *remoteBrowser) ConsoleStream(ctx context.Context, id string, opts chrome.ConsoleOpts, emit func(any) error) error {
+	return r.c.stream(ctx, "ConsoleStream", func(raw json.RawMessage) error {
+		var v any
+		if err := json.Unmarshal(raw, &v); err != nil {
+			return err
+		}
+		return emit(v)
+	}, id, opts)
+}
+func (r *remoteBrowser) Net(ctx context.Context, id string, opts chrome.NetOpts) (any, error) {
+	var out any
+	return out, r.c.call(ctx, "Net", &out, id, opts)
+}
+func (r *remoteBrowser) NetStream(ctx context.Context, id string, opts chrome.NetOpts, emit func(any) error) error {
+	return r.c.stream(ctx, "NetStream", func(raw json.RawMessage) error {
+		var v any
+		if err := json.Unmarshal(raw, &v); err != nil {
+			return err
+		}
+		return emit(v)
+	}, id, opts)
+}
+func (r *remoteBrowser) NetWait(ctx context.Context, id string, cond chrome.NetCond) (map[string]any, error) {
+	var out map[string]any
+	return out, r.c.call(ctx, "NetWait", &out, id, cond)
 }
 func (r *remoteBrowser) PDF(ctx context.Context, id string, opts chrome.PDFOpts) ([]byte, map[string]any, error) {
 	var out captureResult
