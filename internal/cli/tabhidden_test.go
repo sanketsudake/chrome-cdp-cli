@@ -18,7 +18,7 @@ type hiddenTabBrowser struct {
 func (h *hiddenTabBrowser) Pointer(context.Context, string, string, chrome.PointerOpts) (map[string]any, error) {
 	return nil, errors.New("context deadline exceeded")
 }
-func (h *hiddenTabBrowser) Eval(_ context.Context, _, expr string) (any, error) {
+func (h *hiddenTabBrowser) Eval(_ context.Context, _, expr string, _ chrome.EvalOpts) (any, error) {
 	if expr == "document.visibilityState" {
 		return map[string]any{"value": h.visibility}, nil
 	}

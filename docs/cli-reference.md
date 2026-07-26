@@ -142,9 +142,10 @@ chrome-cdp snap --by name … || { chrome-cdp activate && chrome-cdp snap --by n
 | `snap [--role <r>] [--grep <re>] [--region <name>] [--dedupe]` | accessibility snapshot: roles + names of actionable nodes, plus `alerts`, `focused`, per-node `states`/`value`/`ref` |
 | `grid [selector]` | a table/grid as `{headers, rows, count}` |
 | `value <selector> [--all]` | a form field's value (`--all`: every match, as a list) |
-| `text <selector>` | visible text of a selector (or the page) |
+| `text <selector>` | visible text of a selector |
+| `text --article [--markdown] [--min-chars <n>]` | the page's main readable content, boilerplate dropped |
 | `html <selector> [--inner]` | outer (or inner) HTML |
-| `eval <js>` | evaluate JS in the top frame |
+| `eval <js> [--await]` | evaluate JS in the top frame |
 
 The `snap` filters run server-side, so a read returns just the relevant nodes instead of a whole page.
 
@@ -153,6 +154,55 @@ chrome-cdp snap --role button --grep "[AP]M"    # calendar-event buttons only
 chrome-cdp grid                                 # read a table without parsing snap
 chrome-cdp value --all "input.hours"            # every hour cell in one call
 ```
+
+#### `text --article` — the page without the furniture
+
+On a real page most of the visible text is chrome: navigation, footers, cookie notices, related-link rails.
+`--article` scores the page's blocks the way Reader Mode does and returns only the winning subtree, so a caller spends its attention (or its context budget) on content.
+
+```sh
+chrome-cdp text --article                       # the body text, nothing else
+chrome-cdp text --article --markdown > notes.md # keep the structure
+chrome-cdp text --article --min-chars 500       # demand a longer article
+```
+
+Extraction runs in an isolated world and scores a **clone** of the DOM — it never writes to the page you are automating, and it leaves nothing on `window`.
+
+Because extraction is a heuristic, the envelope reports what it kept, so a script can tell a good extraction from a bad one:
+
+```json
+{ "ok": true, "command": "text",
+  "result": { "text": "…", "title": "Quarterly report", "byline": "A. Author",
+              "excerpt": "Revenue for the quarter reached…",
+              "chars": 4821, "total_chars": 24193, "ratio": 0.199,
+              "extracted": true, "format": "text" } }
+```
+
+When it keeps fewer than `--min-chars` characters (default 250) it says so instead of handing back a plausible-looking fragment: `extracted` is `false`, `reason` explains it, `article_chars` reports how little it found, and `text` falls back to the **full page text** — at exit 0.
+A read that did return usable text is not a failure, so it is not an error; the flag is there to be checked.
+
+`--markdown` preserves headings, lists, links, code blocks, and blockquotes.
+It is deliberately **not** a general HTML-to-markdown converter: tables, footnotes, and embedded media are out of scope — tables come through as plain text and images are dropped.
+
+`--markdown` or `--min-chars` without `--article`, and `--article` together with a selector, are `usage` errors (exit 2), rejected before Chrome is contacted.
+The selector combination is an error on purpose: "extract the main content, but only within this subtree" has no clear meaning yet, and it can be defined later without breaking anything.
+
+#### `eval --await` — DevTools console semantics
+
+Plain `eval` evaluates an *expression*, which is why the two most natural things to type both fail: a top-level `await` is a syntax error, and a statement list is not an expression.
+`--await` switches on `awaitPromise` and `replMode`, which is exactly what DevTools' own console does:
+
+```sh
+chrome-cdp eval --await 'await fetch("/api/me").then(r => r.json())'
+chrome-cdp eval --await 'const rows = [...document.querySelectorAll("tr")]; rows.length'
+```
+
+The result records `awaited: true`, so a caller can tell which path ran.
+
+A rejected promise is an **error**, never a value: exit 5 with `error.code: cdp_error`, the rejection's message in `error.message`, and its stack in `error.stack`.
+A never-settling promise is bounded by `--timeout` (exit 4), and the connection stays usable afterwards.
+
+`--await` is opt-in. `replMode` changes how bare object literals and `let`/`const` re-declaration behave, so plain `eval` keeps its existing semantics rather than changing silently under scripts that already work.
 
 ### Acting
 
@@ -271,8 +321,59 @@ printf '%s\n' \
 
 | Command | Writes |
 |---------|--------|
-| `screenshot [-o <path>]` | a PNG (to cwd, or `-o -` for stdout) |
+| `screenshot [-o <path>]` | an image of the viewport, an element, a region, or the full page |
 | `pdf [-o <path>]` | a PDF of the page |
+
+Both write to `./<command>-<timestamp>.<ext>` by default — with a `-1`, `-2`, … counter rather than overwriting — or to `-o <path>`, or to stdout with `-o -`.
+
+**screenshot**
+
+| Flag | Default | Purpose |
+|------|---------|---------|
+| `--selector <sel>` | — | capture this element's box; honours every addressing flag (`--by`, `--role`, `--nth`, `--match`, `--in-row`, `--pierce`) |
+| `--full-page` | off | capture the whole scrollable page, beyond the fold |
+| `--region x,y,w,h` | — | capture an explicit page-coordinate rectangle |
+| `--format` | `png` | `png` \| `jpeg` \| `webp` |
+| `--quality <n>` | `80` | 0–100; **jpeg/webp only** — passing it with `png` is a usage error, not a silent no-op |
+| `--scale <f>` | `1` | output scale factor, 0.1–3, applied in the renderer so text stays crisp |
+| `--padding <px>` | `0` | expand an element capture, clamped to the page so an element at an edge keeps a non-negative origin |
+
+`--selector`, `--full-page` and `--region` select different modes and are mutually exclusive.
+
+```sh
+chrome-cdp screenshot --selector "#invoice-table" --padding 8 -o invoice.png
+chrome-cdp screenshot --full-page -o report.png
+chrome-cdp screenshot --format jpeg --quality 60 --scale 0.5 -o small.jpg
+chrome-cdp screenshot --selector "Summary card" --by name --role region
+```
+
+The result reports `path`, `bytes`, `width`, `height`, `format`, `scale`, `mode` (`viewport` \| `element` \| `full_page` \| `region`) and the resolved `clip` in page coordinates.
+`mode` and `clip` are what make a capture that came out wrong debuggable without opening the image.
+
+Full-page capture does **not** force lazy-loaded content to load: images below the fold that appear on scroll may come out blank.
+Scroll through the page first (`scroll --dy …`, then `wait --idle`) when that matters.
+
+**pdf**
+
+| Flag | Default | Purpose |
+|------|---------|---------|
+| `--landscape` | off | orientation |
+| `--paper <name>` | `letter` | `letter` \| `legal` \| `tabloid` \| `ledger` \| `a0`–`a6` (case-insensitive), or `WxH` in inches |
+| `--margin <spec>` | `0.4in` | one value, or `top,right,bottom,left`; units `in` (default), `cm`, `mm`, `px`, `pt` |
+| `--scale <f>` | `1` | render scale, 0.1–2 |
+| `--background` | off | print background graphics |
+| `--pages <ranges>` | all | e.g. `1-3,5` |
+| `--header <tpl>` / `--footer <tpl>` | — | HTML templates (classes `date`, `title`, `url`, `pageNumber`, `totalPages`) |
+
+```sh
+chrome-cdp pdf --landscape --paper a4 --background -o report.pdf
+chrome-cdp pdf --pages 1-3,7 --margin 0.5in,1in,0.5in,1in
+```
+
+The result reports `path`, `bytes`, and `pages`.
+
+Every value above is parsed before anything connects to Chrome, so a malformed rectangle, paper name, margin spec or page range — or an out-of-range quality or scale — is `usage` / exit 2 with the browser untouched.
+An element that resolves but has a zero-area box (`display:none`, collapsed) is exit 4 with `zero_area: true`: the selector was right, so it is reported differently from "not found".
 
 ### Browser state
 

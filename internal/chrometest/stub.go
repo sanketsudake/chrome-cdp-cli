@@ -22,7 +22,7 @@ func (StubBrowser) Open(_ context.Context, url string) (map[string]any, error) {
 func (StubBrowser) Navigate(context.Context, string, string) (map[string]any, error) {
 	return map[string]any{"url": "https://example.com/", "status": 200}, nil
 }
-func (StubBrowser) Eval(context.Context, string, string) (any, error) {
+func (StubBrowser) Eval(context.Context, string, string, chrome.EvalOpts) (any, error) {
 	return map[string]any{"value": 2}, nil
 }
 func (StubBrowser) Snapshot(context.Context, string, chrome.SnapOpts) (any, error) {
@@ -69,14 +69,18 @@ func (StubBrowser) Scroll(context.Context, string, string, chrome.ScrollOpts) (m
 func (StubBrowser) HTML(context.Context, string, string, bool, chrome.QueryOpts) (map[string]any, error) {
 	return map[string]any{"html": "<div></div>"}, nil
 }
-func (StubBrowser) Text(context.Context, string, string, chrome.QueryOpts) (map[string]any, error) {
+func (StubBrowser) Text(context.Context, string, string, chrome.TextOpts) (map[string]any, error) {
 	return map[string]any{"text": "hello"}, nil
 }
 func (StubBrowser) Value(context.Context, string, string, chrome.QueryOpts) (map[string]any, error) {
 	return map[string]any{"value": "v"}, nil
 }
-func (StubBrowser) Screenshot(context.Context, string) ([]byte, error) { return []byte("PNGDATA"), nil }
-func (StubBrowser) PDF(context.Context, string) ([]byte, error)        { return []byte("%PDF-"), nil }
+func (StubBrowser) Screenshot(context.Context, string, chrome.ShotOpts) ([]byte, map[string]any, error) {
+	return []byte("PNGDATA"), nil, nil
+}
+func (StubBrowser) PDF(context.Context, string, chrome.PDFOpts) ([]byte, map[string]any, error) {
+	return []byte("%PDF-"), nil, nil
+}
 func (StubBrowser) CookieList(context.Context, string) (any, error) {
 	return map[string]any{"cookies": []any{}}, nil
 }

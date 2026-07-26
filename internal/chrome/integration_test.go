@@ -63,7 +63,7 @@ func TestManagedChromeDrivesAPage(t *testing.T) {
 		t.Fatalf("Navigate: %v", err)
 	}
 
-	got, err := b.Eval(ctx, id, "document.title")
+	got, err := b.Eval(ctx, id, "document.title", EvalOpts{})
 	if err != nil {
 		t.Fatalf("Eval: %v", err)
 	}
@@ -131,7 +131,7 @@ func TestAccessibleNameAddressing(t *testing.T) {
 
 	// --by name resolves the VISIBLE "Request Absence" (text "RA"), not the
 	// hidden display:none one that shares the name.
-	res, err := b.Text(ctx, id, "Request Absence", QueryOpts{By: "name"})
+	res, err := b.Text(ctx, id, "Request Absence", TextOpts{Query: QueryOpts{By: "name"}})
 	if err != nil {
 		t.Fatalf("Text --by name: %v", err)
 	}
@@ -143,7 +143,7 @@ func TestAccessibleNameAddressing(t *testing.T) {
 	if _, err := clickVia(ctx, b, id, "Request Absence", QueryOpts{By: "name", Role: "button"}); err != nil {
 		t.Fatalf("Click --by name --role button: %v", err)
 	}
-	clicked, err := b.Eval(ctx, id, "window.__ra")
+	clicked, err := b.Eval(ctx, id, "window.__ra", EvalOpts{})
 	if err != nil {
 		t.Fatalf("Eval: %v", err)
 	}
@@ -154,7 +154,7 @@ func TestAccessibleNameAddressing(t *testing.T) {
 	// --match contains finds a control by a substring of its verbose accessible
 	// name (the real-world "Review" vs "Review Approval: Awaiting Action …" case)
 	// where exact match would miss.
-	rv, err := b.Text(ctx, id, "Review", QueryOpts{By: "name", Role: "button", Match: "contains"})
+	rv, err := b.Text(ctx, id, "Review", TextOpts{Query: QueryOpts{By: "name", Role: "button", Match: "contains"}})
 	if err != nil {
 		t.Errorf("Text --by name --match contains: %v", err)
 	} else if rv["text"] != "Review" {
@@ -166,7 +166,7 @@ func TestAccessibleNameAddressing(t *testing.T) {
 		nth  int
 		want string
 	}{{1, "d1"}, {2, "d2"}} {
-		r, err := b.Text(ctx, id, "Dup", QueryOpts{By: "name", Nth: tc.nth})
+		r, err := b.Text(ctx, id, "Dup", TextOpts{Query: QueryOpts{By: "name", Nth: tc.nth}})
 		if err != nil {
 			t.Fatalf("Text --by name --nth %d: %v", tc.nth, err)
 		}
@@ -179,7 +179,7 @@ func TestAccessibleNameAddressing(t *testing.T) {
 	// hidden-first button — the failure --by name fixes. Bounded so it's quick.
 	short, scancel := context.WithTimeout(ctx, 3*time.Second)
 	defer scancel()
-	if _, err := b.Text(short, id, "button", QueryOpts{By: "css"}); err == nil {
+	if _, err := b.Text(short, id, "button", TextOpts{Query: QueryOpts{By: "css"}}); err == nil {
 		t.Error("expected --by css to stall on the hidden-first button, but it succeeded")
 	}
 }

@@ -162,7 +162,7 @@ func (s *server) dispatch(ctx context.Context, method string, args []json.RawMes
 	case "Reload":
 		return b.Reload(ctx, argStr(args, 0), argBool(args, 1))
 	case "Eval":
-		return b.Eval(ctx, argStr(args, 0), argStr(args, 1))
+		return b.Eval(ctx, argStr(args, 0), argStr(args, 1), argEval(args, 2))
 	case "Snapshot":
 		return b.Snapshot(ctx, argStr(args, 0), argSnap(args, 1))
 	case "Key":
@@ -184,7 +184,7 @@ func (s *server) dispatch(ctx context.Context, method string, args []json.RawMes
 	case "HTML":
 		return b.HTML(ctx, argStr(args, 0), argStr(args, 1), argBool(args, 2), argQ(args, 3))
 	case "Text":
-		return b.Text(ctx, argStr(args, 0), argStr(args, 1), argQ(args, 2))
+		return b.Text(ctx, argStr(args, 0), argStr(args, 1), argText(args, 2))
 	case "Value":
 		return b.Value(ctx, argStr(args, 0), argStr(args, 1), argQ(args, 2))
 	case "AttrGet":
@@ -208,9 +208,9 @@ func (s *server) dispatch(ctx context.Context, method string, args []json.RawMes
 	case "Wait":
 		return b.Wait(ctx, argStr(args, 0), argWait(args, 1))
 	case "Screenshot":
-		return b.Screenshot(ctx, argStr(args, 0))
+		return capture(b.Screenshot(ctx, argStr(args, 0), argShot(args, 1)))
 	case "PDF":
-		return b.PDF(ctx, argStr(args, 0))
+		return capture(b.PDF(ctx, argStr(args, 0), argPDF(args, 1)))
 	case "CookieList":
 		return b.CookieList(ctx, argStr(args, 0))
 	case "CookieSet":
@@ -224,6 +224,23 @@ func (s *server) dispatch(ctx context.Context, method string, args []json.RawMes
 	default:
 		return nil, errors.New("unknown method: " + method)
 	}
+}
+
+// captureResult carries a capture's two return values over the one-result RPC.
+// The bytes ride as base64 (encoding/json's []byte handling) and the metadata as
+// a plain object, so the forwarder can hand both back unchanged.
+type captureResult struct {
+	Data []byte         `json:"data,omitempty"`
+	Meta map[string]any `json:"meta,omitempty"`
+}
+
+// capture adapts a (bytes, meta, error) driver return into the single value
+// dispatch replies with, so both capture cases stay one line.
+func capture(data []byte, meta map[string]any, err error) (any, error) {
+	if err != nil {
+		return nil, err
+	}
+	return captureResult{Data: data, Meta: meta}, nil
 }
 
 // arg decodes the i'th positional argument, yielding the zero value when it is
@@ -249,6 +266,8 @@ func argF64(a []json.RawMessage, i int) float64   { return arg[float64](a, i) }
 func argStrs(a []json.RawMessage, i int) []string { return arg[[]string](a, i) }
 
 func argQ(a []json.RawMessage, i int) chrome.QueryOpts         { return arg[chrome.QueryOpts](a, i) }
+func argText(a []json.RawMessage, i int) chrome.TextOpts       { return arg[chrome.TextOpts](a, i) }
+func argEval(a []json.RawMessage, i int) chrome.EvalOpts       { return arg[chrome.EvalOpts](a, i) }
 func argWait(a []json.RawMessage, i int) chrome.WaitCond       { return arg[chrome.WaitCond](a, i) }
 func argSel(a []json.RawMessage, i int) chrome.SelectOpts      { return arg[chrome.SelectOpts](a, i) }
 func argScroll(a []json.RawMessage, i int) chrome.ScrollOpts   { return arg[chrome.ScrollOpts](a, i) }
@@ -256,6 +275,8 @@ func argSnap(a []json.RawMessage, i int) chrome.SnapOpts       { return arg[chro
 func argKeys(a []json.RawMessage, i int) []chrome.KeyStroke    { return arg[[]chrome.KeyStroke](a, i) }
 func argKeyOpts(a []json.RawMessage, i int) chrome.KeyOpts     { return arg[chrome.KeyOpts](a, i) }
 func argPointer(a []json.RawMessage, i int) chrome.PointerOpts { return arg[chrome.PointerOpts](a, i) }
+func argShot(a []json.RawMessage, i int) chrome.ShotOpts       { return arg[chrome.ShotOpts](a, i) }
+func argPDF(a []json.RawMessage, i int) chrome.PDFOpts         { return arg[chrome.PDFOpts](a, i) }
 func argMap(a []json.RawMessage, i int) map[string]string      { return arg[map[string]string](a, i) }
 
 func argRaw(a []json.RawMessage, i int) json.RawMessage {
@@ -371,9 +392,9 @@ func (r *remoteBrowser) Reload(ctx context.Context, id string, hard bool) (map[s
 	var out map[string]any
 	return out, r.c.call(ctx, "Reload", &out, id, hard)
 }
-func (r *remoteBrowser) Eval(ctx context.Context, id, expr string) (any, error) {
+func (r *remoteBrowser) Eval(ctx context.Context, id, expr string, opts chrome.EvalOpts) (any, error) {
 	var out any
-	return out, r.c.call(ctx, "Eval", &out, id, expr)
+	return out, r.c.call(ctx, "Eval", &out, id, expr, opts)
 }
 func (r *remoteBrowser) Snapshot(ctx context.Context, id string, opts chrome.SnapOpts) (any, error) {
 	var out any
@@ -415,9 +436,9 @@ func (r *remoteBrowser) HTML(ctx context.Context, id, sel string, inner bool, q 
 	var out map[string]any
 	return out, r.c.call(ctx, "HTML", &out, id, sel, inner, q)
 }
-func (r *remoteBrowser) Text(ctx context.Context, id, sel string, q chrome.QueryOpts) (map[string]any, error) {
+func (r *remoteBrowser) Text(ctx context.Context, id, sel string, opts chrome.TextOpts) (map[string]any, error) {
 	var out map[string]any
-	return out, r.c.call(ctx, "Text", &out, id, sel, q)
+	return out, r.c.call(ctx, "Text", &out, id, sel, opts)
 }
 func (r *remoteBrowser) Value(ctx context.Context, id, sel string, q chrome.QueryOpts) (map[string]any, error) {
 	var out map[string]any
@@ -463,13 +484,15 @@ func (r *remoteBrowser) Wait(ctx context.Context, id string, cond chrome.WaitCon
 	var out map[string]any
 	return out, r.c.call(ctx, "Wait", &out, id, cond)
 }
-func (r *remoteBrowser) Screenshot(ctx context.Context, id string) ([]byte, error) {
-	var out []byte
-	return out, r.c.call(ctx, "Screenshot", &out, id)
+func (r *remoteBrowser) Screenshot(ctx context.Context, id string, opts chrome.ShotOpts) ([]byte, map[string]any, error) {
+	var out captureResult
+	err := r.c.call(ctx, "Screenshot", &out, id, opts)
+	return out.Data, out.Meta, err
 }
-func (r *remoteBrowser) PDF(ctx context.Context, id string) ([]byte, error) {
-	var out []byte
-	return out, r.c.call(ctx, "PDF", &out, id)
+func (r *remoteBrowser) PDF(ctx context.Context, id string, opts chrome.PDFOpts) ([]byte, map[string]any, error) {
+	var out captureResult
+	err := r.c.call(ctx, "PDF", &out, id, opts)
+	return out.Data, out.Meta, err
 }
 func (r *remoteBrowser) CookieList(ctx context.Context, id string) (any, error) {
 	var out any
