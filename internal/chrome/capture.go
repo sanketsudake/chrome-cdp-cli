@@ -87,8 +87,20 @@ func (c *CDP) Screenshot(ctx context.Context, id string, opts ShotOpts) ([]byte,
 			if clip, err = elementPageRect(ctx, opts); err != nil {
 				return err
 			}
+			// Re-read the page bounds AFTER the element settled, for the same
+			// reason the box itself is re-read: scrolling into view is what runs
+			// the page's scroll handlers, and those can grow or shrink the
+			// document. Clamping the clip to the pre-scroll page box would crop a
+			// capture against bounds that no longer exist.
+			if metrics, err = layoutRects(ctx); err != nil {
+				return err
+			}
 			clip = padRect(clip, opts.Padding, metrics.page)
 		case opts.FullPage:
+			// No scroll, so no re-read: the content box comes from the layout
+			// metrics read a moment ago and nothing between there and the capture
+			// touches the page. Same for --region, which is verbatim arithmetic on
+			// what the caller asked for.
 			mode = ShotFullPage
 			clip = metrics.page
 		case opts.Region != nil:
@@ -225,7 +237,7 @@ func elementPageRect(ctx context.Context, opts ShotOpts) (Rect, error) {
 }
 
 // settledPageRect scrolls the element into view and then RE-READS its box until
-// two consecutive reads agree.
+// the page has PROCESSED that scroll and two consecutive reads agree.
 //
 // The re-read is the whole point. Scrolling is what makes an offscreen element
 // capturable, and it is also what moves things: scroll handlers reposition,
@@ -234,61 +246,182 @@ func elementPageRect(ctx context.Context, opts ShotOpts) (Rect, error) {
 // comes back at exactly the right size showing the wrong part of the page —
 // a bug that looks like a rendering problem rather than an arithmetic one. It has
 // its own regression test for that reason.
+//
+// "Two consecutive reads agree" is NOT on its own enough, which is the subtle
+// half. A scroll event is not dispatched by the scroll: it is queued and fired
+// when the page next runs its rendering steps. Until then every read — however
+// many, however far apart — returns the same pre-scroll box, and a settle loop
+// that only compares reads accepts that stale answer the moment the page is slow
+// enough to miss its first frame. So the loop also waits for the scroll to have
+// been OBSERVED by a listener installed before the scroll, and drives the page's
+// rendering steps itself (pokeFrame) instead of waiting for a frame that a
+// hidden or throttled tab will never produce. No sleep and no interval tuning:
+// the loop advances the page rather than betting on when the page advances.
 func settledPageRect(ctx context.Context, objID cdpruntime.RemoteObjectID) (Rect, error) {
-	if _, err := callOnObject(ctx, objID, scrollIntoViewJS); err != nil {
+	w, err := scrollIntoViewWatched(ctx, objID)
+	if err != nil {
 		return Rect{}, err
 	}
+	defer w.release(ctx)
+
 	t := time.NewTicker(60 * time.Millisecond)
 	defer t.Stop()
 	var prev Rect
 	have := false
 	for {
-		r, err := readPageRect(ctx, objID)
+		// Every iteration, not just while waiting for the scroll event: on a tab
+		// that produces no frames of its own, this is the only thing that makes a
+		// deferred relayout (a handler that moves the element from a rAF, an
+		// image that lays out when it decodes) ever happen — and therefore the
+		// only thing that makes "the reads agree" mean the page has stopped
+		// moving rather than that it never started.
+		pokeFrame(ctx)
+
+		r, processed, err := w.read(ctx)
 		if err != nil {
 			return Rect{}, err
 		}
-		if have && sameRect(prev, r) {
-			if r.Width < 1 || r.Height < 1 {
-				return Rect{}, ErrZeroArea
+		if processed {
+			if have && sameRect(prev, r) {
+				if r.Width < 1 || r.Height < 1 {
+					return Rect{}, ErrZeroArea
+				}
+				return r, nil
 			}
-			return r, nil
+			prev, have = r, true
 		}
-		prev, have = r, true
 		select {
 		case <-ctx.Done():
-			return Rect{}, fmt.Errorf("element box never settled: %w", ctx.Err())
+			return Rect{}, fmt.Errorf("element box never settled after scrolling it into view: %w", ctx.Err())
 		case <-t.C:
 		}
 	}
 }
 
-// readPageRect reads one element box in page coordinates.
-func readPageRect(ctx context.Context, objID cdpruntime.RemoteObjectID) (Rect, error) {
-	res, err := callOnObject(ctx, objID, pageRectJS)
-	if err != nil {
-		return Rect{}, err
-	}
-	var r Rect
-	if err := json.Unmarshal(res, &r); err != nil {
-		return Rect{}, err
-	}
-	return r, nil
+// scrollWatch is a handle on the page-side object scrollWatchJS leaves behind:
+// the element, the capture-phase scroll listener installed before the scroll,
+// and the flag that listener sets. Keeping it page-side (rather than in a global)
+// means the watch cannot collide with a concurrent capture or leave a name on
+// the user's window.
+type scrollWatch struct {
+	obj cdpruntime.RemoteObjectID
 }
 
-// scrollIntoViewJS brings the element into view so it is rendered (and, for a
-// lazy page, so its content loads) before its box is read.
-const scrollIntoViewJS = `function() {
-  try { this.scrollIntoView({block:"center", inline:"nearest"}); } catch (e) {}
-  return true;
+// scrollWatchJS installs the watch and scrolls, in that order — the ordering is
+// the load-bearing part, since a listener added after the scroll can never see
+// it.
+//
+// It also reports whether the scroll actually moved anything (`moved`), by
+// comparing the scroll offsets of every ancestor plus the window across the
+// call. An element already in view scrolls nothing and so will never produce a
+// scroll event; waiting for one would hang until the caller's deadline.
+const scrollWatchJS = `function() {
+  const el = this;
+  // Every scroll container that scrollIntoView could move, crossing shadow
+  // boundaries via the host.
+  const ancestors = [];
+  for (let n = el; n; ) {
+    n = n.parentElement || (n.getRootNode && n.getRootNode().host) || null;
+    if (n) ancestors.push(n);
+  }
+  const snap = () => ancestors.map(n => n.scrollLeft + ":" + n.scrollTop).join("|") +
+                     "#" + window.scrollX + ":" + window.scrollY;
+
+  const state = {
+    el: el,
+    scrolled: false,
+    moved: false,
+    onScroll: null,
+    read: function () {
+      const r = this.el.getBoundingClientRect();
+      // PAGE coordinates — the viewport rect plus the scroll offset — which is
+      // the space captureScreenshot clips in, and is therefore stable no matter
+      // where the page ends up scrolled.
+      return { scrolled: this.scrolled, moved: this.moved,
+               x: r.left + window.scrollX, y: r.top + window.scrollY,
+               width: r.width, height: r.height };
+    },
+    stop: function () { removeEventListener("scroll", this.onScroll, true); return true; }
+  };
+  state.onScroll = function () { state.scrolled = true; };
+  // Capture phase on window: it sees scroll events on nested containers too,
+  // which do not bubble.
+  addEventListener("scroll", state.onScroll, true);
+
+  const before = snap();
+  // "instant" so the scroll completes within this call and moved is the truth
+  // rather than the first frame of a CSS scroll-behavior:smooth animation.
+  try { el.scrollIntoView({block:"center", inline:"nearest", behavior:"instant"}); }
+  catch (e) { try { el.scrollIntoView(); } catch (e2) {} }
+  state.moved = snap() !== before;
+  return state;
 }`
 
-// pageRectJS returns the element's box in PAGE coordinates — the viewport rect
-// plus the scroll offset — which is the space captureScreenshot clips in, and is
-// therefore stable no matter where the page ends up scrolled.
-const pageRectJS = `function() {
-  const r = this.getBoundingClientRect();
-  return { x: r.left + window.scrollX, y: r.top + window.scrollY, width: r.width, height: r.height };
-}`
+// scrollIntoViewWatched installs the watch, scrolls the element into view, and
+// returns the handle to poll. The state object is returned BY HANDLE, not by
+// value, because the flag it carries is read repeatedly afterwards.
+func scrollIntoViewWatched(ctx context.Context, objID cdpruntime.RemoteObjectID) (*scrollWatch, error) {
+	res, exc, err := cdpruntime.CallFunctionOn(scrollWatchJS).WithObjectID(objID).Do(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if exc != nil {
+		return nil, fmt.Errorf("scrolling into view: %s", exc.Text)
+	}
+	if res == nil || res.ObjectID == "" {
+		return nil, fmt.Errorf("scroll watch returned no object")
+	}
+	return &scrollWatch{obj: res.ObjectID}, nil
+}
+
+// read returns the element's current page box and whether the scroll has been
+// processed — either a scroll event has been dispatched, or the scrollIntoView
+// moved nothing and none is coming.
+func (w *scrollWatch) read(ctx context.Context) (Rect, bool, error) {
+	res, err := callOnObject(ctx, w.obj, `function(){ return this.read(); }`)
+	if err != nil {
+		return Rect{}, false, err
+	}
+	var v struct {
+		Rect
+		Scrolled bool `json:"scrolled"`
+		Moved    bool `json:"moved"`
+	}
+	if err := json.Unmarshal(res, &v); err != nil {
+		return Rect{}, false, err
+	}
+	return v.Rect, v.Scrolled || !v.Moved, nil
+}
+
+// release removes the listener and drops the page-side object, so a capture
+// leaves no scroll listener behind on the user's live page. Errors are ignored:
+// the caller's context is usually what ended the wait, and a failed cleanup must
+// not mask the capture's own outcome.
+func (w *scrollWatch) release(ctx context.Context) {
+	_, _ = callOnObject(ctx, w.obj, `function(){ return this.stop(); }`)
+	_ = cdpruntime.ReleaseObject(w.obj).Do(ctx)
+}
+
+// pokeFrame makes the page run one rendering update by capturing a throwaway 1×1
+// image.
+//
+// Dispatching queued scroll events is part of that update, and a tab that is not
+// the frontmost one produces no updates on its own — measured: a hidden tab sat
+// on its pre-scroll box for the full two seconds it was watched, then processed
+// the scroll on the first poke. Waiting for a frame would therefore mean element
+// capture silently returning stale geometry on any background tab, which is most
+// of them for a tool that drives the user's real browser.
+//
+// Errors are deliberately dropped: this only accelerates something the page may
+// also do by itself, so a capture that cannot be taken right now (a surface not
+// yet ready) is a reason to poll again, not to fail.
+func pokeFrame(ctx context.Context) {
+	_, _ = page.CaptureScreenshot().
+		WithFormat(page.CaptureScreenshotFormatPng).
+		WithFromSurface(true).
+		WithClip(&page.Viewport{Width: 1, Height: 1, Scale: 1}).
+		Do(ctx)
+}
 
 // sameRect reports whether two boxes agree to within half a pixel — subpixel
 // layout jitter is not movement.

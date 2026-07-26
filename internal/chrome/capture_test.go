@@ -308,6 +308,62 @@ func TestScreenshotOffscreenElementUsesPostScrollBox(t *testing.T) {
 	}
 }
 
+// The same stale-rect regression, made deterministic: on a BACKGROUND tab the
+// page runs no rendering steps of its own, so the scroll event that moves #far
+// is never dispatched at all — not late, never — until something makes the page
+// render. An implementation that waits for the page to come to it therefore reads
+// the pre-scroll box every single time here, where on a foreground tab it only
+// does so when the machine is loaded enough to miss a frame.
+//
+// This is the same defect as VS-4 and the same fixture; it is a separate test
+// because it fails 100% of the time rather than under contention, and because
+// element capture on a tab the user is not looking at is the normal case for a
+// tool that drives a real browser.
+func TestScreenshotOffscreenElementOnBackgroundTab(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping live-Chrome integration in -short mode")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+
+	b, err := launch(true, tmpProfile(t), 0)
+	if err != nil {
+		t.Skipf("cannot launch a managed headless Chrome here: %v", err)
+	}
+	defer b.Close()
+
+	srv := captureFixture(t, captureGeometryFixture)
+	id := firstTab(ctx, t, b)
+	if _, err := b.Navigate(ctx, id, srv.URL); err != nil {
+		t.Fatalf("Navigate: %v", err)
+	}
+	// Push the tab under test to the background by activating another one.
+	other, err := b.Open(ctx, "about:blank")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if _, err := b.Raw(ctx, other["id"].(string), "Page.bringToFront", nil); err != nil {
+		t.Fatalf("bringToFront on the second tab: %v", err)
+	}
+
+	buf, meta, err := b.Screenshot(ctx, id, ShotOpts{Selector: "#far"})
+	if err != nil {
+		t.Fatalf("element screenshot on a background tab: %v", err)
+	}
+
+	wantY := captureNumber(ctx, t, b, id,
+		"document.getElementById('far').getBoundingClientRect().top + window.scrollY")
+	clip := metaClip(t, meta)
+	if math.Abs(clip.Y-wantY) > 0.5 {
+		t.Errorf("clip.y = %g, want %g — a hidden tab's scroll was never processed before the box was read", clip.Y, wantY)
+	}
+	img, _ := decodeCapture(t, buf)
+	cx, cy := img.Bounds().Dx()/2, img.Bounds().Dy()/2
+	if !sampleIs(img, cx, cy, fixtureBlue, 8) {
+		t.Errorf("centre pixel = %s, want the element's blue", sampleString(img, cx, cy))
+	}
+}
+
 const captureFullPageFixture = `<!doctype html><title>Long</title>
 <style>
   html, body { margin:0; background:#ffffff; }
