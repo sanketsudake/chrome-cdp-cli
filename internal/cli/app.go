@@ -252,6 +252,10 @@ func (a *App) resolveTarget(ctx context.Context) (*result.TargetInfo, chrome.Bro
 }
 
 func (a *App) emit(env result.Envelope) {
+	// One redaction point for every envelope, so an Exempt verb that resolves a
+	// target (use, activate, close, policy init) cannot hand back the full URL
+	// and title of a tab the policy does not cover just by not thinking about it.
+	env.Target = a.redactTarget(env.Target)
 	env.ElapsedMs = time.Since(a.start).Milliseconds()
 	a.exitCode = env.ExitCode()
 	if a.jsonOut {

@@ -303,6 +303,7 @@ It never clicks the input: a click opens the **native OS file dialog**, which li
 Paths are `~`-expanded, resolved to the absolute path CDP requires, and checked **before** Chrome is contacted, so a missing path, a directory, or an unreadable file is `usage` / exit 2 with no connection and no consent prompt.
 Set `upload_roots` in the config file's `[policy]` table to bound what may be uploaded: a path outside those directories is `permission_denied` / exit 7, compared on the cleaned absolute path with symlinks resolved on both sides, so `../` traversal and symlink escapes are both refused.
 Unset means unrestricted, and it is deliberately not a flag or an environment variable — an allow-list the calling agent could widen would not be one.
+`--policy-off` does not lift it either, for the same reason: it is argv, and argv is what the threat model assumes the caller controls.
 
 The result reports the files **read back from the input** after the call — not the arguments — plus `multiple` and `accept`, because an `accept`/`multiple` mismatch is the usual reason an upload appears to work and then silently does nothing.
 A file outside `accept` adds `accept_mismatch: true` but is not refused: `accept` is advisory in HTML and plenty of apps set it loosely.
@@ -511,8 +512,24 @@ There is no regex: a policy language that is hard to read is a policy that is wr
 | `localhost:*` | `localhost` on any port | — |
 | `https://x.test` | `x.test` over https | `http://x.test` |
 
-Host matching is case-insensitive, and a URL with no host at all (`about:blank`, a `data:` URL, `chrome://settings`) matches nothing — so an `allow` list refuses it.
+Host matching is case-insensitive, and ports are compared numerically, so `host:443` and `host:0443` are the same port.
+
+**`*.host` in `deny` covers `host` itself**, which is the one place the wildcard reads differently from the table above.
+In `allow` and `read_only`, excluding the apex is the strict reading a boundary needs — `*.example.com` must not quietly widen to `example.com`.
+In `deny` it would be a hole: `deny = ["*.bank.example"]` means "not my bank", and reading it as "every subdomain of my bank, but the bank itself is fine" would protect you everywhere except the host you were thinking of.
+Over-blocking is the safe direction in a list of what may never be touched.
+
+Matching is on the origin **Chrome** resolves, not on the string as typed.
+`view-source:`, `blob:` and `filesystem:` URLs are unwrapped to the origin whose content they actually serve, and a `\` in the authority is normalised to `/` the way Chrome normalises it.
+So `https://bank.example\@evil.io/` is `bank.example`, and `view-source:https://bank.example/statement` is checked — and refused — as `bank.example`.
+Unwrapping runs in both directions: `view-source:` of an allowed origin stays allowed.
+
+A URL with no identifiable origin at all — `about:blank`, `data:`, `file://`, `javascript:` — is **refused whenever a policy is active**, whatever shape the rules take.
+A policy cannot decide about an origin it cannot identify, and "matches nothing" would be the safe answer under an `allow` list and a free bypass under a `deny` list.
+(`chrome://settings` does parse, to the host `settings`, and is decided about like any other origin: an `allow` list refuses it because nothing named it.)
+
 A pattern the CLI cannot parse is a **fatal** error: unlike the rest of the config, which warns and carries on, a policy that could not be read refuses to run, because a policy that fails open is worse than no policy.
+A config file that exists but cannot be *read* — wrong permissions, a bad mount — is treated exactly the same way, rather than as a policy that was never there.
 Use `--policy-off` to run while you fix it.
 
 ### What is checked
@@ -522,11 +539,21 @@ Use `--policy-off` to run while you fix it.
 | Acting (`click`, `type`, `fill`, `select`, `scroll`, `key`, pointer verbs, `upload`, `attr set/rm`, `cookie set/rm/clear`, `headers`, `emulate`, `eval`, `raw`) | `allow`/`deny`, `read_only`, `verbs_denied` |
 | Reading (`snap`, `text`, `html`, `value`, `grid`, `screenshot`, `pdf`, `frame`, `wait`, `attr get/list`, `cookie list`) | `allow`/`deny`, `verbs_denied` |
 | Navigating (`nav <url>`, `open`) | the **destination** origin, before navigating |
-| Tabs and meta (`list`, `use`, `close`, `activate`, `version`, …) | not checked; `list` shows non-allowed tabs as a bare origin, without the full URL or the title |
+| Tabs and meta (`list`, `use`, `close`, `activate`, `version`, …) | not checked; every envelope's `target`, and every tab `list` or an ambiguous `close` enumerates, is reduced to a bare origin with no full URL and no title when the policy does not cover it |
 
 A verb that is not classified is treated as **acting**, so a new verb over-restricts rather than slipping through.
 
 Redirects are the honest limitation: a `nav` to an allowed origin that redirects elsewhere cannot be stopped, so the policy is re-evaluated on the **settled** URL and the *next* command is refused.
+
+### Destination checking needs `verbs_denied`
+
+`eval` and `raw` can navigate the tab themselves.
+`eval "location='https://bank.example/'"` on an allowed tab issues an authenticated GET to an origin the allow-list would have refused, and no check in front of `nav` and `open` can see it coming.
+What the policy still gives you is that the tab is then off-limits: the next command is refused on the settled origin, so nothing is read back.
+But the request happened.
+
+**So an origin allow-list is only meaningful alongside `verbs_denied = ["eval", "raw"]`**, and that is what `chrome-cdp policy init` writes.
+If you need `eval`, understand that you have kept a verb that can walk out of the boundary and come back — the boundary still bounds what you can *read*, not what you can *reach*.
 
 ### A refusal
 
@@ -553,6 +580,10 @@ chrome-cdp --policy-off click "#save"              # run without the policy — 
 `--allow` narrows; it never unblocks something `deny` or `verbs_denied` refused.
 `--policy-off` exists because a bad policy that cannot be bypassed is worse than none, but it is never implicit: it warns on stderr and lands in the audit log.
 
+`--policy-off` covers the **origin** policy only.
+`upload_roots` stays in force regardless, because it is a filesystem boundary rather than an origin rule: its threat model is a caller that writes the argv, and `--policy-off` is argv.
+Widen the roots or move the file.
+
 ### Audit log
 
 `audit_log` is append-only NDJSON, one record per decision:
@@ -563,6 +594,7 @@ chrome-cdp --policy-off click "#save"              # run without the policy — 
 
 Refusals are always recorded; set `audit_all = true` to record permitted actions too.
 It records the **origin**, never the URL, and never any value — no typed text, no cookie values, no selectors — because a log that captured those would be the most sensitive file this tool produces.
+A URL with no origin to record is written as its scheme plus a placeholder (`file:(unparseable)`, `javascript:(unparseable)`), never as the string itself: a refused URL's query is exactly where a session token lives.
 
 ## Configuration
 
@@ -576,4 +608,8 @@ target = "url:github"  # default tab when neither --target nor `use` is set
 ```
 
 A malformed config is a warning on stderr, not a fatal error — the CLI still runs on the built-ins.
-The one exception is the [`[policy]`](#policy) table: a policy the CLI cannot read makes it refuse to act rather than act unbounded.
+The one exception is the [`[policy]`](#policy) table: a policy the CLI cannot read makes it refuse to act rather than act unbounded, and that covers a file that cannot be *read* (wrong permissions, a bad mount) as well as one that does not parse.
+
+`XDG_CONFIG_HOME` chooses **which** file is read, so an environment that points it at a directory without one leaves you with no `[policy]` table at all.
+No `CHROME_CDP_*` variable can set a policy key, but that is a statement about the table's contents, not about which file supplies them.
+When `XDG_CONFIG_HOME` is set and there is no config file there, the CLI says so on stderr rather than letting a boundary disappear quietly.

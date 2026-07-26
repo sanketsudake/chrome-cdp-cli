@@ -198,11 +198,26 @@ func (a *App) notePolicyOff(verb, rawURL string) {
 	})
 }
 
-// policyChecker returns the effective checker for read-only questions such as
-// `list` redaction, or nil when there is nothing to ask. Enforcement goes
-// through checkPolicy instead, which also audits and can prompt.
+// policyChecker returns the effective checker for the ORIGIN policy's read-only
+// questions — `list` and target redaction — or nil when there is nothing to ask.
+// Enforcement goes through checkPolicy instead, which also audits and can
+// prompt.
+//
+// It honours --policy-off, which is in-model for the origin layer: RFC-0012 says
+// so, and the bypass is warned and audited. upload_roots does NOT come through
+// here; see uploadRoots.
 func (a *App) policyChecker() *policy.Checker {
-	if !a.policyConfigured() || a.policyOff || a.defaults.Policy.Malformed != "" {
+	if a.policyOff {
+		return nil
+	}
+	return a.configuredChecker()
+}
+
+// configuredChecker builds a checker from the configuration as written,
+// ignoring --policy-off. Only the filesystem boundary uses it; everything about
+// origins goes through policyChecker.
+func (a *App) configuredChecker() *policy.Checker {
+	if !a.policyConfigured() || a.defaults.Policy.Malformed != "" {
 		return nil
 	}
 	c, err := policy.New(a.policyConfig())
@@ -225,27 +240,49 @@ func (a *App) redactTab(r tabRow) tabRow {
 	if !c.Active() || c.OriginAllowed(r.URL) {
 		return r
 	}
-	r.Title = ""
-	if o, err := policy.ParseOrigin(r.URL); err == nil && o.Scheme != "" {
-		r.URL = o.Scheme + "://" + o.String()
-	} else {
-		r.URL = originOf(r.URL)
-	}
+	r.Title, r.URL = "", redactedURL(r.URL)
 	return r
 }
 
-// originOf renders a URL as its origin for logs and messages, falling back to
-// the raw string only when there is no host to show.
-func originOf(rawURL string) string {
-	if strings.TrimSpace(rawURL) == "" {
-		return "(browser-level)"
+// redactTarget applies the same reduction to the envelope's `target` field.
+//
+// It is called from the EMIT boundary rather than from each verb, and that is
+// the point of it. `use`, `activate`, `close` and `policy init` are Exempt —
+// they never act on page content, so they are not origin-checked — but they DO
+// resolve a target, and emitting its raw TargetInfo handed back the full URL
+// (query string and all) and the title of a tab the policy covers, for free and
+// with no side effect. Redacting at the one place every envelope passes through
+// means the next Exempt verb cannot forget.
+func (a *App) redactTarget(t *result.TargetInfo) *result.TargetInfo {
+	if t == nil {
+		return nil
 	}
-	o, err := policy.ParseOrigin(rawURL)
-	if err != nil {
-		return rawURL
+	c := a.policyChecker()
+	if !c.Active() || c.OriginAllowed(t.URL) {
+		return t
 	}
-	return o.String()
+	out := *t
+	out.Title, out.URL = "", redactedURL(t.URL)
+	return &out
 }
+
+// redactedURL reduces a URL to its origin, or to a scheme-only placeholder when
+// it has no origin to show.
+func redactedURL(rawURL string) string {
+	if o, err := policy.ParseOrigin(rawURL); err == nil && o.Scheme != "" {
+		return o.Scheme + "://" + o.String()
+	}
+	return originOf(rawURL)
+}
+
+// originOf renders a URL as its origin for logs, messages, and details.
+//
+// It never falls back to the raw string. A file:// path and a data: URL are
+// exactly the tabs the policy covers least, and a refused URL's query string is
+// exactly where a session token lives; either one returned unchanged would land
+// in the append-only audit log, which RFC-0012 requires to record no values at
+// all. policy.Label is the single implementation of that rule.
+func originOf(rawURL string) string { return policy.Label(rawURL) }
 
 // auditRecord is one NDJSON line of the audit log.
 //
@@ -427,6 +464,16 @@ func (a *App) cmdPolicyInit() *cobra.Command {
 	return c
 }
 
+// policyBlock is the starter table `policy init` writes.
+//
+// verbs_denied is ON, not commented out, and that is the one non-obvious line
+// here. `eval` and `raw` can navigate the tab themselves — `eval
+// "location='https://elsewhere/'"` is an authenticated GET to an origin the
+// allow-list would have refused — so destination checking only means anything
+// alongside them being denied. A starter policy that allow-listed one origin and
+// left the two verbs that walk out of it enabled would read as a boundary and
+// not be one. Delete the line if you need them; that is a decision worth making
+// deliberately.
 func policyBlock(entry string) string {
 	return fmt.Sprintf(`
 # Written by `+"`chrome-cdp policy init`"+`. Bounds which origins the CLI may act on.
@@ -434,9 +481,14 @@ func policyBlock(entry string) string {
 [policy]
 enabled = true
 allow = [%q]
-# deny = ["*.bank.example"]      # always refused, even if allow would permit it
+# eval and raw can navigate the tab themselves, so destination checking is only
+# meaningful while they are denied. Remove this line only on purpose.
+verbs_denied = ["eval", "raw"]
+# deny = ["bank.example"]         # always refused, even if allow would permit it;
+#                                 # in deny (unlike allow) "*.bank.example" covers
+#                                 # bank.example itself too
 # read_only = ["*.wikipedia.org"] # reads permitted, actions refused
-# verbs_denied = ["raw"]          # refused on every origin
+# upload_roots = ["~/Documents"]  # directories files may be uploaded from
 # audit_log = "~/.local/state/chrome-cdp/audit.log"
 on_violation = "error"
 `, entry)

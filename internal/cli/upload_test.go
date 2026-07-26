@@ -50,8 +50,12 @@ func (u *uploadCapture) Upload(_ context.Context, _, selector string, paths []st
 	}, nil
 }
 
+// The tab carries a real URL rather than the "u" placeholder the older fixtures
+// use: an active [policy] table now refuses a verb on a tab whose origin it
+// cannot identify, so a placeholder URL would make these tests exercise that
+// rule instead of upload_roots.
 func newUploadCapture() *uploadCapture {
-	return &uploadCapture{fakeBrowser: fakeBrowser{tabs: []target.Info{{ID: "aa11", Title: "A", URL: "u"}}}}
+	return &uploadCapture{fakeBrowser: fakeBrowser{tabs: []target.Info{{ID: "aa11", Title: "A", URL: "https://app.example.com/form"}}}}
 }
 
 // noCallUpload is noCall plus a guard on the verb's own driver method, so a
@@ -550,4 +554,57 @@ func TestUploadRootsComeFromThePolicyTableOnly(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestUploadRootsSurviveAPolicyOff is M8.
+//
+// --policy-off is in the model for the ORIGIN allow-list: RFC-0012 says a bad
+// policy that cannot be bypassed is worse than none, and the bypass is warned
+// and audited. It is NOT in the model for upload_roots. RFC-0006 US-7's threat
+// model is specifically an agent that controls the argv, and --policy-off is
+// argv — a filesystem boundary any caller could switch off with a flag would
+// bound nobody. Before the fix, `upload '#f' ~/.ssh/id_rsa --policy-off` exited
+// 0 against a configured roots list.
+func TestUploadRootsSurviveAPolicyOff(t *testing.T) {
+	t.Parallel()
+	root, p := uploadRootsFixture(t)
+
+	t.Run("outside the roots is still refused", func(t *testing.T) {
+		t.Parallel()
+		env, code := runWithRoots(t, noCallUploadBrowser(t), []string{root},
+			"upload", "#f", p["secret"], "--policy-off", "--target", "aa11", "--json")
+		if code != result.ExitPermission {
+			t.Fatalf("exit = %d, want %d — --policy-off must not lift a filesystem boundary; envelope %v",
+				code, result.ExitPermission, env)
+		}
+		if e := env["error"].(map[string]any); e["code"] != result.CodePermissionDenied {
+			t.Errorf("error.code = %v, want permission_denied", e["code"])
+		}
+	})
+
+	t.Run("inside the roots still works", func(t *testing.T) {
+		t.Parallel()
+		b := newUploadCapture()
+		_, code := runWithRoots(t, b, []string{root},
+			"upload", "#f", p["inside"], "--policy-off", "--target", "aa11", "--json")
+		if code != 0 {
+			t.Fatalf("exit = %d, want 0 — the roots restrict, they do not disable the verb", code)
+		}
+	})
+
+	t.Run("--policy-off still lifts the origin allow-list", func(t *testing.T) {
+		t.Parallel()
+		// The two boundaries are separable, and this is the half that stays
+		// bypassable: a bad allow-list must remain fixable.
+		d := config.Builtin()
+		d.Policy = config.Policy{Present: true, Enabled: true,
+			Allow: []string{"nothing.matches"}, UploadRoots: []string{root}, Source: "test"}
+		b := newUploadCapture()
+		var out, errb bytes.Buffer
+		code := New(b, &out, &errb).WithDefaults(d).
+			Execute("upload", "#f", p["inside"], "--policy-off", "--target", "aa11", "--json")
+		if code != 0 {
+			t.Fatalf("exit = %d, want 0 — the origin allow-list is still bypassable; %s", code, out.String())
+		}
+	})
 }

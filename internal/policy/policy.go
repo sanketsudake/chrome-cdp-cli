@@ -16,10 +16,11 @@
 //     naive implementation is wrong, and they are the first tests in the suite.
 //
 //   - Every ambiguity fails CLOSED. deny beats allow; an unclassified verb is
-//     mutating; an origin that cannot be parsed matches no pattern and is
-//     therefore refused by an allow-list; a pattern that does not parse is a
-//     fatal config error rather than a rule that silently matches nothing.
-//     A policy that fails open is worse than no policy.
+//     mutating; an origin that cannot be parsed is refused whenever the checker
+//     is active AT ALL — a deny-list can no more prove a URL is not the denied
+//     origin than an allow-list can prove it is — and a pattern that does not
+//     parse is a fatal config error rather than a rule that silently matches
+//     nothing. A policy that fails open is worse than no policy.
 package policy
 
 import (
@@ -338,22 +339,24 @@ func (c *Checker) Check(rawURL, verb string) Decision {
 		}
 	}
 
-	// An origin we cannot parse (about:blank, a data: URL, a chrome:// page) or
-	// a command with no origin at all (a browser-level CDP call) matches no
-	// pattern. Under an allow-list that means refused, which is the fail-closed
-	// answer: we cannot show this is one of the origins you named — and a
-	// browser-level call in particular reaches every tab at once.
+	// An origin we cannot pin down (about:blank, a data: URL, a chrome:// page,
+	// a nesting scheme whose inner URL is itself hostless) or a command with no
+	// origin at all (a browser-level CDP call) is refused whenever the checker is
+	// active, and NOT only under an allow-list.
+	//
+	// "Matches nothing" is the safe outcome under an allow-list and the unsafe
+	// one under a deny-list, so a checker that returned it either way would hand
+	// every deny-list user a bypass: view-source:https://bank.example/x names the
+	// denied origin in plain sight and parses to no host at all. A deny-list can
+	// no more prove a URL is not the denied origin than an allow-list can prove
+	// it is one, and a browser-level call in particular reaches every tab at once.
 	o, err := ParseOrigin(rawURL)
 	if err != nil {
-		if len(c.allow) > 0 || c.requireAllow {
-			reason := fmt.Sprintf("cannot determine an origin for %q, and the policy allow-list permits only named origins", rawURL)
-			if strings.TrimSpace(rawURL) == "" {
-				reason = fmt.Sprintf("%s acts at the browser level rather than on one origin, and the policy allow-list permits only named origins", verb)
-			}
-			return Decision{Rule: "allow: no match", Reason: reason}
+		reason := fmt.Sprintf("cannot determine an origin for %s, and a policy cannot decide about an origin it cannot identify", Label(rawURL))
+		if strings.TrimSpace(rawURL) == "" {
+			reason = fmt.Sprintf("%s acts at the browser level rather than on one origin, which no policy rule can name", verb)
 		}
-		// No allow-list: nothing named this origin, so nothing refuses it.
-		return allowed("")
+		return Decision{Rule: "origin: unresolvable", Reason: reason}
 	}
 
 	if p, ok := matchAny(c.deny, o); ok {
@@ -391,13 +394,18 @@ func (c *Checker) Check(rawURL, verb string) Decision {
 
 // OriginAllowed reports whether an origin passes the allow/deny rules alone,
 // ignoring the verb. `list` uses it to redact tabs the policy does not cover.
+//
+// It agrees with Check on the fail-closed reading: a URL with no identifiable
+// origin is not allowed under an active policy, whatever the shape of the rules.
+// A file:// or data: tab is exactly the tab the policy covers least, so it is
+// the last one whose full URL and title should be handed back.
 func (c *Checker) OriginAllowed(rawURL string) bool {
 	if !c.Active() {
 		return true
 	}
 	o, err := ParseOrigin(rawURL)
 	if err != nil {
-		return len(c.allow) == 0 && !c.requireAllow
+		return false
 	}
 	if _, denied := matchAny(c.deny, o); denied {
 		return false
@@ -434,10 +442,25 @@ type Pattern struct {
 	Raw      string // as written, for the rule string in a refusal
 	Scheme   string // "" matches any scheme
 	Host     string // for a wildcard, the suffix WITHOUT the leading "*."
-	Port     string // "" or "*" matches any port
+	Port     string // "" or "*" matches any port; otherwise canonical digits
 	Wildcard bool
+
+	// MatchApex makes a "*.host" wildcard cover the apex `host` as well.
+	//
+	// It is set for `deny` entries and only for them, because the same exclusion
+	// is right in one list and a trap in the other. In `allow`, excluding the
+	// apex is the strict reading a boundary needs: `*.example.com` must not
+	// quietly widen to example.com itself. In `deny` it is a hole — a user who
+	// writes deny = ["*.bank.example"] means "not my bank", and reading that as
+	// "every subdomain of my bank, but the bank itself is fine" protects them
+	// everywhere except the one host they were thinking of. Over-blocking is the
+	// safe direction in a deny-list, so the wildcard is apex-inclusive there.
+	MatchApex bool
 }
 
+// parsePatterns parses one configured list. `deny` gets apex-inclusive
+// wildcards (see Pattern.MatchApex); allow and read_only keep the strict
+// reading, where "*.host" is a statement about subdomains only.
 func parsePatterns(field string, raw []string) ([]Pattern, error) {
 	out := make([]Pattern, 0, len(raw))
 	for _, s := range raw {
@@ -445,6 +468,7 @@ func parsePatterns(field string, raw []string) ([]Pattern, error) {
 		if err != nil {
 			return nil, fmt.Errorf("policy: %s: %w", field, err)
 		}
+		p.MatchApex = field == "deny"
 		out = append(out, p)
 	}
 	return out, nil
@@ -553,7 +577,25 @@ func splitPort(pattern, colonPort string) (string, error) {
 	if err != nil || n < 1 || n > 65535 {
 		return "", fmt.Errorf("invalid pattern %q: %q is not a port number or *", pattern, port)
 	}
-	return port, nil
+	// Canonical digits, not the text as written: ports are compared as strings,
+	// and a pattern of "host:443" against a URL of "host:0443" would otherwise
+	// simply not match (a free bypass of a deny entry). normalizePort does the
+	// same on the URL side, so both ends of the comparison are canonical.
+	return strconv.Itoa(n), nil
+}
+
+// normalizePort strips a port's leading zeros so "0443" and "443" compare
+// equal. Anything that is not a plain number is returned untouched, since it
+// cannot match a parsed pattern port anyway.
+func normalizePort(port string) string {
+	if port == "" || port == "*" {
+		return port
+	}
+	n, err := strconv.Atoi(port)
+	if err != nil || n < 0 {
+		return port
+	}
+	return strconv.Itoa(n)
 }
 
 func validScheme(s string) bool {
@@ -618,6 +660,9 @@ func (p Pattern) Match(o Origin) bool {
 	if !p.Wildcard {
 		return o.Host == p.Host
 	}
+	if p.MatchApex && o.Host == p.Host {
+		return true
+	}
 	suffix := "." + p.Host
 	return len(o.Host) > len(suffix) && strings.HasSuffix(o.Host, suffix)
 }
@@ -636,7 +681,7 @@ func matchAny(ps []Pattern, o Origin) (Pattern, bool) {
 type Origin struct {
 	Scheme string // lowercased; "" when the URL carried none
 	Host   string // lowercased, with the FQDN root dot stripped
-	Port   string // the port as written; "" when the URL omitted it
+	Port   string // canonical digits ("0443" → "443"); "" when the URL omitted it
 }
 
 // defaultPorts lets a pattern that names a port still match a URL that relies
@@ -659,29 +704,133 @@ func (o Origin) String() string {
 	return o.Host
 }
 
-// ParseOrigin extracts the origin from a URL.
+// ParseOrigin extracts the origin from a URL, as CHROME would resolve it.
 //
-// It fails for anything without a real host — about:blank, data:, chrome://,
-// a bare path — and the caller treats that failure as "matches nothing", which
-// an allow-list turns into a refusal.
+// The "as Chrome would resolve it" is the whole job. A policy decides about the
+// origin the browser will actually act on, so any disagreement between Chrome's
+// parse and this one is a bypass, in whichever direction it happens to fall.
+// Two disagreements are known and handled here, by canonicalize:
+//
+//   - Nesting schemes. view-source:, blob:, and filesystem: carry a whole URL
+//     in their opaque part, so net/url reports no host for them while Chrome
+//     serves the inner origin's authenticated content. They are unwrapped, so
+//     the INNER origin is what gets decided about — which cuts both ways:
+//     view-source: of an allowed origin stays allowed.
+//
+//   - Backslashes in the authority. Chrome normalises `\` to `/` there, so
+//     https://bank.example\@evil.io/ is bank.example with the path /@evil.io/,
+//     while net/url rejects it outright as invalid userinfo.
+//
+// It still fails for anything with no host at all — about:blank, data:, file://,
+// javascript:, chrome:// — and the caller treats that failure as a refusal
+// whenever a policy is active, because a rule cannot decide about an origin it
+// cannot identify.
 func ParseOrigin(rawURL string) (Origin, error) {
-	s := strings.TrimSpace(rawURL)
+	s := canonicalize(rawURL)
 	if s == "" {
 		return Origin{}, fmt.Errorf("empty url")
 	}
 	u, err := url.Parse(s)
 	if err != nil {
-		return Origin{}, fmt.Errorf("unparseable url %q: %w", rawURL, err)
+		return Origin{}, fmt.Errorf("unparseable url: %w", err)
 	}
 	host := u.Hostname()
 	if host == "" {
-		return Origin{}, fmt.Errorf("url %q has no host", rawURL)
+		return Origin{}, fmt.Errorf("url has no host")
 	}
 	// "a.example.com." and "a.example.com" are the same name; without stripping
 	// the root dot a trailing dot would slip past both allow and deny.
 	host = strings.ToLower(strings.TrimSuffix(host, "."))
 	if host == "" {
-		return Origin{}, fmt.Errorf("url %q has no host", rawURL)
+		return Origin{}, fmt.Errorf("url has no host")
 	}
-	return Origin{Scheme: strings.ToLower(u.Scheme), Host: host, Port: u.Port()}, nil
+	return Origin{Scheme: strings.ToLower(u.Scheme), Host: host, Port: normalizePort(u.Port())}, nil
+}
+
+// nestingSchemes carry another URL in their opaque part and serve that inner
+// origin's content. Anything added here must be a scheme where the inner
+// origin is the one whose data is reachable.
+var nestingSchemes = map[string]bool{
+	"view-source": true,
+	"blob":        true,
+	"filesystem":  true,
+}
+
+// maxUnwrap bounds the nesting loop. view-source:view-source:… is legal to
+// write and pointless to follow forever.
+const maxUnwrap = 8
+
+// canonicalize rewrites a URL into the form Chrome resolves: nesting schemes
+// unwrapped to their inner URL, and `\` normalised to `/` in the authority.
+//
+// The two run in one loop because either can hide the other — a
+// view-source: of a backslash URL, or the reverse.
+func canonicalize(rawURL string) string {
+	s := strings.TrimSpace(rawURL)
+	for range maxUnwrap {
+		s = normalizeSlashes(s)
+		i := strings.Index(s, ":")
+		if i <= 0 || !nestingSchemes[strings.ToLower(s[:i])] {
+			return s
+		}
+		s = strings.TrimSpace(s[i+1:])
+	}
+	return s
+}
+
+// normalizeSlashes converts `\` to `/` after the scheme of a URL that has an
+// authority, matching Chrome's URL parser.
+//
+// Replacing every backslash in the remainder — not just the ones in the
+// authority — is deliberate and host-equivalent: the authority ends at the
+// first slash of either kind, so the ones past it only ever touch the path,
+// which no policy rule looks at.
+func normalizeSlashes(s string) string {
+	i := strings.Index(s, ":")
+	if i <= 0 || !validScheme(strings.ToLower(s[:i])) {
+		return s
+	}
+	rest := s[i+1:]
+	if len(rest) < 2 || !isSlash(rest[0]) || !isSlash(rest[1]) {
+		return s
+	}
+	return s[:i+1] + strings.ReplaceAll(rest, `\`, "/")
+}
+
+func isSlash(b byte) bool { return b == '/' || b == '\\' }
+
+// Label renders a URL the way a log record, a refusal message, and a redacted
+// tab row all need it: its origin when it has one, and otherwise the scheme
+// plus a placeholder.
+//
+// It never returns the raw URL. That is the point of it: a URL's query string
+// carries values — session tokens, ids, search terms — and RFC-0012 forbids the
+// audit log from recording values at all. A fallback that returned the string
+// unchanged would put exactly the URLs a policy refused, in full, into the
+// append-only file the feature exists to make safe.
+func Label(rawURL string) string {
+	if strings.TrimSpace(rawURL) == "" {
+		return "(browser-level)"
+	}
+	if o, err := ParseOrigin(rawURL); err == nil {
+		return o.String()
+	}
+	if s := schemeOf(rawURL); s != "" {
+		return s + ":(unparseable)"
+	}
+	return "(unparseable)"
+}
+
+// schemeOf returns the lowercased scheme of a URL, or "" when it has none.
+func schemeOf(rawURL string) string {
+	s := strings.TrimSpace(rawURL)
+	i := strings.Index(s, ":")
+	if i <= 0 {
+		return ""
+	}
+	scheme := strings.ToLower(s[:i])
+	if !validScheme(scheme) {
+		return ""
+	}
+	return scheme
 }

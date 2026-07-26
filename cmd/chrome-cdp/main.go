@@ -57,6 +57,12 @@ func main() {
 	if cfgErr != nil {
 		fmt.Fprintln(os.Stderr, "chrome-cdp: ignoring config:", cfgErr)
 	}
+	// XDG_CONFIG_HOME selects WHICH config file is read, so an environment that
+	// points it at a directory without one silently drops the [policy] table too.
+	// Say so; a boundary that vanishes without a word is worse than none.
+	if note := config.Note(); note != "" {
+		fmt.Fprintln(os.Stderr, note)
+	}
 
 	app := cli.New(nil, os.Stdout, os.Stderr).WithDefaults(defs)
 

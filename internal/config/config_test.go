@@ -286,3 +286,121 @@ func TestPathHonorsXDG(t *testing.T) {
 		t.Errorf("XDG path = %q", got)
 	}
 }
+
+// TestUnreadableConfigIsARefusedPolicy is the fail-open that mattered most.
+//
+// A config file that does not PARSE while mentioning [policy] refuses to run
+// (VS-15). A config file that cannot be READ at all — wrong permissions, a bad
+// mount, an I/O error — used to return the error and leave Policy at its zero
+// value, which short-circuits every check: the CLI printed "ignoring config" and
+// ran unbounded. Same situation, opposite answer. This asserts they now match.
+func TestUnreadableConfigIsARefusedPolicy(t *testing.T) {
+	t.Parallel()
+	if os.Geteuid() == 0 {
+		t.Skip("root can read a 0000 file, so the permission bit proves nothing")
+	}
+	p := writeConfig(t, "[policy]\nallow = [\"*.example.com\"]\n")
+	if err := os.Chmod(p, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(p, 0o600) })
+
+	d, err := ResolveFrom(p, noEnv)
+	if err == nil {
+		t.Fatal("an unreadable config file must still surface an error")
+	}
+	if !d.Policy.Present || !d.Policy.Enabled {
+		t.Fatalf("a policy we could not read must be Present so the CLI refuses, got %+v", d.Policy)
+	}
+	if d.Policy.Malformed == "" {
+		t.Fatalf("a policy we could not read must be Malformed, not silently absent: %+v", d.Policy)
+	}
+	if !strings.Contains(d.Policy.Malformed, "could not be read") {
+		t.Errorf("Malformed = %q, should say the file could not be read", d.Policy.Malformed)
+	}
+	if d.Policy.Source != p {
+		t.Errorf("Source = %q, want the file the user has to fix", d.Policy.Source)
+	}
+	// The rest of the defaults still work: this is a policy refusal, not a brick.
+	if d.Timeout != 30*time.Second {
+		t.Errorf("built-in defaults must survive: %+v", d)
+	}
+}
+
+// TestPolicyTableWithInnerWhitespaceIsDetected is L1: TOML permits `[ policy ]`,
+// and a scan that only knew `[policy]` skipped the fatal-refusal path for a file
+// spelled that way — a fail-open reachable by typing one space.
+func TestPolicyTableWithInnerWhitespaceIsDetected(t *testing.T) {
+	t.Parallel()
+	spellings := []string{
+		"[policy]",
+		"[ policy ]",
+		"[  policy]",
+		"[policy ]",
+		"[ policy.sub ]",
+		"[policy.sub]",
+	}
+	for _, header := range spellings {
+		t.Run(header, func(t *testing.T) {
+			t.Parallel()
+			// A syntax error AFTER the header, so the TOML parse fails and only
+			// the text scan decides whether this is fatal.
+			p := writeConfig(t, header+"\nallow = [\n")
+			d, err := ResolveFrom(p, noEnv)
+			if err == nil {
+				t.Fatal("the file does not parse; want an error")
+			}
+			if !d.Policy.Present || d.Policy.Malformed == "" {
+				t.Errorf("%s + a syntax error must refuse, not fail open: %+v", header, d.Policy)
+			}
+		})
+	}
+	// And the negative: a table that merely starts with "policy" is not one.
+	for _, header := range []string{"[policyx]", "[ policyx ]", "# [ policy ]"} {
+		t.Run("not a policy table: "+header, func(t *testing.T) {
+			t.Parallel()
+			p := writeConfig(t, header+"\nallow = [\n")
+			d, _ := ResolveFrom(p, noEnv)
+			if d.Policy.Present {
+				t.Errorf("%s must not count as a [policy] table: %+v", header, d.Policy)
+			}
+		})
+	}
+}
+
+// TestNoteWarnsWhenXDGPointsSomewhereWithNoConfig covers the other half of the
+// environment problem. No CHROME_CDP_* variable can set a policy key, but
+// XDG_CONFIG_HOME decides WHICH file supplies them — so pointing it at a
+// directory with no config file turns the policy off, with no stderr line, no
+// envelope field, and no exit code to notice it by. It cannot be an error
+// (running without a config file is normal), so it is made visible.
+func TestNoteWarnsWhenXDGPointsSomewhereWithNoConfig(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	env := envFrom(map[string]string{"XDG_CONFIG_HOME": dir})
+	missing := pathFrom(env)
+
+	note := noteFrom(missing, env)
+	if note == "" {
+		t.Fatal("XDG_CONFIG_HOME pointing at a directory with no config file must be reported")
+	}
+	if !strings.Contains(note, missing) || !strings.Contains(note, "policy") {
+		t.Errorf("note = %q, want the path it looked at and what is not in effect", note)
+	}
+
+	// A file that IS there says nothing.
+	if err := os.MkdirAll(filepath.Dir(missing), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(missing, []byte("timeout = \"5s\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if n := noteFrom(missing, env); n != "" {
+		t.Errorf("note = %q, want silence when the config file exists", n)
+	}
+	// And an unset XDG_CONFIG_HOME says nothing either: the default ~/.config
+	// path being empty is the normal case for most users, not a warning.
+	if n := noteFrom(filepath.Join(t.TempDir(), "absent.toml"), noEnv); n != "" {
+		t.Errorf("note = %q, want silence when XDG_CONFIG_HOME is unset", n)
+	}
+}

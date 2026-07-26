@@ -160,8 +160,19 @@ func resolveUploadPaths(args, roots []string, home string) ([]string, *result.Er
 // Either would be worth nothing here: the point is to bound what a misdirected
 // agent can read off the disk, and the agent writes the argv and the
 // environment. It has to come from the user's config file.
+//
+// Which is also why --policy-off does NOT lift it, and why this reads
+// configuredChecker rather than policyChecker. For the origin allow-list,
+// --policy-off is in the threat model: RFC-0012 says a bad policy that cannot be
+// bypassed is worse than none, and the bypass is warned and audited. That
+// argument does not transfer to a directory list. upload_roots answers RFC-0006
+// US-7, whose threat model is specifically an agent that writes the argv — and
+// `--policy-off` is argv. A roots list any caller could switch off by adding a
+// flag would bound nobody, and unlike a pattern list there is no "my policy is
+// wrong and I am locked out" failure it needs an escape hatch for: the fix for a
+// path outside the roots is to widen the roots or move the file.
 func (a *App) uploadRoots() []string {
-	c := a.policyChecker()
+	c := a.configuredChecker()
 	if !c.Active() {
 		return nil
 	}

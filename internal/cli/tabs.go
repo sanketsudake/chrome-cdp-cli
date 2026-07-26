@@ -148,9 +148,14 @@ func (a *App) closeVictims(ctx context.Context, args []string, urlSub, titleSub 
 			Message: fmt.Sprintf("no tab matches %s", filterDesc(urlSub, titleSub)),
 		}
 	case len(hits) > 1 && !all:
+		// The ambiguity error enumerates tabs, which makes it a read of every
+		// matching tab's URL and title — free, side-effect-free, and available to
+		// a caller `close` is never origin-checked for. It gets the same redaction
+		// `list` does, for the same reason.
 		matches := make([]any, 0, len(hits))
 		for _, h := range hits {
-			matches = append(matches, map[string]any{"id": h.ID, "title": h.Title, "url": h.URL})
+			r := a.redactTab(tabRow{ID: h.ID, Title: h.Title, URL: h.URL})
+			matches = append(matches, map[string]any{"id": r.ID, "title": r.Title, "url": r.URL})
 		}
 		return nil, nil, &result.Err{
 			Code: result.CodeAmbiguous,

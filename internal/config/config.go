@@ -8,6 +8,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -29,10 +30,19 @@ type Defaults struct {
 	JSON       bool
 	NoColor    bool
 
-	// Policy is the optional [policy] table (RFC-0012). It is not overridable
-	// by CHROME_CDP_* env vars: a safety boundary that an inherited environment
-	// could widen would not be much of a boundary. Override it explicitly with
-	// --allow / --policy-off instead.
+	// Policy is the optional [policy] table (RFC-0012). No CHROME_CDP_* variable
+	// sets any of its keys: a safety boundary whose CONTENTS an inherited
+	// environment could rewrite would not be much of a boundary. Override it
+	// explicitly with --allow / --policy-off instead.
+	//
+	// It is not, however, immune to the environment, and pretending otherwise
+	// would be the more dangerous claim: XDG_CONFIG_HOME (and HOME) decide WHICH
+	// file is read, so an environment that points them elsewhere selects a
+	// different policy, or none. Nothing here can prevent that — the config file
+	// has to be found somehow — so the disappearance is made visible instead:
+	// Note() reports a config file that XDG_CONFIG_HOME pointed at and that does
+	// not exist, and an unreadable file becomes a Malformed policy the CLI
+	// refuses to run with rather than a policy silently absent.
 	Policy Policy
 }
 
@@ -157,6 +167,22 @@ func applyFile(d *Defaults, path string) error {
 		if os.IsNotExist(err) {
 			return nil
 		}
+		// A file that EXISTS but cannot be read (EACCES, a bad mount, an I/O
+		// error) is the same situation as one that does not parse, and gets the
+		// same answer. Leaving the zero Policy here would mean a config file that
+		// could not be PARSED refuses to run while one that could not be READ runs
+		// wide open — the wrong way round, and a fail-open the user cannot see,
+		// since a chmod is not something they did on purpose today.
+		//
+		// We cannot know whether this file configured a policy, so we assume it
+		// did: over-refusing is recoverable (fix the permissions, or --policy-off),
+		// and under-refusing is the failure this whole layer exists to prevent.
+		d.Policy = Policy{
+			Present:   true,
+			Enabled:   true,
+			Source:    path,
+			Malformed: "config file could not be read: " + err.Error(),
+		}
 		return err
 	}
 	var f file
@@ -213,6 +239,13 @@ func applyFile(d *Defaults, path string) error {
 	return nil
 }
 
+// policyHeader matches a [policy] or [policy.sub] table header.
+//
+// The inner whitespace is not cosmetic: TOML permits `[ policy ]`, and a scan
+// that only knew `[policy]` would skip the fatal-refusal path for a file spelled
+// that way — a fail-open reachable by a space.
+var policyHeader = regexp.MustCompile(`^\[\s*policy\s*[\].]`)
+
 // mentionsPolicyTable reports whether an unparseable config file contains a
 // [policy] header, ignoring comments. It is a text scan precisely because the
 // TOML parse already failed; the only decision it drives is "refuse" rather than
@@ -223,11 +256,33 @@ func mentionsPolicyTable(body string) bool {
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
-		if strings.HasPrefix(line, "[policy]") || strings.HasPrefix(line, "[policy.") {
+		if policyHeader.MatchString(line) {
 			return true
 		}
 	}
 	return false
+}
+
+// Note returns a one-line advisory about the config file, or "" when there is
+// nothing to say. The CLI prints it to stderr before running.
+//
+// It exists for one case: XDG_CONFIG_HOME is set and names a directory with no
+// config file in it. That is how a policy disappears without anyone noticing —
+// the CLI does not stop working, it simply stops being bounded, and there is no
+// envelope field and no exit code to catch it. It cannot be made an error
+// (running without a config file is the normal case for most users), so it is
+// made visible.
+func Note() string { return noteFrom(Path(), os.Getenv) }
+
+func noteFrom(path string, getenv func(string) string) string {
+	if getenv("XDG_CONFIG_HOME") == "" || path == "" {
+		return ""
+	}
+	if _, err := os.Stat(path); err == nil {
+		return ""
+	}
+	return "chrome-cdp: no config file at " + path +
+		" (XDG_CONFIG_HOME is set) — any [policy] table elsewhere is NOT in effect"
 }
 
 // applyPolicy copies the decoded [policy] table onto d.
