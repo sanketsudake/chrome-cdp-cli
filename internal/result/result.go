@@ -14,6 +14,7 @@ const (
 	ExitTarget     = 4 // selector not found, nav/wait timeout, ambiguous/unknown target
 	ExitCDP        = 5 // a CDP method returned an error
 	ExitDaemon     = 6 // daemon not running / already running / stale lock
+	ExitPermission = 7 // refused by policy (origin, verb, or upload root)
 )
 
 // Stable error.code strings emitted in the envelope's error object. Named so
@@ -29,6 +30,11 @@ const (
 	CodeNoTarget       = "no_current_target"
 	CodeCDP            = "cdp_error"
 	CodeDaemon         = "daemon_error"
+	// CodePermissionDenied is the policy layer's refusal (RFC-0012, RFC-0006).
+	// It is deliberately distinct from a target error: an agent must be able to
+	// tell "policy forbids this, do not retry, tell the user" from "element not
+	// found, retry differently".
+	CodePermissionDenied = "permission_denied"
 )
 
 // codeToExit maps stable error.code strings to their process exit code.
@@ -43,6 +49,8 @@ var codeToExit = map[string]int{
 	CodeNoTarget:       ExitTarget,
 	CodeCDP:            ExitCDP,
 	CodeDaemon:         ExitDaemon,
+
+	CodePermissionDenied: ExitPermission,
 }
 
 // ExitCodeDoc documents one exit code for `chrome-cdp exit-codes`.
@@ -62,6 +70,7 @@ func ExitCodes() []ExitCodeDoc {
 		{ExitTarget, "target/timeout (selector not found, timeout, ambiguous/unknown target)"},
 		{ExitCDP, "cdp protocol error"},
 		{ExitDaemon, "daemon error"},
+		{ExitPermission, "permission denied by policy (origin, verb, or upload root)"},
 	}
 }
 

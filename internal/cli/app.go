@@ -46,6 +46,25 @@ type App struct {
 	verbose     bool
 	noColor     bool
 	noInput     bool
+	allowFlag   []string // --allow: one-off origin allow-list, replacing the configured one
+	policyOff   bool     // --policy-off: explicit, logged, never implicit
+
+	// verbPath is the running command's full cobra path minus the root
+	// ("click", "cookie set"), captured per Execute in PersistentPreRun. It is
+	// the key the policy classification table is written in.
+	verbPath string
+	// policyOffNoted keeps one command's bypass to one warning and one audit
+	// record, even when it is checked more than once (nav checks both its
+	// destination and the tab it starts on). Reset per Execute alongside
+	// verbPath.
+	policyOffNoted bool
+
+	// policy test seams: the interactive check and the question itself. Real
+	// runs leave both nil, so an unconfigured CLI carries no policy state at
+	// all; a test sets them to drive the on_violation = "prompt" path without a
+	// terminal.
+	policyTTY func() bool
+	policyAsk func(question string) bool
 
 	// effective flag defaults (built-in unless main injects config+env via
 	// WithDefaults); read once when the flags are registered.
@@ -190,6 +209,11 @@ func (a *App) sticky() string {
 // resolveTarget maps --target (or the sticky current target) to a concrete tab
 // and returns the connected Browser to act on it with.
 func (a *App) resolveTarget(ctx context.Context) (*result.TargetInfo, chrome.Browser, *result.Err) {
+	// A policy the CLI could not read refuses before anything else: it cannot
+	// have permitted this command, so there is nothing worth connecting for.
+	if perr := a.checkPolicyConfig(a.policyVerb()); perr != nil {
+		return nil, nil, perr
+	}
 	// Precedence: explicit --target > sticky current target (set by `use`) >
 	// a persisted config/env default target.
 	spec := a.targetFlag
@@ -215,6 +239,14 @@ func (a *App) resolveTarget(ctx context.Context) (*result.TargetInfo, chrome.Bro
 	info, rerr := target.Resolve(spec, tabs)
 	if rerr != nil {
 		return nil, nil, &result.Err{Code: rerr.Code, Message: rerr.Message}
+	}
+	// The policy check goes HERE — after the target is known (we need its
+	// origin) and before any caller can act on it. Every verb that touches a
+	// tab comes through this function, so a new one cannot bypass the boundary
+	// by forgetting to call the hook; a redirect is caught too, because the
+	// origin checked is the tab's SETTLED url at the moment the command runs.
+	if perr := a.checkPolicy(a.policyVerb(), info.URL); perr != nil {
+		return nil, nil, perr
 	}
 	return &result.TargetInfo{ID: info.ID, Title: info.Title, URL: info.URL}, b, nil
 }

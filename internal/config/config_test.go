@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -138,6 +139,144 @@ func TestMalformedConfigSurfacesErrorButStillUsable(t *testing.T) {
 	if d.By != "id" {
 		t.Errorf("env should still apply after parse failure: %q", d.By)
 	}
+}
+
+// TestNoPolicyTableIsInert is US-5 at the config layer: an existing config with
+// no [policy] table must not acquire one by accident.
+func TestNoPolicyTableIsInert(t *testing.T) {
+	t.Parallel()
+	p := writeConfig(t, "timeout = \"5s\"\n")
+	d, err := ResolveFrom(p, noEnv)
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if d.Policy.Present {
+		t.Errorf("policy present with no [policy] table: %+v", d.Policy)
+	}
+	if d.Policy.Malformed != "" {
+		t.Errorf("policy malformed with no table: %q", d.Policy.Malformed)
+	}
+}
+
+func TestPolicyTableIsRead(t *testing.T) {
+	t.Parallel()
+	p := writeConfig(t, `
+timeout = "5s"
+
+[policy]
+allow = ["*.workday.com", "intranet.corp.local"]
+deny = ["*.bank.example"]
+read_only = ["*.wikipedia.org"]
+verbs_denied = ["raw"]
+upload_roots = ["~/Documents/receipts"]
+audit_log = "/tmp/audit.log"
+audit_all = true
+on_violation = "prompt"
+`)
+	d, err := ResolveFrom(p, noEnv)
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	pol := d.Policy
+	if !pol.Present || !pol.Enabled {
+		t.Fatalf("a present [policy] table defaults to enabled: %+v", pol)
+	}
+	if len(pol.Allow) != 2 || pol.Allow[0] != "*.workday.com" {
+		t.Errorf("allow = %v", pol.Allow)
+	}
+	if len(pol.Deny) != 1 || len(pol.ReadOnly) != 1 || len(pol.VerbsDenied) != 1 || len(pol.UploadRoots) != 1 {
+		t.Errorf("list keys not read: %+v", pol)
+	}
+	if pol.AuditLog != "/tmp/audit.log" || !pol.AuditAll || pol.OnViolation != "prompt" {
+		t.Errorf("scalar keys not read: %+v", pol)
+	}
+	if pol.Source != p {
+		t.Errorf("Source = %q, want the config path %q", pol.Source, p)
+	}
+	// The rest of the file still applies.
+	if d.Timeout != 5*time.Second {
+		t.Errorf("timeout = %v", d.Timeout)
+	}
+}
+
+func TestPolicyEnabledFalseIsHonored(t *testing.T) {
+	t.Parallel()
+	p := writeConfig(t, "[policy]\nenabled = false\nallow = [\"a.test\"]\n")
+	d, _ := ResolveFrom(p, noEnv)
+	if !d.Policy.Present || d.Policy.Enabled {
+		t.Errorf("enabled = false must be honored: %+v", d.Policy)
+	}
+}
+
+// TestPolicyIsNotEnvOverridable keeps a safety boundary out of reach of an
+// inherited environment.
+func TestPolicyIsNotEnvOverridable(t *testing.T) {
+	t.Parallel()
+	p := writeConfig(t, "[policy]\nallow = [\"a.test\"]\n")
+	env := envFrom(map[string]string{
+		"CHROME_CDP_POLICY":         "off",
+		"CHROME_CDP_POLICY_ENABLED": "false",
+		"CHROME_CDP_POLICY_ALLOW":   "*",
+	})
+	d, _ := ResolveFrom(p, env)
+	if !d.Policy.Enabled || len(d.Policy.Allow) != 1 || d.Policy.Allow[0] != "a.test" {
+		t.Errorf("env must not be able to widen or disable a policy: %+v", d.Policy)
+	}
+}
+
+// TestMalformedPolicyIsRecordedNotSwallowed is the config half of VS-15.
+//
+// The repo's rule for a bad config is "warn and continue on the built-ins".
+// Applied to a policy that means running wide open with the user believing they
+// are bounded, so both a file that does not parse while mentioning [policy] and
+// an unrecognised key inside the table are recorded for the CLI to refuse on.
+func TestMalformedPolicyIsRecordedNotSwallowed(t *testing.T) {
+	t.Parallel()
+	t.Run("unknown key in the table", func(t *testing.T) {
+		t.Parallel()
+		p := writeConfig(t, "[policy]\nallowed = [\"*.example.com\"]\n")
+		d, err := ResolveFrom(p, noEnv)
+		if err != nil {
+			t.Fatalf("the file parses as TOML: %v", err)
+		}
+		if d.Policy.Malformed == "" {
+			t.Fatal("a typo'd policy key must not be silently ignored")
+		}
+		if !strings.Contains(d.Policy.Malformed, "allowed") {
+			t.Errorf("Malformed = %q, should name the offending key", d.Policy.Malformed)
+		}
+	})
+	t.Run("file does not parse but mentions policy", func(t *testing.T) {
+		t.Parallel()
+		p := writeConfig(t, "timeout = \"5s\"\n[policy]\nallow = [\n")
+		d, err := ResolveFrom(p, noEnv)
+		if err == nil {
+			t.Fatal("a broken file should still surface a parse error")
+		}
+		if !d.Policy.Present || d.Policy.Malformed == "" {
+			t.Fatalf("a policy we cannot read must be refused, not skipped: %+v", d.Policy)
+		}
+	})
+	t.Run("file does not parse and has no policy", func(t *testing.T) {
+		t.Parallel()
+		p := writeConfig(t, "timeout = \"5s\"\nthis is not valid toml =\n")
+		d, err := ResolveFrom(p, noEnv)
+		if err == nil {
+			t.Fatal("want a parse error")
+		}
+		// Unchanged behaviour for everyone who never configured a policy.
+		if d.Policy.Present || d.Policy.Malformed != "" {
+			t.Errorf("a broken config with no policy must stay a warning: %+v", d.Policy)
+		}
+	})
+	t.Run("commented-out policy table", func(t *testing.T) {
+		t.Parallel()
+		p := writeConfig(t, "# [policy]\nthis is not valid toml =\n")
+		d, _ := ResolveFrom(p, noEnv)
+		if d.Policy.Present {
+			t.Error("a commented-out [policy] header must not count as a policy")
+		}
+	})
 }
 
 func TestPathHonorsXDG(t *testing.T) {

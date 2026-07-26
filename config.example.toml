@@ -21,3 +21,30 @@
 # Selector defaults
 # by = "css"            # selector syntax: css | id | search | jspath | css-all
 # wait = "visible"      # wait condition: visible | ready | enabled
+
+# Domain policy — bounds which origins chrome-cdp may act on.
+#
+# Off unless this table exists; with no [policy] table nothing changes. It
+# bounds a COOPERATIVE caller (a confused agent, an unread recipe) and is not a
+# sandbox: anything that can run chrome-cdp can also edit this file.
+#
+# Unlike every other key here, a [policy] table the CLI cannot parse is FATAL —
+# it refuses to act rather than act unbounded. Run `chrome-cdp policy init` to
+# generate a starting point from the tab you are on.
+#
+# Patterns are [scheme://]host[:port], matched on the parsed URL's host:
+#   example.com     exactly that host, any scheme or port
+#   *.example.com   any subdomain — but NOT example.com itself
+#   localhost:*     that host on any port
+#   https://x.test  only over https
+#
+# [policy]
+# enabled = true
+# allow = ["*.workday.com", "localhost:*"]  # empty = everything except `deny`
+# deny = ["*.bank.example"]                 # always refused; beats `allow`
+# read_only = ["*.wikipedia.org"]           # reads permitted, actions refused
+# verbs_denied = ["raw"]                    # refused on every origin
+# upload_roots = ["~/Documents/receipts"]   # directories files may be uploaded from
+# audit_log = "~/.local/state/chrome-cdp/audit.log"  # NDJSON; never records values
+# audit_all = false                         # also log permitted actions
+# on_violation = "error"                    # error | prompt (prompt refuses when there is no TTY)

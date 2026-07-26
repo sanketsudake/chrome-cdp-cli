@@ -57,6 +57,9 @@ func (StubBrowser) Select(context.Context, string, string, string, chrome.Select
 func (StubBrowser) Fill(context.Context, string, string, string, chrome.QueryOpts) (map[string]any, error) {
 	return map[string]any{"filled": true}, nil
 }
+func (StubBrowser) Upload(context.Context, string, string, []string, chrome.UploadOpts) (map[string]any, error) {
+	return map[string]any{"files": []any{}, "count": 0, "change_fired": true}, nil
+}
 func (StubBrowser) Values(context.Context, string, string, chrome.QueryOpts) (map[string]any, error) {
 	return map[string]any{"values": []any{}, "count": 0}, nil
 }

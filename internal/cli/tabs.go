@@ -35,7 +35,7 @@ func (a *App) cmdActivate() *cobra.Command {
 			defer cancel()
 			tgt, b, rerr := a.resolvePositional(ctx, args)
 			if rerr != nil {
-				a.emitErr("activate", rerr.Code, rerr.Message, nil)
+				a.emitErr("activate", rerr.Code, rerr.Message, rerr.Details)
 				return nil
 			}
 			res, err := b.Activate(ctx, tgt.ID)

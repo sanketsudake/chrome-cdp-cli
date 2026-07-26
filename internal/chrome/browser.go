@@ -125,6 +125,25 @@ const (
 	PointerDrag     PointerAction = "drag"
 )
 
+// UploadOpts controls the `upload` verb — attaching local files to a file input
+// via DOM.setFileInputFiles.
+//
+// There is no "click the input first" option and there never will be: clicking a
+// file input opens the NATIVE OS file dialog, which lives outside the page, is
+// invisible to CDP, blocks the browser's main thread, and — unlike a JavaScript
+// dialog, which --on-dialog handles — has no CDP method that can dismiss it.
+type UploadOpts struct {
+	// Append adds to the files this session already set on the input instead of
+	// replacing them. It can only be honoured for files this CLI set itself:
+	// setFileInputFiles replaces the FileList wholesale, and the existing
+	// entries' PATHS are not readable back from the DOM (File.name is the bare
+	// name by design). Appending to an input whose prior contents are unknown is
+	// a usage error rather than a guess.
+	Append bool
+
+	Query QueryOpts
+}
+
 // SnapOpts filters an accessibility snapshot server-side, so a read returns just
 // the relevant nodes instead of the whole tree. Alerts/focused stay page-wide.
 type SnapOpts struct {
@@ -287,6 +306,11 @@ type Browser interface {
 	Scroll(ctx context.Context, targetID, selector string, opts ScrollOpts) (map[string]any, error)
 	Type(ctx context.Context, targetID, selector, text string, q QueryOpts) (map[string]any, error)
 	Fill(ctx context.Context, targetID, selector, value string, q QueryOpts) (map[string]any, error)
+	// Upload attaches local files to a file input. The paths must already be
+	// absolute, existing, readable files — CDP requires absolute paths, and the
+	// CLI validates them before connecting so a bad path never costs a
+	// connection. The result reports the files READ BACK from the input.
+	Upload(ctx context.Context, targetID, selector string, paths []string, opts UploadOpts) (map[string]any, error)
 	HTML(ctx context.Context, targetID, selector string, inner bool, q QueryOpts) (map[string]any, error)
 	Text(ctx context.Context, targetID, selector string, opts TextOpts) (map[string]any, error)
 	Value(ctx context.Context, targetID, selector string, q QueryOpts) (map[string]any, error)

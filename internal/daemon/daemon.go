@@ -173,6 +173,8 @@ func (s *server) dispatch(ctx context.Context, method string, args []json.RawMes
 		return b.Select(ctx, argStr(args, 0), argStr(args, 1), argStr(args, 2), argSel(args, 3))
 	case "Fill":
 		return b.Fill(ctx, argStr(args, 0), argStr(args, 1), argStr(args, 2), argQ(args, 3))
+	case "Upload":
+		return b.Upload(ctx, argStr(args, 0), argStr(args, 1), argStrs(args, 2), argUpload(args, 3))
 	case "Values":
 		return b.Values(ctx, argStr(args, 0), argStr(args, 1), argQ(args, 2))
 	case "Grid":
@@ -277,6 +279,7 @@ func argKeyOpts(a []json.RawMessage, i int) chrome.KeyOpts     { return arg[chro
 func argPointer(a []json.RawMessage, i int) chrome.PointerOpts { return arg[chrome.PointerOpts](a, i) }
 func argShot(a []json.RawMessage, i int) chrome.ShotOpts       { return arg[chrome.ShotOpts](a, i) }
 func argPDF(a []json.RawMessage, i int) chrome.PDFOpts         { return arg[chrome.PDFOpts](a, i) }
+func argUpload(a []json.RawMessage, i int) chrome.UploadOpts   { return arg[chrome.UploadOpts](a, i) }
 func argMap(a []json.RawMessage, i int) map[string]string      { return arg[map[string]string](a, i) }
 
 func argRaw(a []json.RawMessage, i int) json.RawMessage {
@@ -419,6 +422,10 @@ func (r *remoteBrowser) Select(ctx context.Context, id, field, option string, op
 func (r *remoteBrowser) Fill(ctx context.Context, id, selector, value string, q chrome.QueryOpts) (map[string]any, error) {
 	var out map[string]any
 	return out, r.c.call(ctx, "Fill", &out, id, selector, value, q)
+}
+func (r *remoteBrowser) Upload(ctx context.Context, id, selector string, paths []string, opts chrome.UploadOpts) (map[string]any, error) {
+	var out map[string]any
+	return out, r.c.call(ctx, "Upload", &out, id, selector, paths, opts)
 }
 func (r *remoteBrowser) Values(ctx context.Context, id, selector string, q chrome.QueryOpts) (map[string]any, error) {
 	var out map[string]any

@@ -34,10 +34,16 @@ func (a *App) newRoot() *cobra.Command {
 		Version:       Version, // enables `--version`; the `version` subcommand prints it bare
 		SilenceUsage:  true,
 		SilenceErrors: true,
-		PersistentPreRun: func(*cobra.Command, []string) {
+		PersistentPreRun: func(cmd *cobra.Command, _ []string) {
 			if a.start.IsZero() {
 				a.start = time.Now()
 			}
+			// The full command path minus the root is the key the policy
+			// classification table is written in, so `cookie set` classifies
+			// apart from `cookie list`. Captured per Execute, which is what
+			// makes it reset between `session` lines.
+			a.verbPath = strings.TrimPrefix(cmd.CommandPath(), cmd.Root().Name()+" ")
+			a.policyOffNoted = false
 		},
 	}
 	// d holds the effective flag defaults (built-in, overlaid by the config
@@ -64,14 +70,20 @@ func (a *App) newRoot() *cobra.Command {
 	pf.BoolVarP(&a.verbose, "verbose", "v", false, "verbose diagnostics on stderr")
 	pf.BoolVar(&a.noColor, "no-color", d.NoColor, "plain output (also honors $NO_COLOR)")
 	pf.BoolVar(&a.noInput, "no-input", false, "never prompt (the CLI is non-interactive already)")
+	// The policy layer (RFC-0012) is off unless configured; these are the
+	// one-off overrides. --allow replaces the configured allow-list for this
+	// invocation, and --policy-off is the explicit, logged escape hatch that
+	// keeps a bad policy from being worse than no policy.
+	pf.StringArrayVar(&a.allowFlag, "allow", nil, "policy: only act on these origin patterns (repeatable; e.g. '*.example.com', 'localhost:*')")
+	pf.BoolVar(&a.policyOff, "policy-off", false, "policy: do not enforce the configured policy for this command (explicit and logged)")
 
 	root.AddCommand(
 		a.cmdList(), a.cmdOpen(), a.cmdUse(), a.cmdNav(), a.cmdActivate(), a.cmdClose(), a.cmdEval(), a.cmdSnap(),
 		a.cmdHTML(), a.cmdText(), a.cmdValue(),
 		a.cmdClick(), a.cmdHover(), a.cmdDblClick(), a.cmdRClick(), a.cmdDrag(), a.cmdKey(),
-		a.cmdType(), a.cmdFill(), a.cmdSelect(), a.cmdGrid(), a.cmdScroll(), a.cmdAttr(), a.cmdScreenshot(), a.cmdPDF(),
+		a.cmdType(), a.cmdFill(), a.cmdSelect(), a.cmdUpload(), a.cmdGrid(), a.cmdScroll(), a.cmdAttr(), a.cmdScreenshot(), a.cmdPDF(),
 		a.cmdCookie(), a.cmdHeaders(), a.cmdEmulate(), a.cmdFrame(), a.cmdWait(), a.cmdRaw(),
-		a.cmdSession(), a.cmdDoctor(), a.cmdDaemon(), a.cmdExitCodes(), a.cmdVersion(),
+		a.cmdSession(), a.cmdDoctor(), a.cmdDaemon(), a.cmdPolicy(), a.cmdExitCodes(), a.cmdVersion(),
 	)
 	return root
 }
@@ -158,7 +170,7 @@ func (a *App) cmdList() *cobra.Command {
 				if !containsFold(t.URL, urlSub) || !containsFold(t.Title, titleSub) {
 					continue
 				}
-				rows = append(rows, tabRow{Idx: i + 1, ID: t.ID, Title: t.Title, URL: t.URL})
+				rows = append(rows, a.redactTab(tabRow{Idx: i + 1, ID: t.ID, Title: t.Title, URL: t.URL}))
 			}
 			a.emitOK("list", nil, map[string]any{"tabs": rows})
 			return nil
@@ -177,7 +189,7 @@ func (a *App) cmdUse() *cobra.Command {
 			defer cancel()
 			tgt, _, rerr := a.resolvePositional(ctx, args)
 			if rerr != nil {
-				a.emitErr("use", rerr.Code, rerr.Message, nil)
+				a.emitErr("use", rerr.Code, rerr.Message, rerr.Details)
 				return nil
 			}
 			if a.stickySet == nil {
@@ -200,6 +212,12 @@ func (a *App) cmdOpen() *cobra.Command {
 	return &cobra.Command{
 		Use: "open <url>", Short: "Open a new tab at a URL and make it the current tab", Args: cobra.ExactArgs(1),
 		RunE: func(_ *cobra.Command, args []string) error {
+			// `open` resolves no target, so this is its only enforcement point:
+			// the destination is checked before Chrome is contacted.
+			if perr := a.checkPolicy(a.policyVerb(), args[0]); perr != nil {
+				a.emitErr("open", perr.Code, perr.Message, perr.Details)
+				return nil
+			}
 			ctx, cancel := a.ctx()
 			defer cancel()
 			b, berr := a.getBrowser(ctx)
@@ -237,6 +255,19 @@ func (a *App) cmdNav() *cobra.Command {
 			if msg := nf.validate(len(args)); msg != "" {
 				a.emitErr("nav", result.CodeUsage, msg, nil)
 				return nil
+			}
+			// A navigation is checked against its DESTINATION, before the
+			// browser is contacted at all: the boundary would be worth nothing
+			// if it could be stepped around by navigating somewhere disallowed
+			// first and acting there afterwards (RFC-0012 US-7). History moves
+			// have no destination to check ahead of time, so they are checked
+			// against the tab's current origin in resolveTarget like every
+			// other verb, and wherever they land is caught by the next command.
+			if len(args) == 1 {
+				if perr := a.checkPolicy(a.policyVerb(), args[0]); perr != nil {
+					a.emitErr("nav", perr.Code, perr.Message, perr.Details)
+					return nil
+				}
 			}
 			return a.targetAction("nav", nf.act)(cmd, args)
 		},
@@ -585,6 +616,19 @@ func (a *App) cmdRaw() *cobra.Command {
 	c := &cobra.Command{
 		Use: "raw <domain.method> [params-json]", Short: "Call any raw CDP method", Args: cobra.MaximumNArgs(2),
 		RunE: func(_ *cobra.Command, args []string) error {
+			// `raw --list` and `raw --browser` run at the BROWSER level and
+			// never resolve a tab, so they would slip past the enforcement
+			// point in resolveTarget. They are checked here instead, with no
+			// origin: a browser-level CDP call can reach every tab at once, so
+			// under an allow-list "we cannot name an origin for this" is the
+			// fail-closed answer, and verbs_denied = ["raw"] has to mean raw,
+			// not raw-except-its-most-powerful-form.
+			if listDomains || browserLevel {
+				if perr := a.checkPolicy(a.policyVerb(), ""); perr != nil {
+					a.emitErr("raw", perr.Code, perr.Message, perr.Details)
+					return nil
+				}
+			}
 			ctx, cancel := a.ctx()
 			defer cancel()
 
@@ -625,7 +669,7 @@ func (a *App) cmdRaw() *cobra.Command {
 			}
 			tgt, b, rerr := a.resolveTarget(ctx)
 			if rerr != nil {
-				a.emitErr("raw", rerr.Code, rerr.Message, nil)
+				a.emitErr("raw", rerr.Code, rerr.Message, rerr.Details)
 				return nil
 			}
 			a.emitRaw(ctx, tgt, b, tgt.ID, args[0], params)
@@ -654,7 +698,7 @@ func (a *App) targetAction(command string, fn func(ctx context.Context, b chrome
 		defer cancel()
 		tgt, b, rerr := a.resolveTarget(ctx)
 		if rerr != nil {
-			a.emitErr(command, rerr.Code, rerr.Message, nil)
+			a.emitErr(command, rerr.Code, rerr.Message, rerr.Details)
 			return nil
 		}
 		res, err := fn(ctx, b, tgt.ID, args)
