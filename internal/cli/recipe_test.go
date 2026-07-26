@@ -97,7 +97,7 @@ func (b *recordingBrowser) Wait(_ context.Context, id string, cond chrome.WaitCo
 	return map[string]any{"waited": "idle"}, nil
 }
 
-func (b *recordingBrowser) Text(_ context.Context, id, sel string, _ chrome.QueryOpts) (map[string]any, error) {
+func (b *recordingBrowser) Text(_ context.Context, id, sel string, _ chrome.TextOpts) (map[string]any, error) {
 	b.calls = append(b.calls, fmt.Sprintf("Text(%s,%s)", id, sel))
 	return map[string]any{"text": "hello"}, nil
 }

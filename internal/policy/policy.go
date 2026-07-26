@@ -79,6 +79,16 @@ var verbClass = map[string]Class{
 
 	// Meta and batch. `session` re-enters the command tree per NDJSON line, and
 	// each of those lines is checked on its own.
+	// recipe run is Exempt for the same reason session is: it touches no tab
+	// itself, it re-enters the command tree per step, and EACH of those steps is
+	// classified and checked on its own. Classifying the wrapper as Mutating
+	// would refuse a recipe made entirely of reads on a read_only origin, while
+	// classifying it as Reading would be a lie — so the wrapper abstains and the
+	// steps decide. list/show/new never reach a browser at all.
+	"recipe list":   Exempt,
+	"recipe show":   Exempt,
+	"recipe new":    Exempt,
+	"recipe run":    Exempt,
 	"session":       Exempt,
 	"doctor":        Exempt,
 	"daemon start":  Exempt,

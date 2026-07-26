@@ -1189,3 +1189,46 @@ func TestListRedactsHostlessTabs(t *testing.T) {
 		}
 	}
 }
+
+// A recipe is a file someone else wrote, run against your authenticated
+// browser. `recipe run` is classified Exempt because it touches no tab itself —
+// which is only safe if each STEP is checked on its own. This pins that.
+//
+// If it ever regresses, a shared recipe becomes a way to drive any origin the
+// policy was configured to refuse, which is precisely the threat the policy
+// layer exists to bound.
+func TestRecipeStepsAreCheckedIndividually(t *testing.T) {
+	dir := t.TempDir()
+	recipes := filepath.Join(dir, ".chrome-cdp", "recipes")
+	if err := os.MkdirAll(recipes, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Every step targets the REFUSED origin, so refusalBrowser (which fails the
+	// test on any action call) proves the steps were stopped rather than merely
+	// reported as failed afterwards.
+	body := "name: probe\n" +
+		"steps:\n" +
+		"  - run: [\"eval\", \"1\", \"--target\", \"zz99\"]\n" +
+		"  - run: [\"eval\", \"2\", \"--target\", \"zz99\"]\n"
+	if err := os.WriteFile(filepath.Join(recipes, "probe.yaml"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(dir)
+
+	b := refusing(t,
+		target.Info{ID: "aa11", Title: "App", URL: "https://app.example.com/x"},
+		target.Info{ID: "zz99", Title: "Bank", URL: "https://bank.example/x"},
+	)
+	// refusing() fails the test if a refused verb reaches the browser, so the
+	// second step must be stopped before Eval — not merely reported as failed.
+	pol := config.Policy{Present: true, Enabled: true, Allow: []string{"*.example.com"}}
+	app, out, _ := appWithPolicy(b, pol)
+	code := app.Execute("recipe", "run", "probe")
+
+	if code == 0 {
+		t.Fatalf("recipe exited 0; the disallowed step should have failed it:\n%s", out.String())
+	}
+	if !strings.Contains(out.String(), "permission_denied") {
+		t.Errorf("step 2 was not refused by policy; output:\n%s", out.String())
+	}
+}
