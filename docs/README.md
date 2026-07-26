@@ -17,6 +17,11 @@ From there:
 
 - **[Using chrome-cdp from an AI agent](using-with-ai-agents.md)** — why the JSON envelope, exit codes, and accessibility reads make this a good agent tool, and the guardrails to keep.
 
+## For contributors
+
+- **[RFCs](rfc/README.md)** — design proposals for what's next, in priority order, each with user stories and a verification plan.
+  Start here if you want to pick something up.
+
 ---
 
 Missing a scenario you'd find useful?
