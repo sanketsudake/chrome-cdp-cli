@@ -76,6 +76,13 @@ type App struct {
 	// session's one-envelope-per-line contract and must fail as usage instead.
 	inSession bool
 
+	// inRecipe is set while `recipe run` is executing a plan's steps through
+	// the command tree. Like inSession it is not a flag; it is how a step that
+	// re-enters `recipe run` is refused. The load-time reserved-verb check can
+	// only see one file, so recursion through the exec path — which cost 8 GB
+	// of RSS in 8 seconds before this existed — has to be caught by the runner.
+	inRecipe bool
+
 	// injected sticky-target store, keyed lazily by the connection so distinct
 	// endpoints (--port) don't share a current target (nil in tests).
 	stickyGet func(ConnOpts) string

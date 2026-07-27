@@ -625,6 +625,33 @@ func TestSessionCanRunARecipe(t *testing.T) {
 	}
 }
 
+// Recursion is a runner property, not a file property: the load-time
+// reserved-verb check reads argv[0] of one recipe and cannot see what a step's
+// command re-enters. A `recipe run` reached from inside a running recipe is
+// refused before any step executes.
+func TestRecipeRefusesToRunInsideARunningRecipe(t *testing.T) {
+	project, _ := isolateRecipes(t)
+	writeRecipe(t, project, "three", threeStep)
+
+	b := &recordingBrowser{}
+	var out, errb bytes.Buffer
+	app := New(b, &out, &errb)
+	// As if a step had re-entered the command tree — which is what the leading
+	// flag in `["--json","recipe","run","three"]` used to do, forever.
+	app.inRecipe = true
+	code := app.Execute("recipe", "run", "three")
+
+	if code != 2 {
+		t.Fatalf("exit = %d, want 2 (usage)\nstdout: %s\nstderr: %s", code, out.String(), errb.String())
+	}
+	if len(b.calls) != 0 {
+		t.Errorf("browser was contacted %v; a refused recursion must run nothing", b.calls)
+	}
+	if !strings.Contains(errb.String(), "cannot run another recipe") {
+		t.Errorf("stderr = %q, want it to name the recursion", errb.String())
+	}
+}
+
 // `recipe show --json` returns the parsed recipe, so an agent can read the
 // inputs it must supply without parsing YAML itself.
 func TestRecipeShowJSON(t *testing.T) {

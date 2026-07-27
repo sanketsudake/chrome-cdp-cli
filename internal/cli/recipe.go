@@ -347,6 +347,18 @@ func (a *App) emitDryRun(plan *recipe.Plan) {
 // path `session` uses per stdin line — and emits one envelope per step plus a
 // summary.
 func (a *App) runPlan(plan *recipe.Plan) {
+	// Recursion is a property of the runner, not of any one file: the load-time
+	// reserved-verb check reads argv[0] of the recipe in front of it and cannot
+	// see what a step's command re-enters. This is the backstop that makes
+	// "recipes cannot invoke recipes" true rather than merely validated.
+	if a.inRecipe {
+		a.emitErr("recipe", result.CodeUsage,
+			"a recipe cannot run another recipe: "+plan.Recipe.Name+" was invoked from inside a running recipe (recursion is not part of this format)", nil)
+		return
+	}
+	a.inRecipe = true
+	defer func() { a.inRecipe = false }()
+
 	start := a.start
 	// Flags are re-registered per Execute, so anything the user set on the
 	// `recipe run` invocation has to be folded into the defaults to survive

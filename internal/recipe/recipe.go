@@ -374,9 +374,19 @@ func normalizeOnError(v string) (string, error) {
 // checkVerb rejects the commands a step may not invoke, and requires the verb
 // itself to be a literal. Allowing `run: ["{{cmd}}"]` would move the recursion
 // question to runtime, where --set could smuggle past this check.
+//
+// A step must also NAME its command in argv[0], because that is the element
+// this check reads. Cobra resolves the command after stripping leading flags,
+// so `["--json", "recipe", "run", "x"]` looks like a `--json` step here and
+// runs `recipe run x` there — which is unbounded recursion, and `["--quiet",
+// "session"]` is a step that reads the process's own stdin. Refusing a leading
+// flag keeps the validator and the runner looking at the same verb.
 func checkVerb(verb string) error {
 	if strings.Contains(verb, "{{") {
 		return fmt.Errorf("the command name must be a literal, not a placeholder (%q)", verb)
+	}
+	if strings.HasPrefix(verb, "-") {
+		return fmt.Errorf("a step must name its command first: %q is a flag, and a leading flag would hide the command from validation (write the verb, then its flags)", verb)
 	}
 	if why, bad := reservedVerbs[verb]; bad {
 		return fmt.Errorf("%s: step runs %q", why, verb)

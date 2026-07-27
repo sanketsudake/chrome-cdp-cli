@@ -218,6 +218,22 @@ func TestMalformedRecipesRejectedAtLoad(t *testing.T) {
 			body: "name: x\nsteps:\n  - run: [\"session\"]\n",
 			want: "stdin",
 		},
+		// The reserved-verb check reads argv[0]. Cobra does not: it strips
+		// leading flags first, so a step that opens with one names a different
+		// command than the validator saw. `--json recipe run x` recursed
+		// forever; `--quiet session` ate the process's own stdin.
+		"a leading flag hiding a recipe": {
+			body: "name: x\nsteps:\n  - run: [\"--json\", \"recipe\", \"run\", \"other\"]\n",
+			want: "must name its command first",
+		},
+		"a leading flag hiding session": {
+			body: "name: x\nsteps:\n  - run: [\"--quiet\", \"session\"]\n",
+			want: "must name its command first",
+		},
+		"a leading -- terminator": {
+			body: "name: x\nsteps:\n  - run: [\"--\", \"snap\"]\n",
+			want: "must name its command first",
+		},
 		"a placeholder as the command name": {
 			body: "name: x\ninputs:\n  cmd: { default: \"snap\" }\nsteps:\n  - run: [\"{{cmd}}\"]\n",
 			want: "must be a literal",
