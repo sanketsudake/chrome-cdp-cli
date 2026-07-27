@@ -109,16 +109,31 @@ var verbClass = map[string]Class{
 	// The observability verbs read what the page already logged or requested.
 	// They are Reading, not Exempt: a console line or a request URL is page
 	// content, and a read_only origin still gets to withhold it.
-	"console":     Reading,
-	"net":         Reading,
-	"net wait":    Reading,
-	"screenshot":  Reading,
-	"pdf":         Reading,
-	"frame list":  Reading,
-	"wait":        Reading,
-	"attr get":    Reading,
-	"attr list":   Reading,
-	"cookie list": Reading,
+	"console":    Reading,
+	"net":        Reading,
+	"net wait":   Reading,
+	"screenshot": Reading,
+	"pdf":        Reading,
+	// Recording is Reading, and every verb of it is, for one reason: a
+	// recording is a stream of the page's own pixels, which is page content as
+	// surely as a screenshot is. So an allow/deny list gets to cover it, and a
+	// read_only origin does not — nothing in `record` modifies the page, and
+	// refusing to record a read-only origin would protect nothing.
+	//
+	// status and cancel are classified with the other two rather than as Exempt
+	// on the grounds that they touch no pixels themselves: they are still scoped
+	// to a tab whose origin a policy may forbid, and a family of verbs where
+	// three are checked and one is not is the kind of asymmetry nobody
+	// remembers. `verbs_denied = ["record start"]` then means what it looks like.
+	"record start":  Reading,
+	"record stop":   Reading,
+	"record status": Reading,
+	"record cancel": Reading,
+	"frame list":    Reading,
+	"wait":          Reading,
+	"attr get":      Reading,
+	"attr list":     Reading,
+	"cookie list":   Reading,
 
 	// Mutating.
 	"open":             Mutating, // checked against the DESTINATION origin
