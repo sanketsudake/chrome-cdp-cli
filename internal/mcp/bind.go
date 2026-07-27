@@ -319,3 +319,27 @@ func (b boundBrowser) Raw(ctx context.Context, targetID string, method string, p
 	defer cancel()
 	return b.Browser.Raw(ctx, targetID, method, params)
 }
+
+func (b boundBrowser) RecordStart(ctx context.Context, targetID string, opts chrome.RecordOpts) (map[string]any, error) {
+	ctx, cancel := b.bind(ctx)
+	defer cancel()
+	return b.Browser.RecordStart(ctx, targetID, opts)
+}
+
+func (b boundBrowser) RecordStop(ctx context.Context, targetID string) ([]chrome.Frame, map[string]any, error) {
+	ctx, cancel := b.bind(ctx)
+	defer cancel()
+	return b.Browser.RecordStop(ctx, targetID)
+}
+
+func (b boundBrowser) RecordStatus(ctx context.Context, targetID string) (map[string]any, error) {
+	ctx, cancel := b.bind(ctx)
+	defer cancel()
+	return b.Browser.RecordStatus(ctx, targetID)
+}
+
+func (b boundBrowser) RecordCancel(ctx context.Context, targetID string) (map[string]any, error) {
+	ctx, cancel := b.bind(ctx)
+	defer cancel()
+	return b.Browser.RecordCancel(ctx, targetID)
+}
