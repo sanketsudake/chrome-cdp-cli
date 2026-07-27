@@ -331,23 +331,64 @@ func TestRedactHeadersReplacesValuesNotNames(t *testing.T) {
 	}
 }
 
+// A header whose VALUE is a URL leaks through both rules: its name says nothing
+// about credentials, so the name-based redaction never fires, and RedactURL is
+// applied to the record's own URL and not to header values. The 302 that ends
+// every OAuth flow carries the authorization code in exactly that position.
+func TestRedactHeadersRedactsURLValuedHeaders(t *testing.T) {
+	t.Parallel()
+	in := map[string]string{
+		"Location":     "https://app.example/callback?code=SECRETCODE&state=s",
+		"Referer":      "https://app.example/#/cb?access_token=SECRETTOKEN",
+		"Content-Type": "text/html",
+	}
+	got := RedactHeaders(in, false)
+	for name, v := range got {
+		if strings.Contains(v, "SECRET") {
+			t.Errorf("%s = %q — a credential rode along in a URL-valued header", name, v)
+		}
+	}
+	// The redirect must stay diagnosable: only the value is withheld, not the
+	// destination.
+	if !strings.HasPrefix(got["Location"], "https://app.example/callback?code=") {
+		t.Errorf("Location = %q, want the destination preserved", got["Location"])
+	}
+	if !strings.HasSuffix(got["Location"], "&state=s") {
+		t.Errorf("Location = %q, want the non-credential parameters preserved", got["Location"])
+	}
+	if got["Content-Type"] != "text/html" {
+		t.Errorf("an ordinary header was rewritten: %q", got["Content-Type"])
+	}
+	if raw := RedactHeaders(in, true); raw["Location"] != in["Location"] {
+		t.Errorf("--no-redact did not return the real value: %q", raw["Location"])
+	}
+}
+
 // RFC-0003 open question 2: a token in a query string leaks exactly as badly as
 // one in a header, and an OAuth implicit flow puts it in the fragment.
 func TestRedactURL(t *testing.T) {
 	t.Parallel()
 	cases := map[string]struct{ in, want string }{
-		"no query":            {"https://app.example/api/save", "https://app.example/api/save"},
-		"ordinary params":     {"https://app.example/s?q=hours&page=2", "https://app.example/s?q=hours&page=2"},
-		"access_token":        {"https://app.example/cb?access_token=abc123", "https://app.example/cb?access_token=" + NetRedacted},
-		"api_key":             {"https://maps.example/v1?api_key=k1&z=3", "https://maps.example/v1?api_key=" + NetRedacted + "&z=3"},
-		"bare key":            {"https://maps.example/v1?key=AIzaSy&x=1", "https://maps.example/v1?key=" + NetRedacted + "&x=1"},
-		"signature":           {"https://cdn.example/f?sig=deadbeef", "https://cdn.example/f?sig=" + NetRedacted},
-		"oauth code":          {"https://app.example/cb?code=xyz&state=s", "https://app.example/cb?code=" + NetRedacted + "&state=s"},
-		"fragment token":      {"https://app.example/cb#access_token=abc&token_type=bearer", "https://app.example/cb#access_token=" + NetRedacted + "&token_type=bearer"},
-		"plain fragment":      {"https://app.example/doc#section-3", "https://app.example/doc#section-3"},
-		"percent-encoded key": {"https://app.example/x?api%5Fkey=zzz", "https://app.example/x?api%5Fkey=" + NetRedacted},
-		"case insensitive":    {"https://app.example/x?Access_Token=zzz", "https://app.example/x?Access_Token=" + NetRedacted},
-		"empty":               {"", ""},
+		"no query":        {"https://app.example/api/save", "https://app.example/api/save"},
+		"ordinary params": {"https://app.example/s?q=hours&page=2", "https://app.example/s?q=hours&page=2"},
+		"access_token":    {"https://app.example/cb?access_token=abc123", "https://app.example/cb?access_token=" + NetRedacted},
+		"api_key":         {"https://maps.example/v1?api_key=k1&z=3", "https://maps.example/v1?api_key=" + NetRedacted + "&z=3"},
+		"bare key":        {"https://maps.example/v1?key=AIzaSy&x=1", "https://maps.example/v1?key=" + NetRedacted + "&x=1"},
+		"signature":       {"https://cdn.example/f?sig=deadbeef", "https://cdn.example/f?sig=" + NetRedacted},
+		"oauth code":      {"https://app.example/cb?code=xyz&state=s", "https://app.example/cb?code=" + NetRedacted + "&state=s"},
+		"fragment token":  {"https://app.example/cb#access_token=abc&token_type=bearer", "https://app.example/cb#access_token=" + NetRedacted + "&token_type=bearer"},
+		"plain fragment":  {"https://app.example/doc#section-3", "https://app.example/doc#section-3"},
+		// A hash ROUTER puts a whole URL in the fragment, so the fragment needs
+		// the same path/query split the main URL gets. Parsed as one parameter
+		// list, the name reads "/callback?access_token" and the token sails
+		// through — in exactly the OAuth implicit flow this handling exists for.
+		"hash router query":    {"https://app.example/#/callback?access_token=abc123", "https://app.example/#/callback?access_token=" + NetRedacted},
+		"hash router mixed":    {"https://app.example/#/cb?state=s&id_token=abc", "https://app.example/#/cb?state=s&id_token=" + NetRedacted},
+		"hash router no query": {"https://app.example/#/settings/profile", "https://app.example/#/settings/profile"},
+		"hash router harmless": {"https://app.example/#/list?page=2", "https://app.example/#/list?page=2"},
+		"percent-encoded key":  {"https://app.example/x?api%5Fkey=zzz", "https://app.example/x?api%5Fkey=" + NetRedacted},
+		"case insensitive":     {"https://app.example/x?Access_Token=zzz", "https://app.example/x?Access_Token=" + NetRedacted},
+		"empty":                {"", ""},
 	}
 	for name, c := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -378,7 +419,9 @@ func TestRedactionKeepsCredentialsOutOfTheMarshalledEnvelope(t *testing.T) {
 	const cookie = "sid=deadbeefcafe"
 	r := netRecord{
 		ID: "req-1", Method: "POST", Type: "xhr",
-		URL:       "https://app.example/api/save?access_token=" + secret,
+		// A hash-router callback: the token is in the fragment's QUERY string,
+		// which is where an OAuth implicit flow behind a hash router puts it.
+		URL:       "https://app.example/#/callback?access_token=" + secret,
 		HasStatus: true, Status: 200, StatusText: "OK", Finished: true,
 		ReqHeaders: map[string]string{
 			"Authorization": "Bearer " + secret,
@@ -389,6 +432,9 @@ func TestRedactionKeepsCredentialsOutOfTheMarshalledEnvelope(t *testing.T) {
 		RespHeaders: map[string]string{
 			"Set-Cookie":   cookie + "; HttpOnly",
 			"Content-Type": "application/json",
+			// The redirect that ends an OAuth flow: no credential-shaped name,
+			// a live credential in the value.
+			"Location": "https://app.example/done?code=" + secret,
 		},
 	}
 	env := result.Envelope{

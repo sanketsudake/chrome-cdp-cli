@@ -772,6 +772,19 @@ func (r netRecord) render(opts NetOpts, body netBody) map[string]any {
 	return out
 }
 
+// netURLHeaders are the headers whose VALUE is a URL. Their names carry no hint
+// of a credential, so the name-based rules never fire on them — but a 302 to
+// "…/callback?code=SECRET" leaks the authorization code just as thoroughly as an
+// Authorization header would, and that redirect is how every OAuth flow ends.
+// Their values go through RedactURL instead of being withheld wholesale, so a
+// redirect stays diagnosable.
+var netURLHeaders = map[string]bool{
+	"location":         true,
+	"content-location": true,
+	"referer":          true,
+	"referrer":         true,
+}
+
 // RedactHeaders returns a copy of h with credential-shaped values replaced.
 // noRedact returns the map unchanged, which is the ONLY way a live session token
 // reaches the envelope.
@@ -781,8 +794,12 @@ func RedactHeaders(h map[string]string, noRedact bool) map[string]string {
 	}
 	out := make(map[string]string, len(h))
 	for k, v := range h {
-		if !noRedact && RedactedHeaderName(k) {
+		switch {
+		case noRedact:
+		case RedactedHeaderName(k):
 			v = NetRedacted
+		case netURLHeaders[strings.ToLower(strings.TrimSpace(k))]:
+			v = RedactURL(v)
 		}
 		out[k] = v
 	}
@@ -816,7 +833,19 @@ func RedactURL(raw string) string {
 	if hasFrag {
 		// OAuth implicit flows return the token in the fragment, so it gets the
 		// same treatment; a plain "#section" has no "=" and is left alone.
-		out += "#" + redactParams(frag)
+		//
+		// A hash ROUTER puts a whole URL in the fragment
+		// ("#/callback?access_token=…"), so the fragment gets the same
+		// path/query split the main URL does. Without it the single parameter
+		// parsed as the name "/callback?access_token", which the anchored
+		// pattern rejects — and the token was emitted verbatim, in exactly the
+		// OAuth-implicit case fragment handling was added for.
+		fpath, fquery, hasFragQuery := strings.Cut(frag, "?")
+		if hasFragQuery {
+			out += "#" + fpath + "?" + redactParams(fquery)
+		} else {
+			out += "#" + redactParams(frag)
+		}
 	}
 	return out
 }
