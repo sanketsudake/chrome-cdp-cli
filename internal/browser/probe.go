@@ -5,10 +5,12 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"io"
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"time"
 )
@@ -126,6 +128,11 @@ func ResolveWSURL(endpoint string, timeout time.Duration) (string, bool) {
 	return v.WS, true
 }
 
+// maxStatusLine caps what the probe will read looking for the handshake's
+// status line. An HTTP status line is tens of bytes; 8 KiB is generous for one
+// and still nothing at all to hold.
+const maxStatusLine = 8 << 10
+
 // AwaitUpgrade dials wsURL and performs exactly ONE WebSocket handshake against
 // it, classifying the result.
 //
@@ -156,12 +163,29 @@ func AwaitUpgrade(wsURL string, dialTimeout, pendingAfter, wait time.Duration, o
 		return &Upgrade{State: WSRefused}
 	}
 
-	// The read runs in a goroutine because there is nothing else to bound it:
-	// a pending endpoint never writes and never closes. Closing conn is what
-	// unblocks it, which the caller (or the timeout path below) always does.
+	// The read runs in a goroutine because there is nothing else to bound its
+	// COMPLETION: a pending endpoint never writes and never closes. Closing
+	// conn is what unblocks it, which the caller (or the timeout path below)
+	// always does.
+	//
+	// Its SIZE and its lifetime are bounded here, and both bounds are load-
+	// bearing. Anything that can bind the loopback debug port can answer, and
+	// what is expected back is one line of HTTP: without the LimitReader,
+	// ReadString('\n') on a newline-free stream accumulated at gigabytes per
+	// second for the caller's whole budget — two minutes in the daemon. The
+	// read deadline is the matching bound in time, so the goroutine cannot
+	// outlive the wait even if nobody closes the socket.
+	_ = conn.SetReadDeadline(time.Now().Add(wait))
 	answered := make(chan bool, 1)
 	go func() {
-		line, err := bufio.NewReader(conn).ReadString('\n')
+		line, err := bufio.NewReader(io.LimitReader(conn, maxStatusLine)).ReadString('\n')
+		if errors.Is(err, os.ErrDeadlineExceeded) {
+			// Hitting the deadline is the endpoint's SILENCE, not its answer:
+			// reporting it as a failed handshake would classify a Chrome that
+			// is still holding the consent prompt as refused. The caller's own
+			// timers below say what silence means.
+			return
+		}
 		answered <- err == nil && isSwitchingProtocols(line)
 	}()
 
@@ -205,6 +229,9 @@ func settle(conn net.Conn, ok bool) *Upgrade {
 		_ = conn.Close()
 		return &Upgrade{State: WSRefused}
 	}
+	// The probe's read deadline bounded the handshake; a socket that is being
+	// KEPT must not carry it into the attach that follows.
+	_ = conn.SetReadDeadline(time.Time{})
 	return &Upgrade{State: WSReady, conn: conn}
 }
 

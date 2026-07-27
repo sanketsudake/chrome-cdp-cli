@@ -1,6 +1,7 @@
 package browser
 
 import (
+	"bytes"
 	"fmt"
 	"net"
 	"net/http"
@@ -161,6 +162,57 @@ func TestAwaitUpgradeLateAnswerStillSucceeds(t *testing.T) {
 	}
 	if u.conn == nil {
 		t.Error("a ready upgrade must keep its socket, so the granted consent is still held when the attach lands")
+	}
+}
+
+// floodListener accepts and then streams bytes that never contain a newline —
+// a hostile or broken local process on the debug port. Anything that can bind
+// 127.0.0.1:9222 can be this.
+func floodListener(t *testing.T) string {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func(c net.Conn) {
+				defer c.Close()
+				chunk := bytes.Repeat([]byte("A"), 32<<10)
+				for {
+					if _, err := c.Write(chunk); err != nil {
+						return
+					}
+				}
+			}(c)
+		}
+	}()
+	return wsFor(ln)
+}
+
+// TestAwaitUpgradeBoundsTheResponse: the status line is one line of HTTP, and
+// the reader must be bounded like one.
+//
+// bufio.Reader.ReadString('\n') accumulates without limit and had no read
+// deadline, so the only ceiling was the caller's total wait — 120s in the
+// daemon. A listener streaming newline-free bytes drove 18 GB of heap in six
+// seconds; the daemon's full budget reaches hundreds of gigabytes. Nothing here
+// needs more than a status line, so nothing here should read more than one.
+func TestAwaitUpgradeBoundsTheResponse(t *testing.T) {
+	t.Parallel()
+	start := time.Now()
+	u := AwaitUpgrade(floodListener(t), time.Second, 30*time.Second, 30*time.Second, nil)
+	defer u.Close()
+	if u.State != WSRefused {
+		t.Errorf("an endpoint that answers with garbage classified %v, want refused", u.State)
+	}
+	if el := time.Since(start); el > 5*time.Second {
+		t.Errorf("the read ran for %v — a bounded read ends at the limit, not at the consent budget", el)
 	}
 }
 
