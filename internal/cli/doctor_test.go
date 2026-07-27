@@ -125,9 +125,9 @@ func TestDoctorDistinguishesAllThreeStates(t *testing.T) {
 		wantCode  string
 		wantOK    bool
 	}{
-		{"nothing listening", "closed", stateNoEndpoint, result.CodeConnection, false},
-		{"accepts and stalls", "", stateConsentPending, result.CodeConsentPending, false},
-		{"completes the upgrade", "HTTP/1.1 101 Switching Protocols", stateReady, "", true},
+		{"nothing listening", "closed", browser.WSRefused.String(), result.CodeConnection, false},
+		{"accepts and stalls", "", browser.WSPending.String(), result.CodeConsentPending, false},
+		{"completes the upgrade", "HTTP/1.1 101 Switching Protocols", browser.WSReady.String(), "", true},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			stubEndpoint(t, c.answer)
@@ -190,8 +190,8 @@ func TestDoctorAnswersThroughARunningDaemon(t *testing.T) {
 	if env["ok"] != true || code != result.ExitOK {
 		t.Fatalf("doctor with a live daemon: ok=%v exit=%d (%v)", env["ok"], code, env)
 	}
-	if got := doctorState(t, env); got != stateReady {
-		t.Errorf("state = %q, want %q", got, stateReady)
+	if got := doctorState(t, env); got != browser.WSReady.String() {
+		t.Errorf("state = %q, want %q", got, browser.WSReady.String())
 	}
 	res := env["result"].(map[string]any)
 	if res["via"] != "daemon" {
@@ -238,7 +238,7 @@ func TestDoctorRequiresEvidenceFromTheDaemon(t *testing.T) {
 			// consent_pending. Anything claiming `ready` came from the daemon.
 			stubEndpoint(t, "")
 			env, _, _ := runDoctorApp(t, func(ConnOpts) (map[string]any, error) { return c.status, c.err })
-			if got := doctorState(t, env); got == stateReady {
+			if got := doctorState(t, env); got == browser.WSReady.String() {
 				t.Errorf("doctor reported %q from a daemon that never proved a live CDP connection: %v", got, env)
 			}
 		})
@@ -283,8 +283,8 @@ func TestDoctorNoDaemonStatusStillProbes(t *testing.T) {
 	env, _, _ := runDoctorApp(t, func(ConnOpts) (map[string]any, error) {
 		return map[string]any{"running": false}, nil
 	})
-	if got := doctorState(t, env); got != stateReady {
-		t.Errorf("state = %q, want %q", got, stateReady)
+	if got := doctorState(t, env); got != browser.WSReady.String() {
+		t.Errorf("state = %q, want %q", got, browser.WSReady.String())
 	}
 	if env["result"].(map[string]any)["via"] != "probe" {
 		t.Errorf("with no daemon the answer must come from a probe: %v", env["result"])
@@ -299,7 +299,7 @@ func TestDoctorNoDaemonStatusStillProbes(t *testing.T) {
 func TestDoctorNoProbeRefusesToClaimReadiness(t *testing.T) {
 	conns := stubEndpoint(t, "")
 	env, _, _ := runDoctorApp(t, nil, "--no-probe")
-	if got := doctorState(t, env); got == stateReady {
+	if got := doctorState(t, env); got == browser.WSReady.String() {
 		t.Error("--no-probe reported ready without verifying anything, which is the bug this RFC exists to fix")
 	}
 	if n := conns.Load(); n != 0 {
@@ -379,8 +379,8 @@ func TestDoctorHonoursExplicitPort(t *testing.T) {
 	_, port, _ := net.SplitHostPort(ln.Addr().String())
 
 	env, _, _ := runDoctorApp(t, nil, "--port", port)
-	if got := doctorState(t, env); got != stateConsentPending {
-		t.Errorf("state = %q, want %q — doctor diagnosed a different Chrome than --port named: %v", got, stateConsentPending, env)
+	if got := doctorState(t, env); got != browser.WSPending.String() {
+		t.Errorf("state = %q, want %q — doctor diagnosed a different Chrome than --port named: %v", got, browser.WSPending.String(), env)
 	}
 	if stalled.Load() == 0 {
 		t.Error("doctor never contacted the --port endpoint at all")

@@ -203,14 +203,23 @@ const (
 	WSReady
 )
 
+// String is the WIRE value of this state: it is what `doctor` reports as the
+// envelope's `state` field, and callers branch on it. There is exactly one
+// vocabulary for these three answers on purpose. There used to be two — this
+// method said "refused" where doctor said "no_endpoint" — kept apart only by
+// this method having no callers at all, which is not a design, it is a
+// coincidence that was one use away from shipping two names for one state.
 func (s WSState) String() string {
 	switch s {
 	case WSPending:
-		return "pending"
+		return "consent_pending"
 	case WSReady:
 		return "ready"
 	default:
-		return "refused"
+		// Refused is reported as no_endpoint because that is what it means to
+		// the user: nothing usable is there. The distinction the probe cares
+		// about — refused versus silent — is already carried by WSPending.
+		return "no_endpoint"
 	}
 }
 
@@ -224,23 +233,6 @@ const (
 	InstructNoLaunch               // nothing debug-enabled and --no-launch — print the launch command
 	ConsentPending                 // open port, hanging upgrade — Chrome is holding its consent prompt
 )
-
-func (a Action) String() string {
-	switch a {
-	case Attach:
-		return "attach"
-	case Launch:
-		return "launch"
-	case InstructToggle:
-		return "instruct-toggle"
-	case InstructNoLaunch:
-		return "instruct-no-launch"
-	case ConsentPending:
-		return "consent-pending"
-	default:
-		return "unknown"
-	}
-}
 
 // Probe captures the observable connection state the ladder decides on.
 type Probe struct {

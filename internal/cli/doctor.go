@@ -17,14 +17,14 @@ import (
 // is already conclusive. A var only so a test can shrink the clock.
 var doctorProbeWait = 5 * time.Second
 
-// The three states doctor distinguishes, reported as `state` in the envelope so
-// a caller branches on a value rather than on prose.
-const (
-	stateNoEndpoint     = "no_endpoint"
-	stateConsentPending = "consent_pending"
-	stateReady          = "ready"
-	stateUnverified     = "unverified" // --no-probe: an endpoint exists and nothing was checked
-)
+// doctor reports `state` in the envelope so a caller branches on a value rather
+// than on prose. Three of the four values ARE browser.WSState's — the probe's
+// answer is the state, and deriving it is what keeps one vocabulary instead of
+// two lists that agree by hand until they do not.
+//
+// stateUnverified is the fourth and has no WSState, because it is the absence
+// of a probe rather than the result of one.
+const stateUnverified = "unverified"
 
 // cmdDoctor answers "can I connect?" by actually connecting.
 //
@@ -75,13 +75,13 @@ func (a *App) runDoctor(noProbe bool) {
 	if ep.Err != nil {
 		a.emitErr("doctor", result.CodeConnection,
 			"the DevToolsActivePort file is unreadable ("+ep.Err.Error()+") — "+browser.EnableAdvice,
-			map[string]any{"state": stateNoEndpoint, "port_file": ep.PortFile})
+			map[string]any{"state": browser.WSRefused.String(), "port_file": ep.PortFile})
 		return
 	}
 	if ep.URL == "" {
 		a.emitErr("doctor", result.CodeConnection,
 			"no debug endpoint found (no DevToolsActivePort file) — "+browser.EnableAdvice,
-			map[string]any{"state": stateNoEndpoint})
+			map[string]any{"state": browser.WSRefused.String()})
 		return
 	}
 	base := map[string]any{"endpoint": ep.URL, "via": "probe", "probed": true}
@@ -112,9 +112,13 @@ func (a *App) runDoctor(noProbe bool) {
 		return
 	}
 	base["ws"] = ws
-	switch chrome.ProbeWS(ws, doctorProbeWait) {
+
+	// The probe's answer IS the state; only the prose and the exit code differ
+	// per outcome.
+	state := chrome.ProbeWS(ws, doctorProbeWait)
+	base["state"] = state.String()
+	switch state {
 	case browser.WSReady:
-		base["state"] = stateReady
 		// Say what the verdict cost. ProbeWS hangs up on every outcome,
 		// including this one, so on the chrome://inspect path the consent this
 		// probe just used is gone and the next command is a fresh attach that
@@ -127,15 +131,13 @@ func (a *App) runDoctor(noProbe bool) {
 			"start the daemon (chrome-cdp daemon start) to be asked once per session."
 		a.emitOK("doctor", nil, base)
 	case browser.WSPending:
-		base["state"] = stateConsentPending
 		a.emitErr("doctor", result.CodeConsentPending,
 			"the debug endpoint accepted the connection and then went silent. "+browser.ConsentPromptAdvice+
 				" To stop being asked at all, "+browser.EnableAdvice+".",
 			base)
 	default:
-		base["state"] = stateNoEndpoint
 		a.emitErr("doctor", result.CodeConnection,
-			"a port file exists but nothing usable answered at "+ws+" (stale file, or another process on that port) — "+browser.EnableAdvice,
+			"an endpoint was found but nothing usable answered at "+ws+" (stale port file, or another process on that port) — "+browser.EnableAdvice,
 			base)
 	}
 }
@@ -172,7 +174,7 @@ func (a *App) doctorViaDaemon() (map[string]any, bool) {
 		return nil, false
 	}
 	res := map[string]any{
-		"state": stateReady, "via": "daemon", "probed": false, "running": true, "connected": true,
+		"state": browser.WSReady.String(), "via": "daemon", "probed": false, "running": true, "connected": true,
 		"status": "debug endpoint ready — the running daemon answered a live CDP round trip (no new connection was opened, so no consent prompt was raised)",
 	}
 	for _, k := range []string{"endpoint", "socket", "target_count"} {
