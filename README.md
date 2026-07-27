@@ -146,14 +146,8 @@ Shell completion is built in: `chrome-cdp completion bash|zsh|fish|powershell`.
 A live debug endpoint is **full control** of whatever your Chrome is signed into — treat enabling remote debugging (by flag or by toggle) like opening a local root shell into your browser's sessions, and only do it when you intend to automate.
 
 **Bound it with a policy.**
-`chrome-cdp policy init` writes an allow-list from the tab you are on, and the CLI then refuses origins outside it.
-A policy can also mark origins read-only, deny individual verbs (`raw`, `eval`), limit which directories files may be uploaded from, and append every refusal to an audit log.
-It is **off until you configure it** — except under `chrome-cdp mcp`, which refuses to start without one.
-
-It bounds a *cooperative* caller: a guardrail, not a sandbox.
-Anything that can run `chrome-cdp` can also edit the config, or connect to Chrome directly and skip the CLI entirely.
-It is worth having for the case it actually addresses — an agent that read "now go to the admin console" off a web page, or a shared recipe you did not read line by line.
-See **[Policy](docs/cli-reference.md#policy)** for the full configuration.
+`chrome-cdp policy init` allow-lists the tab you are on; the CLI then refuses everything else, and `chrome-cdp mcp` will not start without one.
+It is off until you configure it, and it guards against a misdirected caller rather than acting as a sandbox — see **[Policy](docs/cli-reference.md#policy)** for origins, verbs, upload roots, and the audit log.
 
 - **Loopback only.**
   It connects to `127.0.0.1` and never binds the debug port to a non-loopback interface.
