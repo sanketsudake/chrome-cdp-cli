@@ -477,10 +477,10 @@ func screenshotTool() *tool {
 			{name: "output", typ: "string", flag: "output", desc: "also write the image to this path; omit to only return it inline."},
 		}, queryArgs(), targetArgs()),
 		build: func(c *call) (string, []string, error) {
-			// `output` is handled by the server: with none given it captures to a
+			// `output` is the server's to pass: with none given it captures to a
 			// temporary file, reads the bytes back for the image block, and
 			// removes it, so a client that only wants the picture gets no litter.
-			return "screenshot", append([]string{"screenshot"}, c.flags()...), nil
+			return "screenshot", append([]string{"screenshot"}, c.flags("output")...), nil
 		},
 	}
 }
