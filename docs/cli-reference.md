@@ -535,6 +535,13 @@ That is everything — there is no other key, and an unrecognised one is an erro
 There is no shell anywhere in this design and there is no `shell:` step type, so a value is passed through byte for byte and nothing in it is interpreted.
 Per-step flags a verb already accepts — `--timeout 60s`, `--by name`, `--wait-text` — go in that step's own `run` array, where a reader of the recipe can see them.
 
+A step must name its command in the **first** element of `run`.
+A leading flag (`run: ["--json", "snap"]`) is a load-time error: it would hide the command from validation, since the command tree resolves the verb only after stripping flags.
+
+Which elements of a step are flags is decided by the recipe **as written**, never by an input value.
+When a step is resolved, its data elements are emitted after a `--` terminator — so `run: ["text", "{{sel}}"]` with `--set sel=--target=@2` runs `text --target <the recipe's target> -- --target=@2`, and the value arrives as a selector rather than as a second `--target` pointing the step at another tab.
+This is visible in `--dry-run` output, which is still exactly what runs.
+
 **Where recipes live.**
 Resolution order for a name, first match wins:
 

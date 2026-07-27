@@ -546,6 +546,118 @@ steps:
 	}
 }
 
+// valueFlags stands in for the command tree in the pure tests: the flags a step
+// may write that consume the following argv element.
+var valueFlags = map[string]bool{"--by": true, "--role": true, "--target": true}
+
+// testSplit is a Splitter over the argv AS WRITTEN, with the same shape the CLI
+// builds from cobra's own flag definitions.
+func testSplit(argv []string) (flagIdx, posIdx []int, ok bool) {
+	if len(argv) == 0 || strings.HasPrefix(argv[0], "-") {
+		return nil, nil, false
+	}
+	flagIdx = append(flagIdx, 0) // the verb
+	for i := 1; i < len(argv); i++ {
+		switch {
+		case argv[i] == "--":
+			for j := i + 1; j < len(argv); j++ {
+				posIdx = append(posIdx, j)
+			}
+			return flagIdx, posIdx, true
+		case strings.HasPrefix(argv[i], "-"):
+			flagIdx = append(flagIdx, i)
+			if valueFlags[argv[i]] && i+1 < len(argv) {
+				i++
+				flagIdx = append(flagIdx, i)
+			}
+		default:
+			posIdx = append(posIdx, i)
+		}
+	}
+	return flagIdx, posIdx, true
+}
+
+// A step's data is emitted after a `--` terminator, so a substituted value can
+// never reach flag position.
+//
+// RFC-0009 promises an input substitutes into ONE argv element and never into a
+// command line. That held for word splitting and not for flag parsing: cobra
+// parses flags at any position, so `--set sel=--target=@2` substituted into a
+// step's positional used to arrive as a second --target.
+func TestSubstitutedValueNeverReachesFlagPosition(t *testing.T) {
+	t.Parallel()
+	r := loadFixture(t, "t", `name: t
+target: url:payroll.corp
+inputs:
+  sel: { required: true }
+steps:
+  - run: ["text", "{{sel}}"]
+  - run: ["click", "--by", "name", "{{sel}}", "--role", "button"]
+`)
+	for _, hostile := range []string{"--target=@2", "--target", "--policy-off", "--no-daemon", "-v", "-q"} {
+		plan, err := Resolve(r, Opts{Set: map[string]string{"sel": hostile}, Split: testSplit})
+		if err != nil {
+			t.Fatalf("Resolve(%q): %v", hostile, err)
+		}
+		want := []string{"text", "--target", "url:payroll.corp", "--", hostile}
+		if !reflect.DeepEqual(plan.Steps[0].Argv, want) {
+			t.Errorf("--set sel=%s\n  step 1 argv = %#v\n  want          %#v", hostile, plan.Steps[0].Argv, want)
+		}
+		want = []string{"click", "--by", "name", "--role", "button", "--target", "url:payroll.corp", "--", hostile}
+		if !reflect.DeepEqual(plan.Steps[1].Argv, want) {
+			t.Errorf("--set sel=%s\n  step 2 argv = %#v\n  want          %#v", hostile, plan.Steps[1].Argv, want)
+		}
+	}
+}
+
+// The recipe's pinned target is decided from the argv AS WRITTEN. Deciding it
+// from the substituted argv let a --set value equal to `--target` suppress the
+// header's target, so the step read a different tab than the recipe pinned.
+func TestSubstitutedValueCannotSuppressThePinnedTarget(t *testing.T) {
+	t.Parallel()
+	r := loadFixture(t, "t", `name: t
+target: url:payroll.corp
+inputs:
+  sel: { required: true }
+steps:
+  - run: ["text", "{{sel}}"]
+`)
+	for _, hostile := range []string{"--target=@2", "--target"} {
+		for name, split := range map[string]Splitter{"with a splitter": testSplit, "without one": nil} {
+			plan, err := Resolve(r, Opts{Set: map[string]string{"sel": hostile}, Split: split})
+			if err != nil {
+				t.Fatalf("Resolve(%q) %s: %v", hostile, name, err)
+			}
+			argv := plan.Steps[0].Argv
+			pinned := false
+			for i := 0; i+1 < len(argv); i++ {
+				if argv[i] == "--target" && argv[i+1] == "url:payroll.corp" {
+					pinned = true
+				}
+			}
+			if !pinned {
+				t.Errorf("--set sel=%s %s: argv = %#v, want the recipe's pinned target still injected", hostile, name, argv)
+			}
+		}
+	}
+}
+
+// A step that writes its own `--` gets exactly one terminator, in the one place
+// it belongs — otherwise the injected `--target X` lands after it and is read
+// as two positionals.
+func TestStepWithItsOwnTerminator(t *testing.T) {
+	t.Parallel()
+	r := loadFixture(t, "t", "name: t\ntarget: aa11\nsteps:\n  - run: [\"text\", \"--\", \"-weird-selector\"]\n")
+	plan, err := Resolve(r, Opts{Split: testSplit})
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	want := []string{"text", "--target", "aa11", "--", "-weird-selector"}
+	if !reflect.DeepEqual(plan.Steps[0].Argv, want) {
+		t.Errorf("argv = %#v, want %#v", plan.Steps[0].Argv, want)
+	}
+}
+
 func TestRunTargetOverridesHeader(t *testing.T) {
 	t.Parallel()
 	r := loadFixture(t, "t", "name: t\ntarget: url:workday\nsteps:\n  - run: [\"snap\"]\n")

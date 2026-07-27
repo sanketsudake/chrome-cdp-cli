@@ -483,11 +483,31 @@ type Plan struct {
 	Target   string
 }
 
+// Splitter classifies one step's argv AS WRITTEN — before any substitution —
+// into the elements the command tree may parse (the command path and the step's
+// own flags, with their values) and the elements that must arrive as data.
+// Indices are into the argv it was given; an index in neither slice is dropped,
+// which is how a step's own `--` is absorbed and re-emitted in the one place it
+// belongs. ok is false when the argv names no command it can resolve, in which
+// case Resolve leaves the argv alone and lets the command tree produce its
+// ordinary usage error.
+//
+// It reads the argv as written because that is the only text the recipe's
+// AUTHOR wrote. What is a flag has to be decided there and never by an input
+// value: `--set sel=--target=@2` substituted into a step's positional is data,
+// not a second target.
+//
+// The recipe package cannot implement this — flag arity lives in the command
+// tree — so the CLI supplies it. Resolve without one keeps the argv in written
+// order, which is what the pure tests here use.
+type Splitter func(argv []string) (flagIdx, posIdx []int, ok bool)
+
 // Opts are the run-time knobs Resolve applies.
 type Opts struct {
 	Set      map[string]string // values from --set
 	Target   string            // overrides the recipe's own `target:` when set
 	FromStep int               // 1-based start step; 0 means "from the beginning"
+	Split    Splitter          // optional; see Splitter
 }
 
 // Resolve turns a validated Recipe into a Plan: it checks the supplied inputs
@@ -518,29 +538,94 @@ func Resolve(r *Recipe, opts Opts) (*Plan, error) {
 		if i+1 < from {
 			continue
 		}
-		argv := make([]string, 0, len(s.Run)+2)
-		for _, elem := range s.Run {
-			argv = append(argv, substitute(elem, values))
-		}
-		// The target is injected into the argv rather than applied out of band,
-		// so the dry-run listing is the whole truth: what it prints is what
-		// runs, byte for byte, whether it goes through `recipe run` or a pipe
-		// into `session`.
-		if target != "" && !hasTargetFlag(argv) {
-			argv = append(argv, "--target", target)
-		}
+		argv := buildArgv(s.Run, values, target, opts.Split)
 		plan.Steps = append(plan.Steps, PlanStep{Index: i + 1, Label: s.Label, Argv: argv, OnError: s.OnError})
 	}
 	return plan, nil
 }
 
+// buildArgv turns one step's argv as written into the argv that runs.
+//
+// Two things have to be true of the result, and both are decided from the
+// argv AS WRITTEN rather than from the substituted text:
+//
+//   - The recipe's pinned target survives. A step that names its own --target
+//     keeps it, but only when the AUTHOR wrote one: scanning the substituted
+//     argv let `--set sel=--target=@2` suppress the header's target and point
+//     the step at a different tab.
+//   - A substituted value can never reach flag position. The step's data
+//     elements are emitted after a `--` terminator, so an input that looks like
+//     `--target=@2`, `--policy-off` or `-v` arrives as the one argv element it
+//     is. RFC-0009 promises an input substitutes into ONE argv element and
+//     never into a command line; without the terminator that held for word
+//     splitting but not for flag parsing.
+//
+// The step's own `--`, if it wrote one, is absorbed by the splitter and
+// re-emitted here, so the injected `--target` cannot land after it and be read
+// as a positional.
+func buildArgv(run []string, values map[string]string, target string, split Splitter) []string {
+	sub := make([]string, len(run))
+	for i, elem := range run {
+		sub[i] = substitute(elem, values)
+	}
+
+	var flagIdx, posIdx []int
+	ok := false
+	if split != nil {
+		flagIdx, posIdx, ok = split(run)
+	}
+	if !ok {
+		// No command tree to classify against: keep the argv as written and let
+		// the command tree report whatever is wrong with it.
+		argv := append(make([]string, 0, len(sub)+2), sub...)
+		if target != "" && !hasTargetFlag(run) {
+			argv = append(argv, "--target", target)
+		}
+		return argv
+	}
+
+	argv := make([]string, 0, len(sub)+3)
+	for _, i := range flagIdx {
+		argv = append(argv, sub[i])
+	}
+	// The target is injected into the argv rather than applied out of band, so
+	// the dry-run listing is the whole truth: what it prints is what runs, byte
+	// for byte, whether it goes through `recipe run` or a pipe into `session`.
+	if target != "" && !hasTargetFlagAt(run, flagIdx) {
+		argv = append(argv, "--target", target)
+	}
+	if len(posIdx) > 0 {
+		argv = append(argv, "--")
+		for _, i := range posIdx {
+			argv = append(argv, sub[i])
+		}
+	}
+	return argv
+}
+
 func hasTargetFlag(argv []string) bool {
 	for _, a := range argv {
-		if a == "--target" || strings.HasPrefix(a, "--target=") {
+		if isTargetFlag(a) {
 			return true
 		}
 	}
 	return false
+}
+
+// hasTargetFlagAt looks for the author's own --target among the elements the
+// command tree will actually parse as flags, so a `--target` sitting in a
+// step's data section does not suppress the header's.
+func hasTargetFlagAt(argv []string, flagIdx []int) bool {
+	for _, i := range flagIdx {
+		if isTargetFlag(argv[i]) {
+			return true
+		}
+	}
+	return false
+}
+
+func isTargetFlag(a string) bool {
+	return a == "--target" || strings.HasPrefix(a, "--target=")
 }
 
 // resolveInputs merges --set over the declared defaults, rejecting an unknown

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
 
 	"github.com/sanketsudake/chrome-cdp-cli/internal/config"
 	"github.com/sanketsudake/chrome-cdp-cli/internal/recipe"
@@ -273,7 +274,10 @@ func (a *App) cmdRecipeRun() *cobra.Command {
 			// An explicit --target on the run overrides the recipe's own
 			// `target:`; both end up injected into each step's argv, so the
 			// dry-run listing is exactly what executes.
-			plan, err := recipe.Resolve(r, recipe.Opts{Set: set, Target: a.targetFlag, FromStep: fromStep})
+			plan, err := recipe.Resolve(r, recipe.Opts{
+				Set: set, Target: a.targetFlag, FromStep: fromStep,
+				Split: stepSplitter(a.defaults),
+			})
 			if err != nil {
 				a.emitErr("recipe", result.CodeUsage, err.Error(), nil)
 				return nil
@@ -291,6 +295,134 @@ func (a *App) cmdRecipeRun() *cobra.Command {
 	c.Flags().BoolVar(&dryRun, "dry-run", false, "print the resolved argv lines (valid `session` input) and run nothing")
 	c.Flags().IntVar(&fromStep, "from-step", 0, "start at step N (1-based) — sharp: earlier steps' effects are assumed done")
 	return c
+}
+
+// stepSplitter returns a recipe.Splitter backed by the real command tree, so
+// "is this element a flag" is answered by the same flag definitions cobra will
+// parse with rather than by a table that would drift away from them.
+//
+// The tree is built on a scratch App: newRoot binds every flag to a field of
+// the receiver, and classifying an argv must not write to the App that is about
+// to run it. Nothing on the scratch tree is ever executed.
+func stepSplitter(d config.Defaults) recipe.Splitter {
+	root := (&App{defaults: d}).newRoot()
+	return func(argv []string) ([]int, []int, bool) { return splitStepArgv(root, argv) }
+}
+
+// splitStepArgv walks a step's argv as written and says which elements the
+// command tree may parse (its command path and its flags, each with the value
+// it consumes) and which are data.
+//
+// It mirrors pflag's own rules — `--name`, `--name=v`, `--name v` when the flag
+// has no NoOptDefVal, `-abc` shorthand clusters, and `--` — because a
+// disagreement here would move an element into the wrong section. The failure
+// is not silent either way: an element that lands in the flag section by
+// mistake is parsed exactly as it is today, and one that lands in the data
+// section makes the command report a wrong argument.
+func splitStepArgv(root *cobra.Command, argv []string) (flagIdx, posIdx []int, ok bool) {
+	cmd := root
+	resolved := false // the argv named a command; nothing but data can follow the last one
+	for i := 0; i < len(argv); i++ {
+		tok := argv[i]
+		switch {
+		case tok == "--":
+			// The step wrote its own terminator: everything past it is data, and
+			// buildArgv re-emits the one terminator that belongs there.
+			for j := i + 1; j < len(argv); j++ {
+				posIdx = append(posIdx, j)
+			}
+			return flagIdx, posIdx, resolved
+		case strings.HasPrefix(tok, "--"):
+			flagIdx = append(flagIdx, i)
+			name, hasInlineValue := tok[2:], false
+			if eq := strings.IndexByte(name, '='); eq >= 0 {
+				name, hasInlineValue = name[:eq], true
+			}
+			if !hasInlineValue && longFlagTakesValue(cmd, name) && i+1 < len(argv) {
+				i++
+				flagIdx = append(flagIdx, i)
+			}
+		case len(tok) > 1 && tok[0] == '-':
+			flagIdx = append(flagIdx, i)
+			if shorthandTakesNextValue(cmd, tok[1:]) && i+1 < len(argv) {
+				i++
+				flagIdx = append(flagIdx, i)
+			}
+		default:
+			if sub := subCommand(cmd, tok); sub != nil {
+				cmd, resolved = sub, true
+				flagIdx = append(flagIdx, i)
+				continue
+			}
+			if !resolved {
+				// argv[0] names no command. Leave the argv alone so cobra
+				// reports "unknown command" against what the author wrote.
+				return nil, nil, false
+			}
+			posIdx = append(posIdx, i)
+		}
+	}
+	return flagIdx, posIdx, resolved
+}
+
+// subCommand finds a child of cmd by name or alias. A verb with no children
+// (`text`, `click`) never matches, so a positional that happens to read like a
+// command name stays data.
+func subCommand(cmd *cobra.Command, name string) *cobra.Command {
+	for _, sub := range cmd.Commands() {
+		if sub.Name() == name {
+			return sub
+		}
+		for _, alias := range sub.Aliases {
+			if alias == name {
+				return sub
+			}
+		}
+	}
+	return nil
+}
+
+// lookupFlag finds a long flag visible to cmd: its own, plus the persistent
+// flags it inherits (every global flag lives on the root).
+func lookupFlag(cmd *cobra.Command, name string) *pflag.Flag {
+	if f := cmd.Flags().Lookup(name); f != nil {
+		return f
+	}
+	if f := cmd.InheritedFlags().Lookup(name); f != nil {
+		return f
+	}
+	return cmd.Root().PersistentFlags().Lookup(name)
+}
+
+// longFlagTakesValue reports whether `--name` consumes the next argv element.
+// A flag pflag gave a NoOptDefVal (every bool) does not; an unknown flag is
+// assumed not to, so its neighbour stays data rather than being swallowed by a
+// typo.
+func longFlagTakesValue(cmd *cobra.Command, name string) bool {
+	f := lookupFlag(cmd, name)
+	return f != nil && f.NoOptDefVal == ""
+}
+
+// shorthandTakesNextValue reports whether a `-abc` cluster consumes the NEXT
+// argv element. pflag hands the remainder of the cluster to the first flag that
+// wants a value, so only a cluster that ends on such a flag reaches past itself.
+func shorthandTakesNextValue(cmd *cobra.Command, cluster string) bool {
+	if len(cluster) > 1 && cluster[1] == '=' {
+		return false // -x=value carries its own
+	}
+	for i := 0; i < len(cluster); i++ {
+		f := cmd.Flags().ShorthandLookup(string(cluster[i]))
+		if f == nil {
+			f = cmd.Root().PersistentFlags().ShorthandLookup(string(cluster[i]))
+		}
+		if f == nil {
+			return false
+		}
+		if f.NoOptDefVal == "" {
+			return i == len(cluster)-1
+		}
+	}
+	return false
 }
 
 // parseSets turns repeated --set k=v flags into a map. A repeated key is an

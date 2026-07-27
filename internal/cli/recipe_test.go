@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/sanketsudake/chrome-cdp-cli/internal/chrome"
+	"github.com/sanketsudake/chrome-cdp-cli/internal/config"
 	"github.com/sanketsudake/chrome-cdp-cli/internal/target"
 )
 
@@ -260,7 +261,9 @@ func TestRecipeDryRunTouchesNothing(t *testing.T) {
 	if err := json.Unmarshal([]byte(lines[0]), &first); err != nil {
 		t.Fatalf("dry-run line is not a JSON argv array: %q", lines[0])
 	}
-	want := []string{"nav", "https://app.test/one", "--target", "aa11"}
+	// The step's data follows a `--` terminator, so nothing substituted into it
+	// can reach flag position; the recipe's pinned target sits ahead of it.
+	want := []string{"nav", "--target", "aa11", "--", "https://app.test/one"}
 	if !reflect.DeepEqual(first, want) {
 		t.Errorf("line 1 = %#v, want %#v", first, want)
 	}
@@ -569,6 +572,118 @@ steps:
 		t.Errorf("browser saw %v\nwant a single call %s", b.calls, want)
 	}
 }
+
+// A --set value that looks like a flag arrives as data, and cannot move the
+// step to a different tab.
+//
+// The substituted argv used to be handed straight to cobra, which parses flags
+// at any position: `--set sel=--target=@2` on a step whose selector is
+// `{{sel}}` suppressed the recipe's pinned `target:` and read a DIFFERENT tab,
+// then dumped its text. RFC-0009 promises an input substitutes into one argv
+// element and never into a command line; that has to hold for flag parsing and
+// not only for word splitting.
+func TestRecipeSetValueThatLooksLikeAFlagIsData(t *testing.T) {
+	project, _ := isolateRecipes(t)
+	writeRecipe(t, project, "pinned", `name: pinned
+target: aa11
+inputs:
+  sel: { required: true }
+steps:
+  - run: ["text", "{{sel}}"]
+`)
+	for _, hostile := range []string{"--target=@2", "--target", "--policy-off", "--no-daemon", "-v", "--json"} {
+		b := &twoTabBrowser{}
+		var out, errb bytes.Buffer
+		New(b, &out, &errb).Execute("recipe", "run", "pinned", "--set", "sel="+hostile)
+
+		if len(b.texts) != 1 {
+			t.Errorf("--set sel=%s: Text called %d times, want once: %v\n%s", hostile, len(b.texts), b.texts, out.String())
+			continue
+		}
+		if got := b.texts[0]; got != "aa11:"+hostile {
+			t.Errorf("--set sel=%s: step read %q, want the pinned tab aa11 and the value as a literal selector", hostile, got)
+		}
+	}
+}
+
+// The splitter has to agree with pflag about what a flag is: an element in the
+// wrong section either reaches flag position (the bug) or makes a working
+// recipe fail. It is checked against the real command tree.
+func TestSplitStepArgv(t *testing.T) {
+	t.Parallel()
+	root := (&App{defaults: config.Builtin()}).newRoot()
+	sel := func(argv []string, idx []int) []string {
+		out := make([]string, 0, len(idx))
+		for _, i := range idx {
+			out = append(out, argv[i])
+		}
+		return out
+	}
+	cases := map[string]struct {
+		argv  []string
+		flags []string
+		pos   []string
+		ok    bool
+	}{
+		"a verb and its selector":    {[]string{"text", "h1"}, []string{"text"}, []string{"h1"}, true},
+		"a value flag takes its arg": {[]string{"click", "--by", "name", "Save"}, []string{"click", "--by", "name"}, []string{"Save"}, true},
+		"an inline value flag":       {[]string{"click", "--by=name", "Save"}, []string{"click", "--by=name"}, []string{"Save"}, true},
+		"a bool flag takes nothing":  {[]string{"wait", "--idle"}, []string{"wait", "--idle"}, nil, true},
+		"a subcommand path":          {[]string{"cookie", "set", "k", "v"}, []string{"cookie", "set"}, []string{"k", "v"}, true},
+		"a shorthand bool":           {[]string{"text", "-q", "h1"}, []string{"text", "-q"}, []string{"h1"}, true},
+		"the step's own terminator":  {[]string{"text", "--", "-h1"}, []string{"text"}, []string{"-h1"}, true},
+		// A positional that reads like a subcommand of a DIFFERENT command is
+		// still data: `text` has no children.
+		"a selector named like a command": {[]string{"text", "list"}, []string{"text"}, []string{"list"}, true},
+		// An unknown flag is assumed to take no value, so its neighbour stays
+		// data rather than being swallowed by a typo.
+		"an unknown flag": {[]string{"text", "--nope", "h1"}, []string{"text", "--nope"}, []string{"h1"}, true},
+		// Nothing to classify against: Resolve leaves the argv alone and lets
+		// cobra report it.
+		"an unknown verb": {[]string{"bogus", "x"}, nil, nil, false},
+	}
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			flagIdx, posIdx, ok := splitStepArgv(root, c.argv)
+			if ok != c.ok {
+				t.Fatalf("ok = %v, want %v", ok, c.ok)
+			}
+			if !ok {
+				return
+			}
+			if got := sel(c.argv, flagIdx); !reflect.DeepEqual(got, c.flags) {
+				t.Errorf("flags = %#v, want %#v", got, c.flags)
+			}
+			if got := sel(c.argv, posIdx); len(got) != 0 || len(c.pos) != 0 {
+				if !reflect.DeepEqual(got, c.pos) {
+					t.Errorf("positionals = %#v, want %#v", got, c.pos)
+				}
+			}
+		})
+	}
+}
+
+// twoTabBrowser serves two tabs and records which one Text was asked about,
+// with what selector — the two facts a substituted flag could change.
+type twoTabBrowser struct {
+	stubBrowser
+	texts []string
+}
+
+func (b *twoTabBrowser) List(context.Context) ([]target.Info, error) {
+	return []target.Info{
+		{ID: "aa11", Title: "Payroll", URL: "https://payroll.corp/"},
+		{ID: "bb22", Title: "Other", URL: "https://other.test/"},
+	}, nil
+}
+
+func (b *twoTabBrowser) Text(_ context.Context, id, sel string, _ chrome.TextOpts) (map[string]any, error) {
+	b.texts = append(b.texts, id+":"+sel)
+	return map[string]any{"text": "secret"}, nil
+}
+
+var _ chrome.Browser = (*twoTabBrowser)(nil)
 
 // Open question 2, resolved: streaming per-step for interactive use, a single
 // summary under --quiet.
