@@ -183,6 +183,9 @@ All usage errors are rejected before connecting to Chrome, per the standing conv
   Primary approach: inject a temporary hidden `<input type=file>`, attach the files with `DOM.setFileInputFiles` (real CDP file attachment, same as RFC-0006), then in page JS move `input.files` into a `DataTransfer` and dispatch `dragenter` → `dragover` → `drop` on the target, then remove the input.
   The events are untrusted but the `File` objects are real, and drop handlers read `dataTransfer.files` — this is the approach known to work with the common drop-zone libraries.
   `Input.dispatchDragEvent` is the trusted-event alternative; see Open Questions.
+  **As implemented, the input is never ATTACHED to the document** and the target is bound as a remote object rather than marked and re-queried, so the page is not modified at all.
+  That was not a tidiness decision: an attached input fires `change` when the files are set, and `change` bubbles, so a page-global listener would receive the user's real files — an exposure a native drag never creates.
+  Binding to the resolved node also makes the dispatch run in that node's frame, which is what lets a drop zone inside a same-origin iframe work.
 - **`window size` is authorized at the BROWSER level, not per tab.**
   **Added during implementation.** A resize acts on the OS window every tab in it shares, so checking it against the one resolved tab's origin would let a permission granted for one origin reflow another origin's page.
   It is checked with no origin — the same fail-closed treatment `raw --browser` already gets — so an active allow-list refuses it and `--policy-off` remains the deliberate escape hatch.

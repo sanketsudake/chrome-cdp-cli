@@ -84,6 +84,7 @@ Clean up after yourself: **`close`** the tabs you opened, since this is the user
 - **`upload --drop "<sel>" <path>`** (or `--drop-at x,y`) — for a drop zone with NO `<input type=file>` behind it.
   Prefer plain `upload "<sel>" <path>` whenever an input exists (including the hidden one behind most styled drop zones); `--drop` is for the apps that have none.
   Check `drop_handled` in the result: `false` means nothing consumed the drop (you addressed the wrong element) even though the command succeeded.
+  The page is never modified by this — no element is added and no attribute written — and it composes with every addressing mode, including `--by name`.
 - **`window size <w> <h>` / `window info`** — the REAL Chrome window, unlike `emulate viewport` which only lies to the page.
   Set it before a coordinate workflow so pixel coordinates are reproducible across runs.
 - **`value --all "<css>"`** — the value/text of every match as a list (a whole row of hour cells, a set of pills) in one call.

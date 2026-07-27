@@ -48,41 +48,9 @@ func (a *App) cmdUpload() *cobra.Command {
 			"  chrome-cdp upload --drop-at 400,300 ./report.pdf",
 		Args: cobra.ArbitraryArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			// The drop forms address a target that is not a file input, so they
-			// take the paths as ALL the positional args — there is no selector
-			// among them.
-			dropForm := drop != "" || dropAt != ""
-			var selector string
-			var pathArgs []string
-			switch {
-			case dropForm && drop != "" && dropAt != "":
-				a.emitErr("upload", result.CodeUsage, "upload takes --drop <selector> or --drop-at x,y, not both", nil)
-				return nil
-			case dropForm && len(args) == 0:
-				a.emitErr("upload", result.CodeUsage, "no paths given: upload --drop <selector> <path> [<path>...]", nil)
-				return nil
-			case dropForm:
-				pathArgs = args
-			case len(args) == 0:
-				a.emitErr("upload", result.CodeUsage, "upload needs a selector and at least one file path: upload <selector> <path> [<path>...]", nil)
-				return nil
-			case len(args) == 1:
-				a.emitErr("upload", result.CodeUsage, "no paths given: upload <selector> <path> [<path>...]", nil)
-				return nil
-			default:
-				selector, pathArgs = args[0], args[1:]
-			}
-			var dropPoint *chrome.Point
-			if dropAt != "" {
-				p, perr := parsePoint(dropAt)
-				if perr != nil {
-					a.emitErr("upload", result.CodeUsage, "--drop-at "+perr.Error(), nil)
-					return nil
-				}
-				dropPoint = &p
-			}
-			if dropForm && appendFiles {
-				a.emitErr("upload", result.CodeUsage, "--append applies to a file input; a drop delivers a fresh set of files each time", nil)
+			selector, pathArgs, dropPoint, msg := uploadTargetForm(args, drop, dropAt, appendFiles)
+			if msg != "" {
+				a.emitErr("upload", result.CodeUsage, msg, nil)
 				return nil
 			}
 			paths, rerr := resolveUploadPaths(pathArgs, a.uploadRoots(), homeDir())
@@ -132,6 +100,15 @@ func (a *App) runUpload(selector string, paths []string, opts chrome.UploadOpts)
 	if err != nil {
 		if chrome.IsUploadUsage(err) {
 			a.emitErr("upload", result.CodeUsage, err.Error(), nil)
+			return
+		}
+		// A drop the page could not accept is an addressing problem — the
+		// target went away, or the coordinate names no element. Reporting it as
+		// target_not_found tells a caller to fix the address; the generic
+		// cdp_error it would otherwise fall through to reads as "protocol
+		// trouble, retry", which is the wrong advice.
+		if chrome.IsDropFailure(err) {
+			a.emitErr("upload", result.CodeTargetNotFound, err.Error(), nil)
 			return
 		}
 		code, msg, details := a.classifyWithTabHint(b, tgt.ID, err)
@@ -285,4 +262,41 @@ func homeDir() string {
 		return ""
 	}
 	return h
+}
+
+// uploadTargetForm resolves which target form the invocation uses and returns
+// the pieces the command needs, or the usage message explaining why it cannot.
+//
+// It mirrors pointer.go's coordinateForm: one pure function holding the whole
+// selector-vs-coordinate decision, so every rule is in one readable list rather
+// than scattered through a cobra closure — and so the table of usage errors is
+// checkable without a browser.
+//
+// The drop forms address a target that is NOT a file input, so they take every
+// positional as a path; there is no selector among them.
+func uploadTargetForm(args []string, drop, dropAt string, appendFiles bool) (selector string, paths []string, at *chrome.Point, msg string) {
+	dropForm := drop != "" || dropAt != ""
+	switch {
+	case drop != "" && dropAt != "":
+		return "", nil, nil, "upload takes --drop <selector> or --drop-at x,y, not both"
+	case dropForm && appendFiles:
+		return "", nil, nil, "--append applies to a file input; a drop delivers a fresh set of files each time"
+	case dropForm && len(args) == 0:
+		return "", nil, nil, "no paths given: upload --drop <selector> <path> [<path>...]"
+	case !dropForm && len(args) == 0:
+		return "", nil, nil, "upload needs a selector and at least one file path: upload <selector> <path> [<path>...]"
+	case !dropForm && len(args) == 1:
+		return "", nil, nil, "no paths given: upload <selector> <path> [<path>...]"
+	}
+	if dropAt != "" {
+		p, err := parsePoint(dropAt)
+		if err != nil {
+			return "", nil, nil, "--drop-at " + err.Error()
+		}
+		at = &p
+	}
+	if dropForm {
+		return "", args, at, ""
+	}
+	return args[0], args[1:], nil, ""
 }

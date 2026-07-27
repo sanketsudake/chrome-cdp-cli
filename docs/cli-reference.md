@@ -396,9 +396,13 @@ chrome-cdp upload --drop-at 400,300 ./report.pdf
 ```
 
 **The files are real; only the drag is synthesized.**
-A temporary hidden input is injected, the files are attached to it with the same CDP call the ordinary path uses, and page JS moves those `File` objects into a `DataTransfer` before dispatching `dragenter` → `dragover` → `drop`.
+A file input is created but never attached to the document, the files are put on it with the same CDP call the ordinary path uses, and a function bound to the drop target moves those `File` objects into a `DataTransfer` before dispatching `dragenter` → `dragover` → `drop`.
 A handler therefore sees genuine files whichever way it reads them — `dataTransfer.files`, `dataTransfer.items`, `items[0].getAsFile()`, or the `dataTransfer.types` `"Files"` guard most libraries gate on.
-The temporary input and its marker attribute are removed before the call returns, including when a handler throws.
+
+**The page is never modified.** Nothing is appended to the document and no attribute is written to your element, which matters beyond tidiness:
+an *attached* input would fire `change` when the files are set, and `change` bubbles — so any script on the page (analytics, a compromised dependency, an XSS payload) would receive your real file data, which a native drag never permits.
+A detached node's events reach no one.
+Binding the dispatch to the resolved element also means it runs in that element's frame, so a drop zone inside a same-origin iframe works, and `--drop` composes with every addressing mode including `--by name`.
 
 The result reports **`drop_handled`**:
 

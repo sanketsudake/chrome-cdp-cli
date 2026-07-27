@@ -249,13 +249,9 @@ func armChangeWitness(ctx context.Context, objID runtime.RemoteObjectID) error {
 // because an accept/multiple mismatch is the most common reason an upload
 // appears to succeed and then silently does nothing.
 func uploadResult(s fileInputState, sent []string) map[string]any {
-	files := make([]any, 0, len(s.Files))
-	for _, f := range s.Files {
-		files = append(files, map[string]any{"name": f.Name, "size": f.Size, "type": f.Type})
-	}
 	out := map[string]any{
-		"files":        files,
-		"count":        len(files),
+		"files":        filesToAny(s.Files),
+		"count":        len(s.Files),
 		"multiple":     s.Multiple,
 		"accept":       s.Accept,
 		"change_fired": s.Changed,

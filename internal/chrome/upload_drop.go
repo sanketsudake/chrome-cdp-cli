@@ -8,21 +8,35 @@ package chrome
 // those there is no input to set, so the ordinary path has nothing to address.
 //
 // MECHANISM, and why this one (RFC-0014 open question 1, settled by fixture
-// evidence rather than up front): a temporary hidden <input type=file> is
-// injected, the files are attached to it with DOM.setFileInputFiles — the same
-// real CDP file attachment RFC-0006 uses — and then page JS moves those File
-// objects into a DataTransfer and dispatches dragenter → dragover → drop.
+// evidence rather than up front): a file input is created but NEVER attached to
+// the document, the files are put on it with DOM.setFileInputFiles — the same
+// real CDP file attachment RFC-0006 uses — and a function bound to the drop
+// target moves those File objects into a DataTransfer and dispatches
+// dragenter → dragover → drop.
 //
 // The drag events are untrusted, but the files are real, and a live fixture
 // confirmed this satisfies every shape a drop handler reads: dataTransfer.files,
 // dataTransfer.items (with the correct MIME kind), items[0].getAsFile(), and the
 // dataTransfer.types "Files" guard most libraries gate on. Input.dispatchDragEvent
-// would produce trusted events but cannot carry a FileList, so it was not needed
-// and is not used.
+// would produce trusted events but cannot carry a FileList, so it is not used.
+//
+// THE PAGE IS NEVER MUTATED. Nothing is appended to the document and no
+// attribute is written to the caller's element: the input lives only as a
+// remote object handle, and the dispatch runs bound to the target node itself.
+// That matters for three reasons beyond tidiness.
+//   - An attached input would fire `change` on setFileInputFiles, and `change`
+//     BUBBLES — so any page-global listener (an analytics script, a compromised
+//     dependency, an XSS payload) would receive the user's real files, which a
+//     native drag never permits. A detached node's events reach no one.
+//   - Binding the dispatch to the resolved node runs it in THAT node's frame,
+//     so a target inside a same-origin iframe (what --pierce exists for) works.
+//   - There is no marker attribute to leak, so no failed run can misdirect a
+//     later drop onto a stale-marked element.
 
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 
 	"github.com/chromedp/cdproto/dom"
@@ -30,78 +44,81 @@ import (
 	"github.com/chromedp/chromedp"
 )
 
+// ErrDropFailed is a drop the page could not accept — the target went away, or
+// the files did not reach the dispatch. It is the caller's address to fix, not
+// a protocol fault, so the CLI classifies it as a target failure rather than
+// letting it fall through to the generic cdp_error an agent reads as "retry".
+var ErrDropFailed = errors.New("the drop could not be delivered")
+
+// IsDropFailure reports whether err is ErrDropFailed, including after the
+// daemon RPC has flattened it to a plain message.
+func IsDropFailure(err error) bool { return errIs(err, ErrDropFailed) }
+
 // dropResult is what the page reports back about the delivery.
 type dropResult struct {
-	OK      bool   `json:"ok"`
-	Why     string `json:"why"`
-	Target  string `json:"target"`
-	Name    string `json:"name"`
-	Handled bool   `json:"handled"`
-	Files   []struct {
-		Name string `json:"name"`
-		Size int64  `json:"size"`
-		Type string `json:"type"`
-	} `json:"files"`
+	Target  string           `json:"target"`
+	Name    string           `json:"name"`
+	Handled bool             `json:"handled"`
+	Files   []fileInputEntry `json:"files"`
 }
 
 // uploadDrop delivers files by synthesized drag-and-drop.
 func (c *CDP) uploadDrop(ctx context.Context, id string, paths []string, opts UploadOpts) (map[string]any, error) {
 	var res dropResult
 	err := c.run(ctx, id, bringToFront(), chromedp.ActionFunc(func(actx context.Context) error {
-		// Resolve the drop target first: a selector that never resolves should
-		// fail before any input is injected into the user's page.
-		targetJS, err := dropTargetJS(actx, opts)
+		// Resolve the target first: a selector that never resolves should fail
+		// before any file is attached to anything.
+		target, err := dropTargetObject(actx, opts)
 		if err != nil {
 			return err
 		}
+		defer releaseObject(actx, target)
 
-		// The injected input is removed in a `finally`, so a throwing handler
-		// cannot leave debris in the page the CLI is driving.
-		doc, err := dom.GetDocument().Do(actx)
+		input, err := detachedFileInput(actx)
 		if err != nil {
 			return err
 		}
-		if err := evalVoid(actx, injectDropInputJS); err != nil {
-			return err
-		}
-		nid, err := dom.QuerySelector(doc.NodeID, "#"+dropInputID).Do(actx)
-		if err != nil || nid == 0 {
-			_ = evalVoid(actx, removeDropInputJS)
-			return fmt.Errorf("could not address the temporary upload input: %w", err)
-		}
-		if err := dom.SetFileInputFiles(paths).WithNodeID(nid).Do(actx); err != nil {
-			_ = evalVoid(actx, removeDropInputJS)
+		// The handle is released on every exit. It is the only thing this verb
+		// leaves behind even momentarily, and it is not reachable from the page.
+		defer releaseObject(actx, input)
+
+		if err := dom.SetFileInputFiles(paths).WithObjectID(input).Do(actx); err != nil {
 			return fmt.Errorf("DOM.setFileInputFiles: %w", err)
 		}
 
-		out, exc, err := cdpruntime.Evaluate(fmt.Sprintf(dispatchDropJS, targetJS)).
-			WithReturnByValue(true).Do(actx)
+		out, exc, err := cdpruntime.CallFunctionOn(dispatchDropJS).
+			WithObjectID(target).
+			WithArguments([]*cdpruntime.CallArgument{{ObjectID: input}}).
+			WithReturnByValue(true).
+			Do(actx)
 		if err != nil {
 			return err
 		}
 		if exc != nil {
-			return fmt.Errorf("dispatching the drop: %s", exc.Text)
+			// The page-side failures throw rather than returning a status, so
+			// there is ONE error channel out of the dispatch, not two.
+			return fmt.Errorf("%w: %s", ErrDropFailed, exc.Text)
 		}
 		if out == nil || len(out.Value) == 0 {
-			return fmt.Errorf("the drop dispatch returned no result")
+			return fmt.Errorf("%w: the drop dispatch returned no result", ErrDropFailed)
 		}
 		return json.Unmarshal([]byte(out.Value), &res)
 	}))
 	if err != nil {
 		return nil, err
 	}
-	if !res.OK {
-		return nil, fmt.Errorf("%s", res.Why)
-	}
 
-	files := make([]any, 0, len(res.Files))
-	for _, f := range res.Files {
-		files = append(files, map[string]any{"name": f.Name, "size": f.Size, "type": f.Type})
-	}
-	envelope := map[string]any{
+	return dropEnvelope(res), nil
+}
+
+// dropEnvelope builds the result payload, the way uploadResult does for the
+// ordinary path — pure, so the shape (which is public API) can be reasoned
+// about without a browser.
+func dropEnvelope(res dropResult) map[string]any {
+	out := map[string]any{
 		"mode":         "drop",
-		"files":        files,
-		"count":        len(files),
+		"files":        filesToAny(res.Files),
+		"count":        len(res.Files),
 		"dropped_on":   map[string]any{"tag": res.Target, "name": res.Name},
 		"drop_handled": res.Handled,
 	}
@@ -109,104 +126,113 @@ func (c *CDP) uploadDrop(ctx context.Context, id string, paths []string, opts Up
 	// an unhandled drop looks identical to a handled one from the outside, and
 	// the usual cause is addressing the wrong element.
 	if !res.Handled {
-		envelope["note"] = "the target did not consume the drop (no handler called preventDefault) — the files were delivered nowhere; check the drop target"
+		out["note"] = "the target did not consume the drop (no handler called preventDefault) — the files were delivered nowhere; check the drop target"
 	}
-	return envelope, nil
+	return out
 }
 
-// dropTargetJS returns a JS expression evaluating to the drop target, and fails
-// early when a selector names nothing.
-func dropTargetJS(ctx context.Context, opts UploadOpts) (string, error) {
+// dropTargetObject resolves the drop target to a remote object handle.
+//
+// A handle rather than a selector string, because the dispatch is then bound to
+// the node itself: no re-query that --by name/cell/label could not spell, no
+// marker attribute written to the caller's page, and the function runs in the
+// target's own frame.
+func dropTargetObject(ctx context.Context, opts UploadOpts) (cdpruntime.RemoteObjectID, error) {
 	if opts.DropAt != nil {
 		if err := (&viewportGate{}).check(ctx, *opts.DropAt); err != nil {
 			return "", err
 		}
-		return fmt.Sprintf("document.elementFromPoint(%g, %g)", opts.DropAt.X, opts.DropAt.Y), nil
+		expr := fmt.Sprintf(`document.elementFromPoint(%g, %g)`, opts.DropAt.X, opts.DropAt.Y)
+		res, exc, err := cdpruntime.Evaluate(expr).Do(ctx)
+		if err != nil {
+			return "", err
+		}
+		if exc != nil {
+			return "", fmt.Errorf("resolving the drop coordinate: %s", exc.Text)
+		}
+		if res == nil || res.ObjectID == "" {
+			return "", fmt.Errorf("%w: no element at (%g,%g)", ErrDropFailed, opts.DropAt.X, opts.DropAt.Y)
+		}
+		return res.ObjectID, nil
 	}
 	nid, err := resolveNodeReady(ctx, opts.Drop, opts.Query)
 	if err != nil {
 		return "", err
 	}
-	// Hand the resolved node to JS through a marker attribute rather than
-	// re-querying by selector: --by name/cell/label have no CSS spelling, so a
-	// second lookup could land somewhere else entirely.
-	if err := dom.SetAttributeValue(nid, dropMarkerAttr, "1").Do(ctx); err != nil {
+	obj, err := dom.ResolveNode().WithNodeID(nid).Do(ctx)
+	if err != nil {
 		return "", err
 	}
-	return fmt.Sprintf("document.querySelector('[%s]')", dropMarkerAttr), nil
+	if obj == nil || obj.ObjectID == "" {
+		return "", fmt.Errorf("%w: the drop target has no remote object", ErrDropFailed)
+	}
+	return obj.ObjectID, nil
 }
 
-func evalVoid(ctx context.Context, expr string) error {
-	_, exc, err := cdpruntime.Evaluate(expr).Do(ctx)
+// detachedFileInput creates a file input that is never added to the document.
+func detachedFileInput(ctx context.Context) (cdpruntime.RemoteObjectID, error) {
+	res, exc, err := cdpruntime.Evaluate(
+		`(() => { const i = document.createElement("input"); i.type = "file"; i.multiple = true; return i; })()`).
+		Do(ctx)
 	if err != nil {
-		return err
+		return "", err
 	}
 	if exc != nil {
-		return fmt.Errorf("%s", exc.Text)
+		return "", fmt.Errorf("creating the temporary file input: %s", exc.Text)
 	}
-	return nil
+	if res == nil || res.ObjectID == "" {
+		return "", errors.New("creating the temporary file input returned no handle")
+	}
+	return res.ObjectID, nil
 }
 
-const (
-	dropInputID    = "__chrome_cdp_drop_input"
-	dropMarkerAttr = "data-chrome-cdp-drop"
-)
+// releaseObject drops a remote object handle. Best-effort: a handle that
+// outlives the call is collected with the page, and failing a delivered upload
+// over its release would be the wrong trade.
+func releaseObject(ctx context.Context, id cdpruntime.RemoteObjectID) {
+	if id != "" {
+		_ = cdpruntime.ReleaseObject(id).Do(ctx)
+	}
+}
 
-const injectDropInputJS = `(() => {
-  const old = document.getElementById("` + dropInputID + `");
-  if (old) old.remove();
-  const i = document.createElement("input");
-  i.type = "file";
-  i.multiple = true;
-  i.id = "` + dropInputID + `";
-  i.style.display = "none";
-  document.body.appendChild(i);
-})()`
+// filesToAny renders file entries for the envelope. Shared with the ordinary
+// upload path so both report a file the same way.
+func filesToAny(files []fileInputEntry) []any {
+	out := make([]any, 0, len(files))
+	for _, f := range files {
+		out = append(out, map[string]any{"name": f.Name, "size": f.Size, "type": f.Type})
+	}
+	return out
+}
 
-const removeDropInputJS = `(() => {
-  const i = document.getElementById("` + dropInputID + `");
-  if (i) i.remove();
-  for (const el of document.querySelectorAll("[` + dropMarkerAttr + `]")) el.removeAttribute("` + dropMarkerAttr + `");
-})()`
-
-// dispatchDropJS moves the real Files onto a DataTransfer and dispatches the
-// drag sequence at the target. %s is the target expression.
+// dispatchDropJS runs bound to the drop target, with the detached input passed
+// as an argument.
 //
-// `handled` records whether anything consumed the drop: a drop handler that
-// means to accept files calls preventDefault, so an uncancelled drop is the
-// signal that the files went nowhere. Reporting that is the difference between
-// "delivered" and "dispatched into the void".
-const dispatchDropJS = `(() => {
-  const clean = () => {
-    const i = document.getElementById("` + dropInputID + `");
-    if (i) i.remove();
-    for (const el of document.querySelectorAll("[` + dropMarkerAttr + `]")) el.removeAttribute("` + dropMarkerAttr + `");
-  };
-  try {
-    const input = document.getElementById("` + dropInputID + `");
-    if (!input || !input.files || !input.files.length) {
-      return {ok: false, why: "the files did not attach to the temporary input"};
-    }
-    const target = %s;
-    if (!target) return {ok: false, why: "the drop target is not on the page"};
-
-    const dt = new DataTransfer();
-    const files = [];
-    for (const f of input.files) {
-      dt.items.add(f);
-      files.push({name: f.name, size: f.size, type: f.type});
-    }
-    const mk = (type) => new DragEvent(type, {bubbles: true, cancelable: true, dataTransfer: dt});
-    target.dispatchEvent(mk("dragenter"));
-    target.dispatchEvent(mk("dragover"));
-    const drop = mk("drop");
-    target.dispatchEvent(drop);
-
-    const name = (target.getAttribute && (target.getAttribute("aria-label") || target.id)) ||
-                 (target.textContent || "").replace(/\s+/g, " ").trim().slice(0, 60);
-    return {ok: true, target: (target.tagName || "").toLowerCase(), name: name,
-            handled: drop.defaultPrevented, files: files};
-  } finally {
-    clean();
+// `handled` records whether anything consumed the drop: a handler that means to
+// accept files calls preventDefault, so an uncancelled drop is the signal that
+// the files went nowhere. Reporting that is the difference between "delivered"
+// and "dispatched into the void".
+const dispatchDropJS = `function(input) {
+  if (!input || !input.files || !input.files.length) {
+    throw new Error("the files did not attach to the temporary input");
   }
-})()`
+  if (!this || !this.dispatchEvent) {
+    throw new Error("the drop target is not an element");
+  }
+  const dt = new DataTransfer();
+  const files = [];
+  for (const f of input.files) {
+    dt.items.add(f);
+    files.push({name: f.name, size: f.size, type: f.type});
+  }
+  const mk = (type) => new DragEvent(type, {bubbles: true, cancelable: true, dataTransfer: dt});
+  this.dispatchEvent(mk("dragenter"));
+  this.dispatchEvent(mk("dragover"));
+  const drop = mk("drop");
+  this.dispatchEvent(drop);
+
+  const name = (this.getAttribute && (this.getAttribute("aria-label") || this.id)) ||
+               (this.textContent || "").replace(/\s+/g, " ").trim().slice(0, 60);
+  return {target: (this.tagName || "").toLowerCase(), name: name,
+          handled: drop.defaultPrevented, files: files};
+}`

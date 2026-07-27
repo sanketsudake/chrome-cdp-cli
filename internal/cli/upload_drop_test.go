@@ -8,6 +8,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/sanketsudake/chrome-cdp-cli/internal/chrome"
@@ -107,5 +108,59 @@ func TestUploadDropHonoursUploadRoots(t *testing.T) {
 	}
 	if b.paths != nil {
 		t.Error("the driver was reached despite the refusal")
+	}
+}
+
+// The target-form rules as one table, now that they live in one pure function.
+func TestUploadTargetForm(t *testing.T) {
+	t.Parallel()
+	cases := map[string]struct {
+		args            []string
+		drop, dropAt    string
+		appendFiles     bool
+		wantSelector    string
+		wantPaths       []string
+		wantPoint       bool
+		wantMsgFragment string
+	}{
+		"input form": {
+			args: []string{"#in", "a.pdf", "b.pdf"}, wantSelector: "#in", wantPaths: []string{"a.pdf", "b.pdf"},
+		},
+		"drop form takes every positional as a path": {
+			args: []string{"a.pdf", "b.pdf"}, drop: "#zone", wantPaths: []string{"a.pdf", "b.pdf"},
+		},
+		"drop-at parses a point": {
+			args: []string{"a.pdf"}, dropAt: "400,300", wantPaths: []string{"a.pdf"}, wantPoint: true,
+		},
+		"both drop forms":     {args: []string{"a.pdf"}, drop: "#z", dropAt: "1,2", wantMsgFragment: "not both"},
+		"drop with append":    {args: []string{"a.pdf"}, drop: "#z", appendFiles: true, wantMsgFragment: "--append applies"},
+		"drop with no path":   {drop: "#z", wantMsgFragment: "no paths given"},
+		"input form no args":  {wantMsgFragment: "needs a selector"},
+		"input form only sel": {args: []string{"#in"}, wantMsgFragment: "no paths given"},
+		"bad drop-at":         {args: []string{"a.pdf"}, dropAt: "4;3", wantMsgFragment: "--drop-at"},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			sel, paths, at, msg := uploadTargetForm(tc.args, tc.drop, tc.dropAt, tc.appendFiles)
+			if tc.wantMsgFragment != "" {
+				if !strings.Contains(msg, tc.wantMsgFragment) {
+					t.Fatalf("msg = %q, want it to mention %q", msg, tc.wantMsgFragment)
+				}
+				return
+			}
+			if msg != "" {
+				t.Fatalf("unexpected usage error: %q", msg)
+			}
+			if sel != tc.wantSelector {
+				t.Errorf("selector = %q, want %q", sel, tc.wantSelector)
+			}
+			if len(paths) != len(tc.wantPaths) {
+				t.Errorf("paths = %v, want %v", paths, tc.wantPaths)
+			}
+			if (at != nil) != tc.wantPoint {
+				t.Errorf("point = %v, wantPoint = %v", at, tc.wantPoint)
+			}
+		})
 	}
 }
