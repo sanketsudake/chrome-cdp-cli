@@ -14,6 +14,7 @@ import (
 
 	"github.com/sanketsudake/chrome-cdp-cli/internal/chrome"
 	"github.com/sanketsudake/chrome-cdp-cli/internal/config"
+	"github.com/sanketsudake/chrome-cdp-cli/internal/result"
 	"github.com/sanketsudake/chrome-cdp-cli/internal/target"
 )
 
@@ -570,6 +571,101 @@ steps:
 	want := fmt.Sprintf("Fill(aa11,#field,%q,by=css,role=)", hostile)
 	if len(b.calls) < 2 || b.calls[1] != want {
 		t.Errorf("browser saw %v\nwant a single call %s", b.calls, want)
+	}
+}
+
+// binaryBrowser's screenshot bytes contain newlines and a JSON-looking line —
+// dumped into an NDJSON stream they do not merely look wrong, they parse wrong.
+type binaryBrowser struct{ recordingBrowser }
+
+func (b *binaryBrowser) Screenshot(context.Context, string, chrome.ShotOpts) ([]byte, map[string]any, error) {
+	b.calls = append(b.calls, "Screenshot")
+	return []byte("\x89PNG\r\n\x1a\n{\"ok\":true}\nIDAT\x00\x01"), nil, nil
+}
+
+var _ chrome.Browser = (*binaryBrowser)(nil)
+
+// A step that writes raw bytes to stdout fails the step instead of corrupting
+// the recipe's NDJSON.
+//
+// `screenshot -o -` writes its image straight to stdout and emits no envelope,
+// so its bytes landed in the middle of the stream and every later line became
+// unparseable for whoever was reading it.
+func TestRecipeStepWritingRawBytesFailsTheStep(t *testing.T) {
+	project, _ := isolateRecipes(t)
+	writeRecipe(t, project, "shot", `name: shot
+target: aa11
+steps:
+  - run: ["screenshot", "-o", "-"]
+  - label: never runs
+    run: ["text", "h1"]
+`)
+	b := &binaryBrowser{}
+	var out, errb bytes.Buffer
+	code := New(b, &out, &errb).Execute("recipe", "run", "shot")
+
+	// envelopes() fails on any line that is not one JSON value, which is the
+	// assertion that matters: the stream stayed parseable.
+	envs := envelopes(t, out.String())
+	if len(envs) != 2 {
+		t.Fatalf("got %d envelopes, want the failed step + summary:\n%q", len(envs), out.String())
+	}
+	if envs[0]["ok"] != false || envs[0]["step"] != 1.0 {
+		t.Errorf("step envelope = %v, want a failed step 1", envs[0])
+	}
+	if msg, _ := envs[0]["error"].(map[string]any)["message"].(string); !strings.Contains(msg, "envelope") {
+		t.Errorf("step message = %q, want it to explain the raw output", msg)
+	}
+	if code != 2 {
+		t.Errorf("exit = %d, want 2 (usage): a step that cannot run in a recipe is the author's mistake", code)
+	}
+	for _, c := range b.calls {
+		if strings.HasPrefix(c, "Text") {
+			t.Errorf("the step after the failure ran: %v", b.calls)
+		}
+	}
+}
+
+// The summary's error.code and the process exit code must agree: a caller that
+// branches on the exit and a caller that reads the envelope have to reach the
+// same conclusion. envCode fell back to `generic` (exit 1) whenever a step
+// emitted no envelope, while the process still exited with the step's own code.
+func TestRecipeSummaryCodeMatchesTheExit(t *testing.T) {
+	project, _ := isolateRecipes(t)
+	writeRecipe(t, project, "shot", "name: shot\ntarget: aa11\nsteps:\n  - run: [\"screenshot\", \"-o\", \"-\"]\n")
+
+	var out, errb bytes.Buffer
+	code := New(&binaryBrowser{}, &out, &errb).Execute("recipe", "run", "shot")
+	// The summary is the last line; read it directly rather than through
+	// envelopes(), which would fatal on the raw bytes this used to emit before
+	// reaching the assertion that matters.
+	lines := strings.Split(strings.TrimRight(out.String(), "\n"), "\n")
+	var summary map[string]any
+	if err := json.Unmarshal([]byte(lines[len(lines)-1]), &summary); err != nil {
+		t.Fatalf("last line is not the summary envelope: %q", lines[len(lines)-1])
+	}
+	errObj, _ := summary["error"].(map[string]any)
+	got, _ := errObj["code"].(string)
+	if want := codeForExit(code); got != want {
+		t.Errorf("summary error.code = %q but the process exited %d (which is %q)", got, code, want)
+	}
+	failed, _ := summary["result"].(map[string]any)["failed"].(map[string]any)
+	if failed == nil || failed["code"] != got {
+		t.Errorf("failed = %v, summary error.code = %q; they must name the same code", failed, got)
+	}
+}
+
+// codeForExit's inverse has to hold for every documented exit code, or the
+// summary would name a code that maps somewhere else.
+func TestCodeForExitRoundTrips(t *testing.T) {
+	t.Parallel()
+	for _, doc := range result.ExitCodes() {
+		if doc.Code == result.ExitOK {
+			continue
+		}
+		if got := result.ExitCodeFor(codeForExit(doc.Code)); got != doc.Code {
+			t.Errorf("codeForExit(%d) = %q, which maps back to %d", doc.Code, codeForExit(doc.Code), got)
+		}
 	}
 }
 

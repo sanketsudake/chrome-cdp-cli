@@ -533,8 +533,13 @@ func (a *App) runPlan(plan *recipe.Plan) {
 			continue
 		}
 		if failed == nil {
-			failed = map[string]any{"index": st.Index, "label": st.Label, "code": envCode(env)}
-			failExit = exit
+			code := envCode(env)
+			failed = map[string]any{"index": st.Index, "label": st.Label, "code": code}
+			// The exit follows the code the summary reports, so a caller that
+			// branches on the number and one that reads the envelope cannot
+			// reach different conclusions. The envelope is the public API; the
+			// exit is derived from it everywhere else, and here too.
+			failExit = result.ExitCodeFor(code)
 		}
 		if st.OnError != recipe.OnErrorContinue {
 			break
@@ -591,12 +596,7 @@ func (a *App) execStep(st recipe.PlanStep, quiet bool) (int, map[string]any) {
 
 	env, ok := parseStepEnvelope(buf.Bytes())
 	if !ok {
-		// A step whose stdout is not a single envelope (a command that writes
-		// raw bytes, say) is passed through untouched rather than dropped.
-		if !quiet {
-			_, _ = a.out.Write(buf.Bytes())
-		}
-		return exit, nil
+		env, exit = rawOutputEnvelope(st, buf.Bytes(), exit)
 	}
 	env["step"] = st.Index
 	if st.Label != "" {
@@ -626,6 +626,53 @@ func parseStepEnvelope(b []byte) (map[string]any, bool) {
 		return nil, false
 	}
 	return m, true
+}
+
+// rawOutputEnvelope replaces a step's unparseable stdout with a failure
+// envelope of its own, and returns the exit that envelope implies.
+//
+// A recipe's stdout is NDJSON. A step that writes raw bytes there —
+// `screenshot -o -` and `pdf -o -` write their file to stdout and emit no
+// envelope at all — used to have those bytes passed through into the middle of
+// the stream, so every reader downstream lost the rest of the run. Failing the
+// step says what happened, keeps the stream parseable, and stops the recipe at
+// the point the author has to fix.
+func rawOutputEnvelope(st recipe.PlanStep, raw []byte, exit int) (map[string]any, int) {
+	verb := ""
+	if len(st.Argv) > 0 {
+		verb = st.Argv[0]
+	}
+	code := result.CodeUsage
+	msg := fmt.Sprintf("step %d (%s) wrote %d bytes to stdout instead of one result envelope; a step that writes a file to stdout (`-o -`) cannot run in a recipe, because the run's output is NDJSON — give it a path instead",
+		st.Index, verb, len(raw))
+	if exit != result.ExitOK {
+		// The step failed AND said nothing parseable. Keep its own exit by
+		// naming the code that maps to it, so the summary and the process agree.
+		code = codeForExit(exit)
+		msg = fmt.Sprintf("step %d (%s) failed without emitting a result envelope; %d bytes of its output were dropped to keep the run's NDJSON parseable",
+			st.Index, verb, len(raw))
+	}
+	env := map[string]any{
+		"ok":      false,
+		"command": verb,
+		"error":   map[string]any{"code": code, "message": msg, "bytes": len(raw)},
+	}
+	return env, result.ExitCodeFor(code)
+}
+
+// codeForExit names an exit code, for the one case where a step's exit is known
+// and its error.code is not. Every documented exit has a code that maps to it
+// (TestCodeForExitRoundTrips pins that), so the pair can never disagree.
+func codeForExit(exit int) string {
+	for _, code := range []string{
+		result.CodeUsage, result.CodeConnection, result.CodeTargetTimeout,
+		result.CodeCDP, result.CodeDaemon, result.CodePermissionDenied,
+	} {
+		if result.ExitCodeFor(code) == exit {
+			return code
+		}
+	}
+	return result.CodeGeneric
 }
 
 // envCode digs the stable error.code out of a step envelope, falling back to

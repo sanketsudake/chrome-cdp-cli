@@ -561,8 +561,12 @@ Resolution order for a name, first match wins:
 ```
 
 A failing step stops the run (unless it says `on_error: continue`), and the summary carries `failed: {"index":3,"label":"save","code":"target_timeout"}`.
-**The process exit code is the failing step's**, so a shell caller branches on the same contract as for a single command.
+**The process exit code is the failing step's**, so a shell caller branches on the same contract as for a single command — and it is always the exit that `failed.code` maps to, so the number and the envelope cannot disagree.
 Under `--quiet` only the summary is printed.
+
+Because the run's output is NDJSON, a step may not write raw bytes to stdout.
+`screenshot -o -` and `pdf -o -` write the file itself to stdout and emit no envelope, so such a step fails with `usage` instead of corrupting the stream — give it a path (`-o shot.png`) and read the path back out of its envelope.
+Streaming steps (`console --follow`, `net --follow`) are a `usage` error for the same reason, exactly as inside `session`.
 
 **Reviewing a recipe someone sent you.**
 A recipe drives the browser you are already signed into, so read one before running it, exactly as you would a shell script:
