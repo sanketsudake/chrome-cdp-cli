@@ -535,6 +535,11 @@ That is everything — there is no other key, and an unrecognised one is an erro
 There is no shell anywhere in this design and there is no `shell:` step type, so a value is passed through byte for byte and nothing in it is interpreted.
 Per-step flags a verb already accepts — `--timeout 60s`, `--by name`, `--wait-text` — go in that step's own `run` array, where a reader of the recipe can see them.
 
+**`--timeout` on the run applies to each step, not to the run.**
+Each step is one command and gets the whole budget, exactly as each line of a `session` does — so a 200-step recipe with `--timeout 60s` can take 200 minutes in the worst case, not one.
+There is no whole-run budget on purpose: it would make `recipe run` and `recipe run --dry-run | chrome-cdp session` behave differently, and their equivalence is what keeps a recipe a `session` script with a header.
+Give a slow step its own `--timeout` in its `run` array and leave the run's default low.
+
 A step must name its command in the **first** element of `run`.
 A leading flag (`run: ["--json", "snap"]`) is a load-time error: it would hide the command from validation, since the command tree resolves the verb only after stripping flags.
 

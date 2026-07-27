@@ -669,6 +669,29 @@ func TestCodeForExitRoundTrips(t *testing.T) {
 	}
 }
 
+// runPlan folds the run's connection flags into a.defaults so they survive into
+// each step's Execute — and has to put them back. They used to leak into every
+// later `session` line, which is the mutation the RFC guidance names outright:
+// do not cache flag-derived state on App across invocations.
+func TestRecipeRestoresTheAppDefaults(t *testing.T) {
+	project, _ := isolateRecipes(t)
+	writeRecipe(t, project, "three", threeStep)
+
+	var out, errb bytes.Buffer
+	app := New(&recordingBrowser{}, &out, &errb)
+	before := app.defaults
+	if code := app.Execute("recipe", "run", "three", "--timeout", "5s", "--no-daemon", "--port", "1234"); code != 0 {
+		t.Fatalf("exit = %d\n%s", code, errb.String())
+	}
+	if !reflect.DeepEqual(app.defaults, before) {
+		t.Errorf("a.defaults after the run = %+v\nwant it restored to %+v", app.defaults, before)
+	}
+	// inSession is borrowed the same way and must come back too.
+	if app.inSession || app.inRecipe {
+		t.Errorf("inSession = %v, inRecipe = %v after the run; both must be restored", app.inSession, app.inRecipe)
+	}
+}
+
 // A streaming step is the same usage error inside a recipe that it is inside
 // `session`.
 //

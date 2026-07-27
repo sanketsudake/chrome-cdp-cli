@@ -506,7 +506,15 @@ func (a *App) runPlan(plan *recipe.Plan) {
 	// and came out as unparseable output with no step or label on it.
 	wasInSession := a.inSession
 	a.inSession = true
-	defer func() { a.inRecipe, a.inSession = false, wasInSession }()
+	// The defaults are BORROWED for the run, not changed by it. Flag-derived
+	// state cached on App outlives the invocation that set it, so a recipe run
+	// as a `session` line used to hand its --timeout, --port and --json to
+	// every later line in that session.
+	savedDefaults := a.defaults
+	defer func() {
+		a.inRecipe, a.inSession = false, wasInSession
+		a.defaults = savedDefaults
+	}()
 
 	start := a.start
 	// Flags are re-registered per Execute, so anything the user set on the
@@ -514,6 +522,12 @@ func (a *App) runPlan(plan *recipe.Plan) {
 	// into each step. Only the connection and timeout flags are propagated:
 	// selector semantics (--by, --role, …) belong in the step's own argv, where
 	// a reader of the recipe can see them.
+	//
+	// --timeout is per STEP, the same way it is per line in `session`: each
+	// step is one command and gets the whole budget. That is deliberate --
+	// a whole-run budget would make `recipe run` and `recipe run --dry-run |
+	// session` behave differently, and their equivalence is the structural
+	// guard on "a recipe is a `session` script with a header".
 	quiet := a.quiet
 	a.defaults.Timeout = a.timeout
 	a.defaults.NoLaunch = a.noLaunch
