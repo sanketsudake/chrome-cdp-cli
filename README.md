@@ -61,9 +61,11 @@ The [logged-in web app guide](docs/scenarios/automating-a-logged-in-web-app.md) 
 
 - **Your real session.**
   It drives the Chrome you're logged into — real cookies, SSO, extensions — so there's nothing to authenticate and no secret to store.
-- **Address by meaning.**
-  Target controls by ARIA **accessible name**, visible **label**, or grid **cell** — not CSS ids that change every session.
-  Reads and writes survive the app's cosmetic churn.
+- **Three ways to point at a control**, in order of durability.
+  By **meaning** — ARIA accessible name, visible label, or grid cell — which survives the cosmetic churn that breaks CSS ids.
+  By **description**, when you don't know the name: `find "login button"` ranks candidates and returns the exact name, a ref, and a centre point.
+  By **pixel**, when there is nothing to name: `click --at 512,340` is the only way into a canvas, map, or PDF viewer, which expose a single node to the accessibility tree.
+  (A drop zone with no file input behind it takes `upload --drop`, for the same reason.)
 - **Made for automation.**
   One JSON envelope, one [exit-code contract](docs/cli-reference.md#output-contract); a background daemon holds the connection so the consent prompt appears once per session, not per command.
 - **Drives the hard widgets.**
@@ -71,20 +73,36 @@ The [logged-in web app guide](docs/scenarios/automating-a-logged-in-web-app.md) 
 - **Works on modern Chrome.**
   It reads Chrome's `DevToolsActivePort` and connects directly, so it keeps working where the classic `--remote-debugging-port` flag stopped (default profile, Chrome M136+).
 
-## A taste of the commands
+## The loop, in commands
+
+The Quickstart covered picking a tab. What follows is the part you repeat.
+
+**Read what's there** — as structure, not pixels.
 
 ```sh
-chrome-cdp list --url outlook              # list tabs (--url/--title filter)
-chrome-cdp snap --role button --grep "[AP]M"   # filter the a11y tree server-side
-chrome-cdp grid                            # read a table as {headers, rows}
-chrome-cdp fill --by cell "Mon, 7/13" "8"  # a grid input by its column header
-chrome-cdp fill --by label "Notes" "hi"    # a form control by its visible label
-chrome-cdp select "Time Type" "Projects > Acme: Platform > Project > Time Entry" --role textbox
-chrome-cdp click --by name "Approve" --role button --wait-text "Success"   # act, then confirm
-chrome-cdp wait --idle                     # settle an SPA (network, not a fixed sleep)
-chrome-cdp raw Network.setCacheDisabled '{"cacheDisabled":true}'   # any CDP method
+chrome-cdp snap --role button --grep "[AP]M"   # the a11y tree, filtered server-side
+chrome-cdp find "search bar" --role textbox    # or describe it: ref, exact name, centre
+chrome-cdp grid                                # a table as {headers, rows}
 ```
 
+**Act on it** — by meaning where there is one, by pixel where there isn't.
+
+```sh
+chrome-cdp fill --by cell "Mon, 7/13" "8"           # a grid input by its column header
+chrome-cdp fill --by label "Notes" "hi"             # a form control by its visible label
+chrome-cdp select "Time Type" "Projects > Acme > Time Entry" --role textbox
+chrome-cdp upload --drop ".dropzone" ./report.pdf   # a drop zone with no file input
+```
+
+**Confirm it worked** — before the next step depends on it.
+
+```sh
+chrome-cdp click --by name "Approve" --wait-text "Success"   # act and confirm in one call
+chrome-cdp wait --idle                                       # settle an SPA, not a fixed sleep
+chrome-cdp net --failed --body                               # what the page actually requested
+```
+
+When no verb covers what you need, `raw` reaches any CDP method directly — `chrome-cdp raw Network.setCacheDisabled '{"cacheDisabled":true}'`.
 Full command, flag, and exit-code tables live in the **[CLI reference](docs/cli-reference.md)**.
 
 ## For AI agents
@@ -127,11 +145,18 @@ Shell completion is built in: `chrome-cdp completion bash|zsh|fish|powershell`.
 
 A live debug endpoint is **full control** of whatever your Chrome is signed into — treat enabling remote debugging (by flag or by toggle) like opening a local root shell into your browser's sessions, and only do it when you intend to automate.
 
+**Bound it with a policy.**
+`chrome-cdp policy init` allow-lists the tab you are on; the CLI then refuses everything else, and `chrome-cdp mcp` will not start without one.
+It is off until you configure it, and it guards against a misdirected caller rather than acting as a sandbox — see **[Policy](docs/cli-reference.md#policy)** for origins, verbs, upload roots, and the audit log.
+
 - **Loopback only.**
   It connects to `127.0.0.1` and never binds the debug port to a non-loopback interface.
   It never suppresses Chrome's "Allow debugging?" consent or the automation banner.
 - **Don't pass secrets as arguments.**
   `type <selector> <text>` takes text as a positional argument, visible in `ps` and shell history — don't type passwords through it on a shared machine.
+- **Password fields read back masked.**
+  `value`, `snap`, and `find` report a password input's contents as bullets, and `upload --drop` never attaches its temporary input to the page, so a page-global listener cannot see your files.
+  This is accident-prevention, not a boundary: `eval` still reads whatever the page holds, deliberately — one explicit path beats several incidental ones.
 - **Managed-launch fallback** uses your system Chrome with a dedicated profile and does not disable the sandbox.
 
 ## Documentation
