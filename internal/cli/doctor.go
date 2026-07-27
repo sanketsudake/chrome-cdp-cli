@@ -24,6 +24,7 @@ const (
 	stateNoEndpoint     = "no_endpoint"
 	stateConsentPending = "consent_pending"
 	stateReady          = "ready"
+	stateUnverified     = "unverified" // --no-probe: an endpoint exists and nothing was checked
 )
 
 // cmdDoctor answers "can I connect?" by actually connecting.
@@ -67,24 +68,31 @@ func (a *App) runDoctor(noProbe bool) {
 		return
 	}
 
-	pf := browser.FindPortFile("")
-	if pf == "" {
+	// --port names a SPECIFIC Chrome, and every other verb resolves it before
+	// the port file. doctor read the port file directly and never looked at the
+	// flag, so `doctor --port 9333` diagnosed whichever browser the file
+	// happened to name and reported that one healthy.
+	ep := browser.FindEndpoint("", a.port)
+	if ep.Err != nil {
+		a.emitErr("doctor", result.CodeConnection,
+			"the DevToolsActivePort file is unreadable ("+ep.Err.Error()+") — "+browser.EnableAdvice,
+			map[string]any{"state": stateNoEndpoint, "port_file": ep.PortFile})
+		return
+	}
+	if ep.URL == "" {
 		a.emitErr("doctor", result.CodeConnection,
 			"no debug endpoint found (no DevToolsActivePort file) — "+browser.EnableAdvice,
 			map[string]any{"state": stateNoEndpoint})
 		return
 	}
-	ws, err := browser.WSURLFromPortFile(pf)
-	if err != nil {
-		a.emitErr("doctor", result.CodeConnection,
-			"the DevToolsActivePort file is unreadable ("+err.Error()+") — "+browser.EnableAdvice,
-			map[string]any{"state": stateNoEndpoint, "port_file": pf})
-		return
+	base := map[string]any{"endpoint": ep.URL, "via": "probe", "probed": true}
+	if ep.PortFile != "" {
+		base["port_file"] = ep.PortFile
 	}
 	if noProbe {
 		a.emitOK("doctor", nil, map[string]any{
-			"port_file": pf, "ws": ws, "via": "port-file", "probed": false, "state": "unverified",
-			"status": "a port file exists, but --no-probe means nothing was verified — a stale file looks exactly like this",
+			"endpoint": ep.URL, "port_file": ep.PortFile, "via": "port-file", "probed": false, "state": stateUnverified,
+			"status": "an endpoint was found, but --no-probe means nothing was verified — a stale port file looks exactly like this",
 		})
 		return
 	}
@@ -95,7 +103,16 @@ func (a *App) runDoctor(noProbe bool) {
 	if !a.quiet {
 		fmt.Fprintln(a.err, "chrome-cdp doctor: no daemon is running, so this opens one connection to Chrome to verify the endpoint; on the chrome://inspect path that can raise Chrome's consent prompt (use --no-probe to skip)")
 	}
-	base := map[string]any{"port_file": pf, "ws": ws, "via": "probe", "probed": true}
+	// An explicit --port names an HTTP endpoint; the browser-level WebSocket
+	// path has to be resolved before anything can be upgraded against it.
+	ws, ok := browser.ResolveWSURL(ep.URL, doctorDialTimeout)
+	if !ok {
+		a.emitErr("doctor", result.CodeConnection,
+			"nothing usable answered at "+ep.URL+" (stale port file, or another process on that port) — "+browser.EnableAdvice,
+			base)
+		return
+	}
+	base["ws"] = ws
 	switch browser.ProbeWS(ws, doctorDialTimeout, doctorProbeWait) {
 	case browser.WSReady:
 		base["state"] = stateReady

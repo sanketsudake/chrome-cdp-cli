@@ -77,6 +77,41 @@ func FindPortFile(override string) string {
 	return ""
 }
 
+// Endpoint is where a command should try to reach Chrome, and how that was
+// decided. It exists because two callers have to agree on it: chrome.Connect,
+// which attaches, and `doctor`, which diagnoses. doctor used to read the port
+// file directly and ignore --port entirely, so `doctor --port 9333` probed a
+// different browser than the one the flag named and reported IT healthy.
+type Endpoint struct {
+	// URL is the ws:// (port-file path) or http:// (explicit --port) endpoint,
+	// or "" when none was found.
+	URL string
+	// PortFile is the DevToolsActivePort file URL came from, "" when an
+	// explicit --port was used (there is no file in that case).
+	PortFile string
+	// Err is set when a port file was found and could not be read or parsed —
+	// distinct from "no endpoint", because the remedy is different.
+	Err error
+}
+
+// FindEndpoint resolves the debug endpoint from an explicit port, else the
+// DevToolsActivePort file. An explicit --port wins: it names a specific Chrome,
+// and a port file naming a different one is not a fallback for it.
+func FindEndpoint(portFileOverride string, port int) Endpoint {
+	if port != 0 {
+		return Endpoint{URL: fmt.Sprintf("http://127.0.0.1:%d", port)}
+	}
+	pf := FindPortFile(portFileOverride)
+	if pf == "" {
+		return Endpoint{}
+	}
+	ws, err := WSURLFromPortFile(pf)
+	if err != nil {
+		return Endpoint{PortFile: pf, Err: err}
+	}
+	return Endpoint{URL: ws, PortFile: pf}
+}
+
 // EndpointKey identifies the debug endpoint a command targets, so the daemon
 // socket and sticky state are keyed to the actual Chrome instance rather than a
 // fixed port. An explicit --port wins (distinct ports get distinct keys);

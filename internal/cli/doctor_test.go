@@ -337,3 +337,50 @@ func TestConsentTimeoutFlagIsNormalised(t *testing.T) {
 		})
 	}
 }
+
+// TestDoctorHonoursExplicitPort. Every other verb resolves its endpoint from
+// --port before the DevToolsActivePort file; doctor called FindPortFile("") and
+// never looked at the flag. So `doctor --port 9333` probed whatever Chrome the
+// port file happened to name and pronounced THAT one healthy — a diagnostic
+// answering a question about a different browser than the one asked about.
+func TestDoctorHonoursExplicitPort(t *testing.T) {
+	prev := doctorProbeWait
+	doctorProbeWait = 300 * time.Millisecond
+	t.Cleanup(func() { doctorProbeWait = prev })
+
+	// The port file names a perfectly healthy endpoint...
+	stubEndpoint(t, "HTTP/1.1 101 Switching Protocols")
+
+	// ...and --port names one that is holding a consent prompt.
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+	var stalled atomic.Int32
+	go func() {
+		var held []net.Conn
+		defer func() {
+			for _, c := range held {
+				_ = c.Close()
+			}
+		}()
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			stalled.Add(1)
+			held = append(held, c)
+		}
+	}()
+	_, port, _ := net.SplitHostPort(ln.Addr().String())
+
+	env, _, _ := runDoctorApp(t, nil, "--port", port)
+	if got := doctorState(t, env); got != stateConsentPending {
+		t.Errorf("state = %q, want %q — doctor diagnosed a different Chrome than --port named: %v", got, stateConsentPending, env)
+	}
+	if stalled.Load() == 0 {
+		t.Error("doctor never contacted the --port endpoint at all")
+	}
+}

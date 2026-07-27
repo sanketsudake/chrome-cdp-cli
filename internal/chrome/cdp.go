@@ -209,14 +209,9 @@ var consentPendingAfter = 2 * time.Second
 // there is exactly one authored copy of the ladder.
 func Connect(_ context.Context, opts Options) (*CDP, error) {
 	// An explicit --port takes precedence over the DevToolsActivePort file.
-	var endpoint string
-	if opts.Port != 0 {
-		endpoint = fmt.Sprintf("http://127.0.0.1:%d", opts.Port)
-	} else if pf := browser.FindPortFile(opts.PortFile); pf != "" {
-		if ws, err := browser.WSURLFromPortFile(pf); err == nil {
-			endpoint = ws
-		}
-	}
+	// Shared with `doctor` so the command that diagnoses the connection and the
+	// command that makes it are talking about the same Chrome.
+	endpoint := browser.FindEndpoint(opts.PortFile, opts.Port).URL
 	// Already clamped by whoever resolved the flag/env/config; run it again
 	// rather than trust that. It is the same function, so this cannot become a
 	// second, disagreeing policy — which is the only thing that went wrong here
