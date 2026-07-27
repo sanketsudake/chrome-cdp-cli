@@ -176,6 +176,13 @@ func (StubBrowser) EmulateViewport(context.Context, string, int64, int64) (map[s
 func (StubBrowser) EmulateGeo(context.Context, string, float64, float64) (map[string]any, error) {
 	return map[string]any{"lat": 1.0, "lon": 2.0}, nil
 }
+func (StubBrowser) Window(_ context.Context, _ string, opts chrome.WindowOpts) (chrome.WindowBounds, error) {
+	b := chrome.WindowBounds{Left: 0, Top: 0, Width: 1280, Height: 800, State: "normal"}
+	if opts.Width > 0 && opts.Height > 0 {
+		b.Width, b.Height = opts.Width, opts.Height
+	}
+	return b, nil
+}
 func (StubBrowser) EmulateReset(context.Context, string) (map[string]any, error) {
 	return map[string]any{"reset": true}, nil
 }

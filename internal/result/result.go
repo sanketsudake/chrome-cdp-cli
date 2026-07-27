@@ -35,8 +35,14 @@ const (
 	CodeTargetNotFound = "target_not_found"
 	CodeAmbiguous      = "ambiguous_target"
 	CodeNoTarget       = "no_current_target"
-	CodeCDP            = "cdp_error"
-	CodeDaemon         = "daemon_error"
+	// CodeCoordinateOOB is a coordinate outside the current viewport (RFC-0014).
+	// It is deliberately NOT clamped: a wrong-sized window is the usual cause,
+	// and clamping would silently turn it into a mis-click somewhere real.
+	// error.details carries the point and the viewport so a caller can
+	// re-screenshot instead of guessing.
+	CodeCoordinateOOB = "coordinate_out_of_bounds"
+	CodeCDP           = "cdp_error"
+	CodeDaemon        = "daemon_error"
 	// CodePermissionDenied is the policy layer's refusal (RFC-0012, RFC-0006).
 	// It is deliberately distinct from a target error: an agent must be able to
 	// tell "policy forbids this, do not retry, tell the user" from "element not
@@ -62,6 +68,7 @@ var codeToExit = map[string]int{
 	CodeTargetTimeout:  ExitTarget,
 	CodeTargetNotFound: ExitTarget,
 	CodeAmbiguous:      ExitTarget,
+	CodeCoordinateOOB:  ExitTarget,
 	CodeNoTarget:       ExitTarget,
 	CodeCDP:            ExitCDP,
 	CodeDaemon:         ExitDaemon,
@@ -83,7 +90,7 @@ func ExitCodes() []ExitCodeDoc {
 		{ExitGeneric, "generic / unclassified (also: an assertion tripped, e.g. console --fail-on-match)"},
 		{ExitUsage, "usage (bad flags/args)"},
 		{ExitConnection, "connection (attach/launch failed, or Chrome's consent prompt is unanswered)"},
-		{ExitTarget, "target/timeout (selector not found, timeout, ambiguous/unknown target)"},
+		{ExitTarget, "target/timeout (selector not found, timeout, ambiguous/unknown target, coordinate outside the viewport)"},
 		{ExitCDP, "cdp protocol error"},
 		{ExitDaemon, "daemon error"},
 		{ExitPermission, "permission denied by policy (origin, verb, or upload root)"},

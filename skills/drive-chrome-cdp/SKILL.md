@@ -76,6 +76,13 @@ Clean up after yourself: **`close`** the tabs you opened, since this is the user
   Prefer this over parsing a big `snap` when you already know what you're looking for — one call replaces the snap→scan→guess-the-name loop, and it's the cure for verbose accessible names ("Review" vs `"Review Approval: Awaiting Action by …"`): `find "review"` hands you the real name for `--by name`, or the `ref` for `--by ref`.
   Filters: `--role` (hard), `--region`, `--limit`, `--dedupe`, `--min-score`, `--all` (include hidden).
   `count: 0` at exit 0 means "not on this page" — that's an answer, not an error.
+- **`--at x,y` on any pointer verb** (`click`/`hover`/`dblclick`/`tripleclick`/`rclick`/`drag`, plus `scroll --wheel --at`) — act at a viewport coordinate with NO element resolution.
+  This is the only way into a canvas/WebGL surface (drawing tools, maps, charts, PDF viewers): the a11y tree sees one node there, so no selector reaches inside it.
+  Coordinates are CSS pixels and match a `screenshot --scale 1` capture 1:1, so the loop is: `screenshot --scale 1` → read the pixel → `click --at x,y`.
+  Outside the viewport is an error (`coordinate_out_of_bounds`, exit 4) with the measured viewport, never a silent clamp — `scroll` first, then act.
+  The result carries `hit` (what sat under the point), because a coordinate click is deliberately not occlusion-checked.
+- **`window size <w> <h>` / `window info`** — the REAL Chrome window, unlike `emulate viewport` which only lies to the page.
+  Set it before a coordinate workflow so pixel coordinates are reproducible across runs.
 - **`value --all "<css>"`** — the value/text of every match as a list (a whole row of hour cells, a set of pills) in one call.
 - **`grid [selector]`** — read a table/grid as `{headers, rows, count}` from the accessibility structure.
   Use this for the calendar / task-list / timesheet grids instead of hand-parsing `snap` or screenshotting.

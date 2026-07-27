@@ -89,6 +89,18 @@ type KeyOpts struct {
 	Query  QueryOpts
 }
 
+// Point is a viewport coordinate in CSS pixels: origin at the top-left of the
+// layout viewport, x right, y down.
+//
+// This is the same space snap geometry, the pointer verbs' centre resolution,
+// and Input.dispatchMouseEvent already use, and the space a `screenshot
+// --scale 1` capture maps onto 1:1 — which is what makes "look at a
+// screenshot, act at a coordinate" work (RFC-0014).
+type Point struct {
+	X float64 `json:"x"`
+	Y float64 `json:"y"`
+}
+
 // PointerOpts controls the pointer verbs — click, hover, dblclick, rclick, and
 // drag. One driver method backs all five, so they share the identical
 // occlusion-verified centre resolution and the identical modifier handling;
@@ -97,10 +109,18 @@ type PointerOpts struct {
 	Action    PointerAction
 	Modifiers int64 // held during the press (alt 1, ctrl 2, meta 4, shift 8)
 
-	// Drag targeting: either To (a drop-target selector, resolved with ToQuery)
-	// or a (Dx, Dy) pixel delta from the source's centre. Exactly one is set.
+	// At bypasses element resolution: the gesture is dispatched at this viewport
+	// coordinate. It is how a canvas, a map, or any surface the accessibility
+	// tree cannot see gets driven — and how a screenshot-reading agent acts on
+	// what it saw. When set, no selector is resolved and no occlusion check
+	// runs: the coordinate IS the intent (RFC-0014).
+	At *Point
+
+	// Drag targeting: a To selector (resolved with ToQuery), a ToAt coordinate,
+	// or a (Dx, Dy) pixel delta from the source. Exactly one is set.
 	To      string
 	ToQuery QueryOpts
+	ToAt    *Point
 	Dx, Dy  float64
 
 	// Steps is the number of interpolated move events dispatched between the
@@ -123,6 +143,10 @@ const (
 	PointerDblClick PointerAction = "dblclick"
 	PointerRClick   PointerAction = "rclick"
 	PointerDrag     PointerAction = "drag"
+	// PointerTripleClick selects a text block — the standard prelude to copying
+	// or overwriting it. `fill` performs the same gesture internally; this
+	// exposes it for a caller that wants only the selection.
+	PointerTripleClick PointerAction = "tripleclick"
 )
 
 // UploadOpts controls the `upload` verb — attaching local files to a file input
@@ -165,6 +189,11 @@ type ScrollOpts struct {
 	Dy    float64
 	Into  bool
 	Wheel bool
+
+	// At anchors a --wheel dispatch at a viewport coordinate instead of an
+	// element's centre — for maps and canvases that zoom around the pointer.
+	At *Point
+
 	Query QueryOpts
 }
 
@@ -344,6 +373,23 @@ type EvalOpts struct {
 	Await bool
 }
 
+// WindowOpts controls the `window` verb. The zero value means "report the
+// current bounds"; a non-zero Width/Height resizes.
+type WindowOpts struct {
+	Width  int64
+	Height int64
+}
+
+// WindowBounds is a real Chrome window's position, size, and state — as read
+// back AFTER any resize, because the OS may clamp a request to the screen.
+type WindowBounds struct {
+	Left   int64  `json:"left"`
+	Top    int64  `json:"top"`
+	Width  int64  `json:"width"`
+	Height int64  `json:"height"`
+	State  string `json:"state"`
+}
+
 // Browser is the set of Chrome operations the CLI commands need. The real
 // implementation is CDP (chromedp-backed); tests use a fake.
 type Browser interface {
@@ -398,6 +444,11 @@ type Browser interface {
 	EmulateViewport(ctx context.Context, targetID string, width, height int64) (map[string]any, error)
 	EmulateGeo(ctx context.Context, targetID string, lat, lon float64) (map[string]any, error)
 	EmulateReset(ctx context.Context, targetID string) (map[string]any, error)
+	// Window reports or sets the REAL Chrome window's bounds. It is not
+	// EmulateViewport: that lies to the page about its size, while this moves
+	// the window the user sees — which is what makes a screenshot's pixel
+	// coordinates reproducible across runs (RFC-0014).
+	Window(ctx context.Context, targetID string, opts WindowOpts) (WindowBounds, error)
 	Frames(ctx context.Context, targetID string) (any, error)
 	Wait(ctx context.Context, targetID string, cond WaitCond) (map[string]any, error)
 	// Screenshot and PDF return the artifact bytes AND the metadata describing
