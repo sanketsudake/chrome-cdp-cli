@@ -79,6 +79,16 @@ var verbClass = map[string]Class{
 
 	// Meta and batch. `session` re-enters the command tree per NDJSON line, and
 	// each of those lines is checked on its own.
+	// recipe run is Exempt for the same reason session is: it touches no tab
+	// itself, it re-enters the command tree per step, and EACH of those steps is
+	// classified and checked on its own. Classifying the wrapper as Mutating
+	// would refuse a recipe made entirely of reads on a read_only origin, while
+	// classifying it as Reading would be a lie — so the wrapper abstains and the
+	// steps decide. list/show/new never reach a browser at all.
+	"recipe list":   Exempt,
+	"recipe show":   Exempt,
+	"recipe new":    Exempt,
+	"recipe run":    Exempt,
 	"session":       Exempt,
 	"doctor":        Exempt,
 	"daemon start":  Exempt,
@@ -99,16 +109,31 @@ var verbClass = map[string]Class{
 	// The observability verbs read what the page already logged or requested.
 	// They are Reading, not Exempt: a console line or a request URL is page
 	// content, and a read_only origin still gets to withhold it.
-	"console":     Reading,
-	"net":         Reading,
-	"net wait":    Reading,
-	"screenshot":  Reading,
-	"pdf":         Reading,
-	"frame list":  Reading,
-	"wait":        Reading,
-	"attr get":    Reading,
-	"attr list":   Reading,
-	"cookie list": Reading,
+	"console":    Reading,
+	"net":        Reading,
+	"net wait":   Reading,
+	"screenshot": Reading,
+	"pdf":        Reading,
+	// Recording is Reading, and every verb of it is, for one reason: a
+	// recording is a stream of the page's own pixels, which is page content as
+	// surely as a screenshot is. So an allow/deny list gets to cover it, and a
+	// read_only origin does not — nothing in `record` modifies the page, and
+	// refusing to record a read-only origin would protect nothing.
+	//
+	// status and cancel are classified with the other two rather than as Exempt
+	// on the grounds that they touch no pixels themselves: they are still scoped
+	// to a tab whose origin a policy may forbid, and a family of verbs where
+	// three are checked and one is not is the kind of asymmetry nobody
+	// remembers. `verbs_denied = ["record start"]` then means what it looks like.
+	"record start":  Reading,
+	"record stop":   Reading,
+	"record status": Reading,
+	"record cancel": Reading,
+	"frame list":    Reading,
+	"wait":          Reading,
+	"attr get":      Reading,
+	"attr list":     Reading,
+	"cookie list":   Reading,
 
 	// Mutating.
 	"open":             Mutating, // checked against the DESTINATION origin
@@ -333,16 +358,22 @@ func (c *Checker) Check(rawURL, verb string) Decision {
 	if !c.Active() {
 		return allowed("")
 	}
-	class, _ := Classify(verb)
-	if class == Exempt {
-		return allowed("exempt: " + verb)
-	}
-
+	// verbs_denied is first, ahead of the Exempt short-circuit: it names a verb
+	// rather than an origin, so there is no class it should not reach. The
+	// config validator already refuses a name that is not a known verb, so
+	// `verbs_denied = ["recipe run"]` accepted at load and then ignored here
+	// would be a policy that fails OPEN on exactly the verb the operator most
+	// wanted gone — and silently, which is worse than no policy.
 	if c.verbsDenied[verb] {
 		return Decision{
 			Rule:   "verbs_denied: " + verb,
 			Reason: fmt.Sprintf("verb %s is denied everywhere by policy", verb),
 		}
+	}
+
+	class, _ := Classify(verb)
+	if class == Exempt {
+		return allowed("exempt: " + verb)
 	}
 
 	// An origin we cannot pin down (about:blank, a data: URL, a chrome:// page,

@@ -114,6 +114,19 @@ func (a *App) policyConfigErr(reason, source string) *result.Err {
 	}
 }
 
+// policyDeniesVerb reports whether the configured policy names this verb in
+// verbs_denied. It reads the parsed config rather than building a Checker so it
+// can be consulted before the Exempt short-circuit without paying for pattern
+// compilation on every command.
+func (a *App) policyDeniesVerb(verb string) bool {
+	for _, v := range a.defaults.Policy.VerbsDenied {
+		if v == verb {
+			return true
+		}
+	}
+	return false
+}
+
 // checkPolicy is the enforcement hook. It returns nil to proceed, or the
 // envelope error to emit instead of acting.
 //
@@ -124,8 +137,12 @@ func (a *App) checkPolicy(verb, rawURL string) *result.Err {
 		return nil
 	}
 	// Tab and meta verbs are never origin-checked, so there is nothing here to
-	// enforce, bypass, or audit for them.
-	if class, _ := policy.Classify(verb); class == policy.Exempt {
+	// enforce, bypass, or audit for them — UNLESS verbs_denied names one. That
+	// entry is about the verb, not an origin, so no class puts a verb out of its
+	// reach: accepting `verbs_denied = ["recipe run"]` in the config and then
+	// short-circuiting past it here would fail open on precisely the line the
+	// operator went out of their way to write.
+	if class, _ := policy.Classify(verb); class == policy.Exempt && !a.policyDeniesVerb(verb) {
 		return nil
 	}
 	if a.policyOff {

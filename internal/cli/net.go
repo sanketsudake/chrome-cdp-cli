@@ -128,7 +128,7 @@ func (nf *netFlags) validate(inSession, statusSet bool) (chrome.NetOpts, *result
 		return usage("--follow streams forever and --fail-on-match asserts on a finished read; they cannot combine")
 	}
 	if nf.follow && inSession {
-		return usage("net --follow cannot run inside `session`: a streaming command would break session's one-envelope-per-line contract — run it as its own command")
+		return usage("net --follow cannot run inside `session` or a recipe: a streaming command would break the one-envelope-per-line contract a batch promises — run it as its own command")
 	}
 	if nf.since < 0 {
 		return usage("--since must be a positive duration (e.g. 30s)")

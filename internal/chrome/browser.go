@@ -248,6 +248,76 @@ type PDFOpts struct {
 	Footer       string  // HTML template for the print footer
 }
 
+// RecordOpts controls `record start` — the screencast capture behind RFC-0011.
+//
+// Every value is validated and reduced to a number by the CLI before it arrives
+// here; the driver applies its own defaults only for a zero field, which is what
+// a direct (non-CLI) caller and the deliberately lenient daemon arg decoders
+// leave behind.
+type RecordOpts struct {
+	// FPS is the CAPTURE cadence ceiling, not a fixed interval: a screencast
+	// pushes frames only when the page changes, so this throttles a busy page
+	// rather than polling a static one.
+	FPS float64
+
+	// Scale shrinks the captured frames relative to the viewport. It is applied
+	// by Chrome at capture time (maxWidth/maxHeight), so a scaled recording
+	// costs less memory in the daemon, not just less disk at export.
+	Scale float64
+
+	// Quality is the JPEG quality of each frame, 0-100.
+	Quality int
+
+	// MaxFrames is the ring-buffer bound. Eviction is REPORTED (dropped_frames /
+	// truncated), never silent.
+	MaxFrames int
+
+	// MaxDuration stops the capture — but not the recording — after this long.
+	// The frames captured so far stay exportable, with truncated set.
+	MaxDuration time.Duration
+
+	// Annotate is the DEFAULT for the export, not a capture-time behaviour.
+	// Action marks are recorded either way (they are a few floats each), so one
+	// capture can be exported both annotated and clean; `record stop` may
+	// override this.
+	Annotate bool
+}
+
+// FrameMark is one action that happened during a recording: where the pointer
+// landed, in PAGE (CSS) pixels, and which verb put it there.
+//
+// It is recorded alongside the frames and drawn — if at all — at export, which
+// is what keeps capture free of any drawing (RFC-0011 design notes, VS-13). The
+// coordinates come from the pointer verbs, which already resolve and report an
+// occlusion-verified centre; nothing here re-resolves geometry.
+type FrameMark struct {
+	X       float64   `json:"x"`
+	Y       float64   `json:"y"`
+	Command string    `json:"command,omitempty"`
+	TS      time.Time `json:"ts"`
+}
+
+// Frame is one captured screencast frame as it left the daemon.
+//
+// Data is the JPEG exactly as Chrome produced it: the driver never re-encodes,
+// so `record stop --format frames` hands back the capture's own pixels.
+type Frame struct {
+	Data   []byte    `json:"data"`
+	TS     time.Time `json:"ts"`
+	Width  int       `json:"width"`  // image pixels
+	Height int       `json:"height"` // image pixels
+
+	// CSSWidth/CSSHeight are what the frame covers in PAGE pixels. They are the
+	// mapping a mark's coordinates need when the capture was scaled down, and
+	// come from the screencast frame's own metadata rather than from the
+	// requested scale — the two differ whenever the device scale factor is not 1.
+	CSSWidth  float64 `json:"css_width,omitempty"`
+	CSSHeight float64 `json:"css_height,omitempty"`
+
+	// Marks are the actions that landed while this frame was on screen.
+	Marks []FrameMark `json:"marks,omitempty"`
+}
+
 // TextOpts controls the `text` verb. The zero value is the long-standing
 // behaviour: the visible text of Query's selector, verbatim.
 //
@@ -331,6 +401,30 @@ type Browser interface {
 	// decoding the image itself.
 	Screenshot(ctx context.Context, targetID string, opts ShotOpts) ([]byte, map[string]any, error)
 	PDF(ctx context.Context, targetID string, opts PDFOpts) ([]byte, map[string]any, error)
+	// RecordStart begins a screencast recording of a tab (RFC-0011). The frames
+	// are retained where the CONNECTION lives — the daemon — because a recording
+	// spans many CLI invocations and no per-command process can hold them. That
+	// is also what makes a crashed automation's frames survive it (US-7).
+	RecordStart(ctx context.Context, targetID string, opts RecordOpts) (map[string]any, error)
+	// RecordStop ends the recording and hands back the retained frames plus the
+	// accounting an honest export needs (frames, dropped_frames, truncated).
+	// Encoding happens in the CLI, via internal/encode, so one capture can be
+	// exported in more than one format and annotation stays an export decision.
+	RecordStop(ctx context.Context, targetID string) ([]Frame, map[string]any, error)
+	// RecordRestore hands a drained recording back, so an export that failed
+	// after RecordStop can be retried instead of costing the user the frames.
+	//
+	// It exists because RecordStop is destructive and encoding is not free of
+	// failure modes the CLI cannot rule out in advance (a full disk, an ffmpeg
+	// that dies). Everything that CAN be checked first is — the encoder's
+	// availability and the output path both are — and this covers the rest. The
+	// restored recording is not capturing: it holds the frames for a retry, and
+	// `record cancel` discards it like any other.
+	RecordRestore(ctx context.Context, targetID string, frames []Frame, meta map[string]any) error
+	// RecordStatus reports whether a recording is active and how much it holds.
+	RecordStatus(ctx context.Context, targetID string) (map[string]any, error)
+	// RecordCancel discards a recording without exporting anything.
+	RecordCancel(ctx context.Context, targetID string) (map[string]any, error)
 	// Console returns the console messages and uncaught exceptions retained for
 	// a tab since the connection attached to it, filtered by opts BEFORE the
 	// result is built (see ConsoleOpts in console.go).

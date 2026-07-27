@@ -35,6 +35,8 @@ func main() {
 			ConsoleMaxEntry: env.ConsoleMaxEntry,
 			NetBuffer:       env.NetBuffer,
 			NetMaxBody:      env.NetMaxBody,
+			RecordBuffer:    env.RecordBuffer,
+			RecordMaxBytes:  env.RecordMaxBytes,
 		}
 		if err := daemon.RunDaemon(os.Args[2], opts, 30*time.Minute); err != nil {
 			fmt.Fprintln(os.Stderr, "chrome-cdp daemon:", err)
@@ -109,6 +111,8 @@ func main() {
 			"CHROME_CDP_CONSOLE_MAX_ENTRY="+strconv.Itoa(defs.ConsoleMaxEntry),
 			"CHROME_CDP_NET_BUFFER="+strconv.Itoa(defs.NetBuffer),
 			"CHROME_CDP_NET_MAX_BODY="+strconv.Itoa(defs.NetMaxBody),
+			"CHROME_CDP_RECORD_BUFFER="+strconv.Itoa(defs.RecordBuffer),
+			"CHROME_CDP_RECORD_MAX_BYTES="+strconv.Itoa(defs.RecordMaxBytes),
 		)
 		return env
 	}
@@ -119,6 +123,7 @@ func main() {
 				PortFile: portFile, NoLaunch: o.NoLaunch, ProfileDir: o.ProfileDir, Port: o.Port,
 				ConsoleBuffer: defs.ConsoleBuffer, ConsoleMaxEntry: defs.ConsoleMaxEntry,
 				NetBuffer: defs.NetBuffer, NetMaxBody: defs.NetMaxBody,
+				RecordBuffer: defs.RecordBuffer, RecordMaxBytes: defs.RecordMaxBytes,
 			})
 		}
 		client, err := daemon.Ensure(socketFor(o), exe, daemonEnv(o))

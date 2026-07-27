@@ -54,6 +54,13 @@ type Defaults struct {
 	ConsoleMaxEntry int // per-message text cap, in bytes
 	NetBuffer       int // retained network records per tab
 	NetMaxBody      int // per-body cap, in bytes (request and response)
+
+	// Recording bounds (RFC-0011). A frame dwarfs a console line or a request
+	// record, so recording is bounded by BOTH a frame count and a byte ceiling:
+	// 600 frames is a modest number on a laptop viewport and a large one on a
+	// 4K monitor, and only the second bound knows the difference.
+	RecordBuffer   int // retained frames per tab
+	RecordMaxBytes int // retained frame bytes per tab
 }
 
 // Policy mirrors the [policy] table. It is raw, unvalidated data — parsing the
@@ -99,6 +106,7 @@ func Builtin() Defaults {
 		Timeout: 30 * time.Second, By: "css", Wait: "visible",
 		ConsoleBuffer: chrome.DefaultConsoleBuffer, ConsoleMaxEntry: chrome.DefaultConsoleMaxEntry,
 		NetBuffer: chrome.DefaultNetBuffer, NetMaxBody: chrome.DefaultNetMaxBody,
+		RecordBuffer: chrome.DefaultRecordFrames, RecordMaxBytes: chrome.DefaultRecordMaxBytes,
 	}
 }
 
@@ -120,6 +128,8 @@ type file struct {
 	ConsoleMaxEntry *int `toml:"console_max_entry"`
 	NetBuffer       *int `toml:"net_buffer"`
 	NetMaxBody      *int `toml:"net_max_body"`
+	RecordBuffer    *int `toml:"record_buffer"`
+	RecordMaxBytes  *int `toml:"record_max_bytes"`
 
 	Policy *policyFile `toml:"policy"`
 }
@@ -267,6 +277,12 @@ func applyFile(d *Defaults, path string) error {
 	if f.NetMaxBody != nil {
 		d.NetMaxBody = *f.NetMaxBody
 	}
+	if f.RecordBuffer != nil {
+		d.RecordBuffer = *f.RecordBuffer
+	}
+	if f.RecordMaxBytes != nil {
+		d.RecordMaxBytes = *f.RecordMaxBytes
+	}
 	return nil
 }
 
@@ -380,6 +396,8 @@ func applyEnv(d *Defaults, getenv func(string) string) {
 	setInt(getenv("CHROME_CDP_CONSOLE_MAX_ENTRY"), &d.ConsoleMaxEntry)
 	setInt(getenv("CHROME_CDP_NET_BUFFER"), &d.NetBuffer)
 	setInt(getenv("CHROME_CDP_NET_MAX_BODY"), &d.NetMaxBody)
+	setInt(getenv("CHROME_CDP_RECORD_BUFFER"), &d.RecordBuffer)
+	setInt(getenv("CHROME_CDP_RECORD_MAX_BYTES"), &d.RecordMaxBytes)
 	setBool(getenv("CHROME_CDP_NO_LAUNCH"), &d.NoLaunch)
 	setBool(getenv("CHROME_CDP_NO_DAEMON"), &d.NoDaemon)
 	setBool(getenv("CHROME_CDP_JSON"), &d.JSON)

@@ -50,6 +50,13 @@ type Options struct {
 	// a console line. Zero means the built-in default.
 	NetBuffer  int // retained network records per target
 	NetMaxBody int // per-body cap, in bytes
+
+	// Recording bounds (config keys record_buffer / record_max_bytes). A frame
+	// is orders of magnitude larger than either of the above, so it gets its own
+	// ring size AND a byte ceiling — a frame count alone does not bound memory
+	// when the viewport can be 4K. Zero means the built-in default.
+	RecordBuffer   int // retained frames per target
+	RecordMaxBytes int // retained frame bytes per target
 }
 
 // ConnectError carries a stable error.code (matching the result contract) so the
@@ -93,6 +100,16 @@ type CDP struct {
 	// versa). See net.go.
 	net        *eventbuf.Set[netRecord]
 	netMaxBody int
+
+	// Live recordings, per target (RFC-0011). They live here for the same
+	// reason the event buffers do — a recording outlives every command that
+	// touches it — but they are NOT an eventbuf.Set: a recording is started and
+	// stopped explicitly, so its ring is created per recording with that
+	// recording's --max-frames. See record.go.
+	recMu        sync.Mutex
+	rec          map[string]*recorder
+	recMaxFrames int
+	recMaxBytes  int
 }
 
 // tabConn is a cached per-tab context and its cancel func.
@@ -105,11 +122,13 @@ func newCDP(managed bool, alloc context.Context, allocCancel context.CancelFunc,
 	c := &CDP{
 		managed: managed, alloc: alloc, allocCancel: allocCancel, base: base, baseCancel: baseCancel,
 		tabs: map[string]tabConn{},
+		rec:  map[string]*recorder{},
 	}
 	// Capture is on from the start, at the built-in bounds; Connect resizes it
 	// from the config before the first attach.
 	c.configureCapture(0, 0)
 	c.configureNetCapture(0, 0)
+	c.configureRecordCapture(0, 0)
 	return c
 }
 
@@ -166,6 +185,7 @@ func Connect(_ context.Context, opts Options) (*CDP, error) {
 	// can receive anything.
 	c.configureCapture(opts.ConsoleBuffer, opts.ConsoleMaxEntry)
 	c.configureNetCapture(opts.NetBuffer, opts.NetMaxBody)
+	c.configureRecordCapture(opts.RecordBuffer, opts.RecordMaxBytes)
 	return c, nil
 }
 

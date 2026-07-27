@@ -3,6 +3,9 @@
 /cdp
 *.png
 *.pdf
+*.gif
+*.mp4
+*.webm
 /dist/
 
 # local wayfinder planning tracker

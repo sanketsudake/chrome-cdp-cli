@@ -71,6 +71,83 @@ func TestRPCRoundTrip(t *testing.T) {
 	}
 }
 
+// TestRecordRPCRoundTrip is the daemon half of RFC-0011.
+//
+// A recording lives in the daemon, so every byte of it and every field of its
+// accounting crosses this socket. The frames ride as base64 inside an array of
+// objects, which is exactly the kind of thing that marshals fine and arrives
+// empty — and no stub-backed CLI test would ever notice, because they all
+// inject a Browser directly.
+func TestRecordRPCRoundTrip(t *testing.T) {
+	rb := Remote(serveTemp(t))
+	ctx := t.Context()
+
+	if _, err := rb.RecordStart(ctx, "aa11", chrome.RecordOpts{FPS: 8, Scale: 0.25, Annotate: true}); err != nil {
+		t.Fatalf("RecordStart: %v", err)
+	}
+	st, err := rb.RecordStatus(ctx, "aa11")
+	if err != nil {
+		t.Fatalf("RecordStatus: %v", err)
+	}
+	if _, ok := st["recording"]; !ok {
+		t.Errorf("RecordStatus = %v, want a recording field", st)
+	}
+
+	frames, meta, err := rb.RecordStop(ctx, "aa11")
+	if err != nil {
+		t.Fatalf("RecordStop: %v", err)
+	}
+	if len(frames) != 2 {
+		t.Fatalf("got %d frames over the RPC, want the stub's 2", len(frames))
+	}
+	for i, f := range frames {
+		if len(f.Data) == 0 {
+			t.Errorf("frame %d arrived with no bytes — the base64 round-trip is broken", i)
+		}
+		if f.TS.IsZero() {
+			t.Errorf("frame %d arrived with no timestamp; the frame delays depend on it", i)
+		}
+	}
+	if meta["frames"] != float64(2) {
+		t.Errorf("meta = %v, want the accounting to survive the RPC", meta)
+	}
+	if _, err := rb.RecordCancel(ctx, "aa11"); err != nil {
+		t.Errorf("RecordCancel: %v", err)
+	}
+}
+
+// TestRecordOptsCrossTheRPC guards the arg decoder for a new option struct: a
+// missing field here would silently record at the wrong scale for every real
+// user, since the daemon is the default connection path.
+func TestRecordOptsCrossTheRPC(t *testing.T) {
+	got := make(chan chrome.RecordOpts, 1)
+	sock := filepath.Join(t.TempDir(), "r.sock")
+	ln, err := net.Listen("unix", sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	go Serve(ln, recordOptsBrowser{seen: got}, time.Minute)
+	t.Cleanup(func() { _ = ln.Close() })
+
+	want := chrome.RecordOpts{FPS: 12, Scale: 0.25, Quality: 70, MaxFrames: 33, MaxDuration: 90 * time.Second, Annotate: true}
+	if _, err := Remote(&Client{path: sock}).RecordStart(t.Context(), "aa11", want); err != nil {
+		t.Fatalf("RecordStart: %v", err)
+	}
+	if seen := <-got; seen != want {
+		t.Errorf("the daemon saw %+v, want %+v", seen, want)
+	}
+}
+
+type recordOptsBrowser struct {
+	chrometest.StubBrowser
+	seen chan chrome.RecordOpts
+}
+
+func (b recordOptsBrowser) RecordStart(_ context.Context, _ string, opts chrome.RecordOpts) (map[string]any, error) {
+	b.seen <- opts
+	return map[string]any{"recording": true}, nil
+}
+
 // slowBrowser's Eval blocks until its context is cancelled — standing in for a
 // wedged/slow CDP action.
 type slowBrowser struct{ chrometest.StubBrowser }

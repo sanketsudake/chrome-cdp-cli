@@ -379,7 +379,7 @@ Raise `console_buffer`, or read closer to the action.
 **`--fail-on-match` exits 1 and still reports the messages** (`error.code` is `assertion_failed`), so a CI log shows *what* failed, not just that something did.
 
 **`--follow`** writes one JSON envelope per line, the same shape `session` streams.
-It cannot combine with `--fail-on-match`, and it is a usage error inside `session`, where it would break the one-envelope-per-line contract.
+It cannot combine with `--fail-on-match`, and it is a usage error inside `session` or a recipe step, where it would break the one-envelope-per-line contract a batch promises.
 
 **`--no-daemon` has no retained history.**
 Without the daemon there was no process alive to receive the tab's earlier events, so the read reports `"buffered": 0` and carries a `note` saying so, rather than passing an empty list off as a quiet page.
@@ -455,7 +455,7 @@ No match before `--timeout` is `target_timeout` / exit 4.
 **`--fail-on-match` exits 1 and still reports the requests** (`error.code` is `assertion_failed`), so `chrome-cdp net --failed --fail-on-match` is a usable CI assertion that shows *what* failed.
 
 **`--follow`** writes one JSON envelope per **completed** request, the same shape `session` streams.
-It cannot combine with `--fail-on-match`, and it is a usage error inside `session`.
+It cannot combine with `--fail-on-match`, and it is a usage error inside `session` or a recipe step.
 
 **`--no-daemon` has no retained history**, exactly as with `console`: the read reports `"buffered": 0` and carries a `note` rather than passing an empty list off as a quiet page.
 
@@ -475,6 +475,141 @@ printf '%s\n' \
   '["click","--by","name","Save and Close","--role","button","--wait-text","saved"]' \
   | chrome-cdp session
 ```
+
+| Flag | Default | Purpose |
+|------|---------|---------|
+| `--record <path>` | — | [record](#recording) the whole batch and write it here |
+| `--record-fps <n>` | `4` | with `--record`: frames per second to retain |
+| `--record-annotate` | off | with `--record`: mark action positions on the exported frames |
+
+`--record` starts as soon as a line resolves a tab (usually the first `use`) and stops after the last line, so it needs no manual bracketing.
+The file is written even when a step failed — which is when a recording is worth the most — and the batch emits one extra NDJSON line describing it.
+
+### Recipes
+
+A **recipe** is a saved `session` script with a small header: a YAML file whose steps are argv arrays, with declared inputs substituted into argv elements.
+It is the unit in which a working automation becomes something you can name, re-run, commit, and hand to a colleague.
+
+| Command | Does |
+|---------|------|
+| `recipe list [--dir <path>]` | list recipes with their description, inputs, and source |
+| `recipe show <name>` | print the recipe's source (read it before you run it) |
+| `recipe new <name>` | write a commented template and print its path |
+| `recipe run <name> [--set k=v]… [--dry-run] [--from-step <n>]` | run it |
+
+```yaml
+# .chrome-cdp/recipes/submit-timesheet.yaml
+name: submit-timesheet
+description: Fill and submit the weekly timesheet.
+inputs:
+  week:  { required: true, description: "Monday of the week, YYYY-MM-DD" }
+  hours: { default: "8",   description: "Hours per weekday" }
+target: url:workday
+steps:
+  - label: open the timesheet
+    run: ["nav", "https://workday.internal/time/{{week}}"]
+  - run: ["wait", "--idle"]
+  - label: save
+    run: ["click", "--by", "name", "Save and Close", "--role", "button", "--wait-text", "saved"]
+    on_error: abort
+```
+
+```sh
+chrome-cdp recipe run submit-timesheet --set week=2026-07-20
+chrome-cdp recipe run submit-timesheet --set week=2026-07-20 --dry-run   # print, run nothing
+```
+
+**The format, in full.**
+`name` (which must match the filename), `description`, `inputs`, `target`, `steps`; each step has `run`, an optional `label`, and an optional `on_error`.
+That is everything — there is no other key, and an unrecognised one is an error rather than a silently ignored typo.
+
+| Field | Means |
+|-------|-------|
+| `run` | an argv array, identical to a `session` stdin line — anything valid in `session` is valid here |
+| `label` | a name for the step, echoed in its envelope and in the failure summary |
+| `on_error` | `abort` (default) or `continue`; there are no retries, conditionals, or loops |
+| `inputs` | `required`, `default`, `description` — no types and no validation expressions |
+| `target` | a default `--target` for every step, overridden by a step's own `--target` or by `--target` on the run; takes `{{placeholders}}` like any argv element |
+
+`{{name}}` substitutes an input **into one argv element**.
+There is no shell anywhere in this design and there is no `shell:` step type, so a value is passed through byte for byte and nothing in it is interpreted.
+Per-step flags a verb already accepts — `--timeout 60s`, `--by name`, `--wait-text` — go in that step's own `run` array, where a reader of the recipe can see them.
+
+**`--timeout` on the run applies to each step, not to the run.**
+Each step is one command and gets the whole budget, exactly as each line of a `session` does — so a 200-step recipe with `--timeout 60s` can take 200 minutes in the worst case, not one.
+There is no whole-run budget on purpose: it would make `recipe run` and `recipe run --dry-run | chrome-cdp session` behave differently, and their equivalence is what keeps a recipe a `session` script with a header.
+Give a slow step its own `--timeout` in its `run` array and leave the run's default low.
+
+A step must name its command in the **first** element of `run`.
+A leading flag (`run: ["--json", "snap"]`) is a load-time error: it would hide the command from validation, since the command tree resolves the verb only after stripping flags.
+
+Which elements of a step are flags is decided by the recipe **as written**, never by an input value.
+When a step is resolved, its data elements are emitted after a `--` terminator — so `run: ["text", "{{sel}}"]` with `--set sel=--target=@2` runs `text --target <the recipe's target> -- --target=@2`, and the value arrives as a selector rather than as a second `--target` pointing the step at another tab.
+This is visible in `--dry-run` output, which is still exactly what runs.
+
+**Where recipes live.**
+Resolution order for a name, first match wins:
+
+1. `./.chrome-cdp/recipes/` — project-local; commit this directory and your team gets your internal-app automations from the repo
+2. `$XDG_CONFIG_HOME/chrome-cdp/recipes/` — your own
+3. `--dir <path>`
+
+`recipe list` marks each entry's source, so you can see which copy is about to run.
+`recipe new` writes into the project-local directory unless `--dir` says otherwise.
+
+**Output.**
+`recipe run` emits one NDJSON envelope per step — the same stream `session` produces, plus `step` and `label` fields so a caller can correlate without counting lines — then a summary:
+
+```json
+{"ok":true,"command":"recipe","result":{"recipe":"submit-timesheet","steps":4,"completed":4,
+ "failed":null,"inputs":{"week":"2026-07-20","hours":"8"},"from_step":1,"elapsed_ms":4120}}
+```
+
+A failing step stops the run (unless it says `on_error: continue`), and the summary carries `failed: {"index":3,"label":"save","code":"target_timeout"}`.
+**The process exit code is the failing step's**, so a shell caller branches on the same contract as for a single command — and it is always the exit that `failed.code` maps to, so the number and the envelope cannot disagree.
+Under `--quiet` only the summary is printed.
+
+Because the run's output is NDJSON, a step may not write raw bytes to stdout.
+`screenshot -o -` and `pdf -o -` write the file itself to stdout and emit no envelope, so such a step fails with `usage` instead of corrupting the stream — give it a path (`-o shot.png`) and read the path back out of its envelope.
+Streaming steps (`console --follow`, `net --follow`) are a `usage` error for the same reason, exactly as inside `session`.
+
+**Reviewing a recipe someone sent you.**
+A recipe drives the browser you are already signed into, so read one before running it, exactly as you would a shell script:
+
+```sh
+chrome-cdp recipe show their-recipe                    # the source, comments and all
+chrome-cdp recipe run their-recipe --dry-run           # the resolved argv, one array per line
+chrome-cdp recipe run their-recipe --dry-run | chrome-cdp session   # the same thing, executed
+```
+
+The dry run prints the exact bytes `session` consumes.
+That is both a debugging tool and the proof that recipes add no hidden magic: the two paths run the identical commands.
+
+Never put a credential in a recipe.
+The whole premise of `chrome-cdp` is reusing an already-authenticated browser, so a recipe never needs one.
+
+**Errors.**
+Everything a recipe can get wrong statically is exit 2, with Chrome never contacted:
+
+| Situation | `error.code` | Exit |
+|-----------|--------------|------|
+| Recipe not found in any search dir | `usage` | 2 |
+| Malformed YAML, unknown key, `run` not an array of strings | `usage` | 2 |
+| Missing required input, unknown `--set` key, undeclared `{{placeholder}}` | `usage` | 2 |
+| `--from-step` out of range | `usage` | 2 |
+| A step fails | that step's code | that step's exit |
+
+An unknown `--set` key is rejected rather than ignored: silently dropping `--set hurs=9` would run the recipe with the default you were trying to override.
+
+**`--from-step <n>` is a sharp tool.**
+It starts at step *n* (1-based) and assumes every earlier step's effect is already in place.
+That is what you want when a ten-step automation failed at step 8 and re-running from the top would submit a form twice — and it is exactly wrong when the page is not where step *n* expects it.
+Validation still covers the whole file: an undeclared placeholder in a skipped step is still an error.
+
+**What recipes deliberately do not have.**
+Conditionals, loops, retries, branching, and reading one step's output into a later step.
+Recipes cannot invoke recipes, and a recipe is capped at 200 steps.
+If an automation needs control flow, write a program that calls `session` — that is the supported answer, not a bigger recipe format.
 
 ### Capture
 
@@ -533,6 +668,99 @@ The result reports `path`, `bytes`, and `pages`.
 
 Every value above is parsed before anything connects to Chrome, so a malformed rectangle, paper name, margin spec or page range — or an out-of-range quality or scale — is `usage` / exit 2 with the browser untouched.
 An element that resolves but has a zero-area box (`display:none`, collapsed) is exit 4 with `zero_area: true`: the selector was right, so it is reported differently from "not found".
+
+### Recording
+
+`record` captures the tab while other commands drive it, and exports the frames as an animated GIF (or an MP4/WebM, or a directory of numbered PNGs).
+
+```sh
+chrome-cdp record start --annotate
+chrome-cdp click --by name "Save"
+chrome-cdp record stop -o demo.gif
+```
+
+> **This records your real, logged-in browser.**
+> A recording attached to a public issue may contain your own data — your tabs, your name, whatever the page was showing.
+> Nothing in the CLI can know which pixels are sensitive, so look at the file before you share it.
+> `record stop` prints the frame count and the path in human mode, so it is never ambiguous that a file was written.
+
+| Command | Does |
+|---------|------|
+| `record start` | begin capturing the target tab |
+| `record stop [-o <path>]` | stop and write the animation (default `./record-<timestamp>.gif`) |
+| `record status` | report whether the tab is being recorded, and how much is held |
+| `record cancel` | discard the recording without writing anything |
+
+**record start**
+
+| Flag | Default | Purpose |
+|------|---------|---------|
+| `--fps <n>` | `4` | frames per second to retain; a **ceiling**, not a fixed interval |
+| `--scale <f>` | `0.5` | capture scale relative to the viewport, 0.1–1 |
+| `--annotate` | off | mark action positions when exporting (overridable at `record stop`) |
+| `--max-duration <dur>` | `2m` | stop capturing after this long; the frames stay exportable |
+| `--max-frames <n>` | `600` | ring-buffer size (config key `record_buffer`) |
+
+**record stop**
+
+| Flag | Default | Purpose |
+|------|---------|---------|
+| `-o, --output <path>` | `./record-<timestamp>.<ext>` | output path, or `-` for stdout (no envelope, as with `screenshot`/`pdf`) |
+| `--format` | from the extension, else `gif` | `gif` \| `mp4` \| `webm` \| `frames` |
+| `--max-size <size>` | — | best-effort ceiling, e.g. `2MB` or `1500000` |
+| `--loop <n>` | `0` (forever) | how many times the GIF plays; `--loop 3` plays three times |
+| `--annotate` | from `record start` | draw the action markers |
+
+The result reports `path`, `format`, `frames`, `fps`, `duration_ms`, `width`, `height`, `bytes`, `annotated`, `decode_failures`, and the capture's own `dropped_frames` / `truncated` / `reason`.
+
+**A failed export does not cost you the recording.**
+Everything that can be checked before the frames are handed over is: the encoder's availability, and whether the output path can actually be written — a missing directory, a path that is itself a directory, or a directory you have no permission to write to are all errors with the recording untouched, so `record stop` can be retried at a different path.
+If the write fails anyway (a full disk, an `ffmpeg` that dies) the frames are handed back to the daemon and the error says so, so the retry still works.
+A frame the encoder cannot read is skipped and counted in `decode_failures` rather than failing the export; only a recording with no decodable frame at all is an error.
+
+**Frames live in the daemon, not in the command that started the recording.**
+That is what makes a run which crashed half way still have a recording of the failure: `record stop` afterwards writes it, and it writes it even when the tab itself has since closed (the result then says `tab_closed: true`).
+A recording whose tab closed is held for ten minutes and then released, so an abandoned one does not stay a hole in a long-lived daemon.
+
+**`--format frames` replaces the previous export's PNGs.**
+A shorter recording written over a longer one removes the `frame-NNNNN.png` files the last export left, so the directory holds exactly the frames the result reports; anything else you keep in that directory is untouched.
+
+**Capture is a screencast, not a screenshot loop.**
+Chrome pushes a frame only when the page actually changes, so a static page costs almost nothing and `--fps` throttles a busy one rather than polling a quiet one.
+A frame skipped by that throttle is *not* a dropped frame — you asked for 4fps.
+A tab that renders nothing at all (fully backgrounded, on some platforms) produces no frames, and `record stop` says so rather than writing an empty file.
+
+**Truncation is always reported.**
+The ring keeps the most recent `--max-frames`, a byte ceiling (`record_max_bytes`) keeps the retained frames bounded no matter how large the viewport is, and `--max-duration` stops the capture.
+Whichever fires sets `truncated: true` with a `reason` and counts the loss in `dropped_frames`, so a partial recording is never presented as a complete one.
+
+**Annotation is composited at export, never at capture.**
+The daemon records `(timestamp, command, coordinates)` alongside the frames — the coordinates come from the pointer verbs, which already resolve and report a centre point — and the exporter draws position markers.
+Without `--annotate` the exported frames are pixel-identical to what Chrome captured, which is what makes a recording usable as a README asset.
+One recording can therefore be exported both ways.
+`annotated` in the result is a claim about the pixels: it is `true` only when a marker was actually drawn, so a recording with no actions in it — or one whose only mark fell outside the frame — reports `false` rather than implying markers you will not find.
+`--max-size` dropping frames does not drop their markers: a dropped frame's marks move to the nearest kept one.
+
+**Formats.**
+`gif` and `frames` need nothing installed, and `gif` is the default because the dependency-free path should be the one that works out of the box.
+`mp4` and `webm` need `ffmpeg` on `PATH`, and its absence is a `usage` error naming the requirement — checked **before** the recording is drained, so the frames survive to be exported as a GIF instead.
+`--format` conflicting with the output extension is an error rather than a guess, since a WebM in a file called `demo.gif` plays nowhere.
+For `mp4` and `webm` the reported `width`/`height`/`fps`/`duration_ms` are what ffmpeg actually wrote: the canvas is rounded down to even dimensions (yuv420p requires them) and the frame rate is floored at 1, which any recording containing a pause reaches.
+
+**A window resized mid-recording is letterboxed, not stretched.**
+The canvas comes from the first frame; a later frame with a different shape is scaled to fit and padded, so the export never shows a page at an aspect ratio it never had.
+
+**`--max-size` is best-effort.**
+It re-encodes at a smaller scale, and then at a lower frame count, until the file fits; the result reports `reduced` and the `export_scale` used when a reduction happened.
+`within_max_size` is reported whenever `--max-size` was given at all — including when no reduction step was possible, since a small canvas with few frames is refused at the first step and misses the ceiling just the same.
+The ladder is bounded by `--timeout` like everything else: a long recording can run out of time before it works through every step, and the result then carries `max_size_timed_out: true` alongside the best attempt that did finish, so a larger `--timeout` is a visible next move rather than a guess.
+
+Recording is **per-tab**.
+A batch that opens new tabs records the one it started on; a multi-tab recording is out of scope.
+
+`session --record <path>` brackets a whole batch (see [Batch mode](#batch-mode)).
+
+Agents: `record` is deliberately outside the default MCP tool set — an agent silently recording the user's browser is a surprising capability — and is available only under the full tool set.
 
 ### Browser state
 
@@ -663,9 +891,12 @@ Use `--policy-off` to run while you fix it.
 | Acting (`click`, `type`, `fill`, `select`, `scroll`, `key`, pointer verbs, `upload`, `attr set/rm`, `cookie set/rm/clear`, `headers`, `emulate`, `eval`, `raw`) | `allow`/`deny`, `read_only`, `verbs_denied` |
 | Reading (`snap`, `text`, `html`, `value`, `grid`, `screenshot`, `pdf`, `frame`, `wait`, `attr get/list`, `cookie list`) | `allow`/`deny`, `verbs_denied` |
 | Navigating (`nav <url>`, `open`) | the **destination** origin, before navigating |
-| Tabs and meta (`list`, `use`, `close`, `activate`, `version`, …) | not checked; every envelope's `target`, and every tab `list` or an ambiguous `close` enumerates, is reduced to a bare origin with no full URL and no title when the policy does not cover it |
+| Tabs and meta (`list`, `use`, `close`, `activate`, `version`, `session`, `recipe run`, …) | `verbs_denied` only; no origin check, and every envelope's `target`, and every tab `list` or an ambiguous `close` enumerates, is reduced to a bare origin with no full URL and no title when the policy does not cover it |
 
 A verb that is not classified is treated as **acting**, so a new verb over-restricts rather than slipping through.
+
+`verbs_denied` is checked **first**, ahead of the class, so it reaches every verb including the tab and meta ones.
+`verbs_denied = ["recipe run"]` therefore refuses running a saved recipe — a file someone else wrote, driving your authenticated browser — while leaving `recipe show` and `recipe run --dry-run` available for reading one.
 
 Redirects are the honest limitation: a `nav` to an allowed origin that redirects elsewhere cannot be stopped, so the policy is re-evaluated on the **settled** URL and the *next* command is refused.
 
