@@ -263,14 +263,52 @@ func (c *CDP) RecordStart(ctx context.Context, id string, opts RecordOpts) (map[
 
 	// The viewport is read first because startScreencast takes a maximum size in
 	// PIXELS, not a scale factor.
+	//
+	// It has to be a SETTLED read. A recording started right after a nav can
+	// otherwise size itself from a viewport the page has not laid out yet, and
+	// the max box then has the wrong aspect for the whole recording — CI caught
+	// exactly that, sizing a 756x413 surface into a square 207x207. So poll
+	// until two consecutive reads agree, poking a frame each time for the same
+	// reason element capture does: a backgrounded tab runs no rendering steps on
+	// its own, so waiting alone would never converge there.
 	var vw, vh float64
 	if err := c.run(ctx, id, bringToFront(), chromedp.ActionFunc(func(actx context.Context) error {
-		m, err := layoutRects(actx)
-		if err != nil {
-			return err
+		t := time.NewTicker(60 * time.Millisecond)
+		defer t.Stop()
+		// Three consecutive agreeing reads, not two: a viewport mid-resize can
+		// hold a transient value across a single 60ms gap, and sizing the whole
+		// recording from it gives every frame the wrong aspect.
+		const wantAgree = 3
+		var prev Rect
+		agree := 0
+		for {
+			pokeFrame(actx)
+			m, err := layoutRects(actx)
+			if err != nil {
+				return err
+			}
+			v := m.viewport
+			if v.Width > 0 && v.Height > 0 && sameRect(prev, v) {
+				if agree++; agree >= wantAgree-1 {
+					vw, vh = v.Width, v.Height
+					return nil
+				}
+			} else {
+				agree = 0
+			}
+			prev = v
+			select {
+			case <-actx.Done():
+				// Best effort beats refusing to record: a non-zero read is
+				// still usable, and only the max box is at stake.
+				if v.Width > 0 && v.Height > 0 {
+					vw, vh = v.Width, v.Height
+					return nil
+				}
+				return actx.Err()
+			case <-t.C:
+			}
 		}
-		vw, vh = m.viewport.Width, m.viewport.Height
-		return nil
 	})); err != nil {
 		return nil, err
 	}

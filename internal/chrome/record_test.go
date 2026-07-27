@@ -491,14 +491,36 @@ func TestRecordLive(t *testing.T) {
 		t.Errorf("meta frames = %v, want %d (the envelope must match what came back)", meta["frames"], len(got))
 	}
 
-	// VS-8: --scale halves the captured frame. The reference is a capture of the
-	// same page at scale 1, not the emulated viewport: a headless window's real
-	// surface and its emulated viewport need not agree, and this assertion is
-	// about the scale factor rather than about viewport emulation.
+	// VS-8: --scale halves the captured frame.
+	//
+	// Both references are taken here, back to back, rather than comparing the
+	// long-running recording above against a late capture. A headless window's
+	// viewport changes as it settles — observed flipping between 756x413 and
+	// 413x413 within one test — so two captures taken seconds apart can be
+	// sized from different windows and the comparison says nothing about scale.
+	// Adjacent captures share whatever the window happens to be, which is what
+	// makes this an assertion about the scale factor and not about window
+	// settling.
+	//
+	// The viewport is pinned first because adjacency alone was not enough: the
+	// window was still observed changing between two back-to-back captures
+	// (413x413 then 756x413), which is a property of the headless window and
+	// not of --scale. Pinning removes that variable; the assertion is a RATIO
+	// between two captures, so it stays true whatever the box is.
+	if _, err := b.EmulateViewport(ctx, id, 800, 600); err != nil {
+		t.Fatalf("EmulateViewport: %v", err)
+	}
+	// And WAIT for the override to take effect. setDeviceMetricsOverride
+	// returns before the visual viewport reports the new size, so capturing
+	// immediately can size the screencast from a transient reading — observed
+	// producing a square 300x300 from a 600x600 mid-resize viewport. Polling
+	// the page's own view of the box is the deterministic precondition.
+	waitViewport(ctx, t, b, id, 800, 600)
 	full := recordOneFrame(ctx, t, b, id, RecordOpts{FPS: 8, Scale: 1})
-	if !within(got[0].Width, float64(full.Width)*0.5, 0.15) || !within(got[0].Height, float64(full.Height)*0.5, 0.15) {
+	half := recordOneFrame(ctx, t, b, id, RecordOpts{FPS: 8, Scale: 0.5})
+	if !within(half.Width, float64(full.Width)*0.5, 0.15) || !within(half.Height, float64(full.Height)*0.5, 0.15) {
 		t.Errorf("--scale 0.5 produced %dx%d against an unscaled %dx%d, want about half",
-			got[0].Width, got[0].Height, full.Width, full.Height)
+			half.Width, half.Height, full.Width, full.Height)
 	}
 
 	// VS-1: what came back really is an animation.
@@ -607,4 +629,24 @@ func toEncodeFrames(frames []Frame) []encode.Frame {
 		out = append(out, ef)
 	}
 	return out
+}
+
+// waitViewport blocks until the page reports the expected inner size, so a test
+// that pinned the viewport is not racing the override it just requested.
+func waitViewport(ctx context.Context, t *testing.T, b *CDP, id string, w, h int) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	var got any
+	for time.Now().Before(deadline) {
+		v, err := b.Eval(ctx, id, "[innerWidth, innerHeight].join('x')", EvalOpts{})
+		if err != nil {
+			t.Fatalf("Eval innerWidth/innerHeight: %v", err)
+		}
+		got = v.(map[string]any)["value"]
+		if got == fmt.Sprintf("%dx%d", w, h) {
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatalf("viewport never reached %dx%d (last %v)", w, h, got)
 }
