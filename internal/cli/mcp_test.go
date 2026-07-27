@@ -828,3 +828,72 @@ func TestMCPRunnerIsAuthoritativeForPolicyFlags(t *testing.T) {
 		t.Errorf("--policy-off was honoured on a tool call: %q", errb.String())
 	}
 }
+
+// The allow-list bounds `close` when an MCP client is driving, per tab.
+//
+// `close` is Exempt in the classification table, so checkPolicy returns before
+// any origin question is asked — which meant a server whose allow-list named
+// one origin would close a tab on any other, and a --read-only server, which
+// advertises that it cannot change anything, would do it too.
+func TestMCPCloseIsBoundedByTheAllowList(t *testing.T) {
+	t.Parallel()
+
+	t.Run("a tab outside the allow-list is refused and stays open", func(t *testing.T) {
+		t.Parallel()
+		b := &closeRecorder{fakeBrowser: fakeBrowser{tabs: mcpTabs}}
+		app, _, _ := appWithPolicy(b, allowOnly("*.example.com"))
+		sess := serveMCP(t, app, mcp.Options{})
+		out := mcpCall(t, sess, "tabs", map[string]any{"action": "close", "target": "bb22"})
+		if !out.IsError {
+			t.Fatalf("closed a tab on a non-allow-listed origin: %v", out.StructuredContent)
+		}
+		got := mcpStructured(t, out)
+		if got["code"] != result.CodePermissionDenied {
+			t.Errorf("code = %v, want %s: %v", got["code"], result.CodePermissionDenied, got)
+		}
+		if got["origin"] != "other.test" {
+			t.Errorf("the refusal must name the origin: %v", got)
+		}
+		if len(b.calls) != 0 {
+			t.Errorf("CloseTabs was called %v — a refused close must close nothing", b.calls)
+		}
+	})
+
+	t.Run("a bulk close closes only the permitted tabs and says so", func(t *testing.T) {
+		t.Parallel()
+		b := &closeRecorder{fakeBrowser: fakeBrowser{tabs: mcpTabs}}
+		app, _, _ := appWithPolicy(b, allowOnly("*.example.com"))
+		sess := serveMCP(t, app, mcp.Options{})
+		// Both tabs match "/" — the bulk shape the reviewer used to close every
+		// tab from a server bounded to one origin.
+		out := mcpCall(t, sess, "tabs", map[string]any{"action": "close", "url": "/", "all": true})
+		if out.IsError {
+			t.Fatalf("the bulk close failed outright: %v", mcpStructured(t, out))
+		}
+		got := mcpStructured(t, out)
+		if len(b.calls) != 1 || len(b.calls[0]) != 1 || b.calls[0][0] != "aa11" {
+			t.Fatalf("CloseTabs calls = %v, want one call closing only aa11", b.calls)
+		}
+		refused, _ := got["refused"].([]any)
+		if len(refused) != 1 {
+			t.Fatalf("refused = %v, want the one denied tab reported", got["refused"])
+		}
+		if m, _ := refused[0].(map[string]any); m["id"] != "bb22" || m["origin"] != "other.test" {
+			t.Errorf("refused = %v, want bb22 on other.test", refused[0])
+		}
+	})
+
+	t.Run("the CLI is unchanged", func(t *testing.T) {
+		t.Parallel()
+		// No MCP server is driving, so `close` stays Exempt: a person at a
+		// shell closing their own tab is not what the allow-list is for.
+		b := &closeRecorder{fakeBrowser: fakeBrowser{tabs: mcpTabs}}
+		app, out, _ := appWithPolicy(b, allowOnly("*.example.com"))
+		if code := app.Execute("close", "bb22", "--json"); code != result.ExitOK {
+			t.Fatalf("exit = %d, want 0: %s", code, out.String())
+		}
+		if len(b.calls) != 1 {
+			t.Errorf("CloseTabs calls = %v, want the CLI to close the tab as before", b.calls)
+		}
+	})
+}

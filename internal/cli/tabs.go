@@ -80,6 +80,13 @@ func (a *App) cmdClose() *cobra.Command {
 				a.emitErr("close", rerr.Code, rerr.Message, rerr.Details)
 				return nil
 			}
+			// The allow-list bounds close when an MCP client is driving; at a
+			// shell this is the identity. See boundClose.
+			victims, refused, rerr := a.boundClose(victims)
+			if rerr != nil {
+				a.emitErr("close", rerr.Code, rerr.Message, rerr.Details)
+				return nil
+			}
 			ids := make([]string, 0, len(victims))
 			for _, v := range victims {
 				ids = append(ids, v.ID)
@@ -95,6 +102,11 @@ func (a *App) cmdClose() *cobra.Command {
 			// is still open and still listed, stranding every later command on
 			// no_current_target — the inversion of what US-7 exists to prevent.
 			res["sticky_cleared"] = a.clearStickyIfClosed(closedIDs(res))
+			// A bulk close that did less than it was asked says so, rather than
+			// reporting a count the caller has to compare against its own list.
+			if len(refused) > 0 {
+				res["refused"] = refused
+			}
 			// The envelope's `target` describes exactly one tab, and a bulk close has
 			// none — `closed` carries the list instead.
 			var tgt *result.TargetInfo

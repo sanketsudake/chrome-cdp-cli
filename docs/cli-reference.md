@@ -207,7 +207,8 @@ The result records `awaited: true`, so a caller can tell which path ran.
 A rejected promise is an **error**, never a value: exit 5 with `error.code: cdp_error`, the rejection's message in `error.message`, and its stack in `error.stack`.
 A never-settling promise is bounded by `--timeout` (exit 4), and the connection stays usable afterwards.
 
-`--await` is opt-in. `replMode` changes how bare object literals and `let`/`const` re-declaration behave, so plain `eval` keeps its existing semantics rather than changing silently under scripts that already work.
+`--await` is opt-in.
+`replMode` changes how bare object literals and `let`/`const` re-declaration behave, so plain `eval` keeps its existing semantics rather than changing silently under scripts that already work.
 
 ### Acting
 
@@ -665,7 +666,10 @@ The streaming forms (`console --follow`, `net --follow`) are not exposed: they w
 `recipe` is not either — a recipe is authored and reviewed at the shell.
 
 `--read-only` reuses the [policy layer's verb classification](#what-is-checked) rather than a second table, so it can never disagree with a `read_only` origin.
-It exposes `tabs` (without `open`), `snapshot`, `read`, `wait_for`, `screenshot`, `console`, `network` and `batch`; invoking anything else by name returns a typed `usage` error rather than a protocol error.
+It exposes `tabs` (without `open` or `close`), `snapshot`, `read`, `wait_for`, `screenshot`, `console`, `network` and `batch`; invoking anything else by name returns a typed `usage` error rather than a protocol error.
+`close` is withheld even though the classification table calls it exempt — it touches no page content, but it does change the browser, and a server that says it cannot modify anything should not close your tabs.
+
+**`close` is bounded by the allow-list here**, unlike at a shell: an MCP client may close a tab only on an origin the policy permits, per tab, and a bulk close closes the permitted ones and reports the rest under `refused`.
 
 **Results keep the contract.**
 A success carries the envelope's `result` object as `structuredContent`, plus a one-line text summary.
@@ -960,6 +964,11 @@ A verb that is not classified is treated as **acting**, so a new verb over-restr
 
 `verbs_denied` is checked **first**, ahead of the class, so it reaches every verb including the tab and meta ones.
 `verbs_denied = ["recipe run"]` therefore refuses running a saved recipe — a file someone else wrote, driving your authenticated browser — while leaving `recipe show` and `recipe run --dry-run` available for reading one.
+
+`close` is the one exception to the last row, and only under [MCP mode](#mcp-server): there it is checked against `allow`/`deny` per tab.
+At a shell you decided to close your own tab, and refusing it would produce an error a long way from its cause.
+An assistant driving the browser under a boundary you wrote is a different caller, and a server that enforced the allow-list for reads but not for destruction would be enforcing half a boundary.
+A bulk close under MCP closes the tabs the policy permits and reports the rest under `refused`.
 
 Redirects are the honest limitation: a `nav` to an allowed origin that redirects elsewhere cannot be stopped, so the policy is re-evaluated on the **settled** URL and the *next* command is refused.
 

@@ -363,6 +363,47 @@ func TestReadOnlyHidesMutatingTools(t *testing.T) {
 	}
 }
 
+// A --read-only server does not offer `close`.
+//
+// `close` is Exempt in the policy table rather than Mutating — it touches no
+// page content — so --read-only kept it in the `tabs` enum, and a server whose
+// instructions say "only reading verbs are exposed and nothing can modify a
+// page" would close the user's tabs on request.
+func TestReadOnlyWithholdsClose(t *testing.T) {
+	t.Parallel()
+	r := &fakeRunner{}
+	sess := connect(t, r, Options{ReadOnly: true})
+	res, err := sess.ListTools(ctxT(t), nil)
+	if err != nil {
+		t.Fatalf("tools/list: %v", err)
+	}
+	for _, tl := range res.Tools {
+		if tl.Name != prefix+"tabs" {
+			continue
+		}
+		enum := actionEnum(t, tl)
+		if contains(enum, "close") {
+			t.Errorf("--read-only still offers tabs action=close: %v", enum)
+		}
+		// The reading half of the tool survives; the tool does not disappear.
+		for _, want := range []string{"list", "use", "activate"} {
+			if !contains(enum, want) {
+				t.Errorf("--read-only dropped tabs action=%s: %v", want, enum)
+			}
+		}
+	}
+	out := callTool(t, sess, prefix+"tabs", map[string]any{"action": "close", "target": "bb22"})
+	if !out.IsError {
+		t.Fatal("a --read-only server closed a tab")
+	}
+	if got := structured(t, out); got["code"] != "usage" {
+		t.Errorf("error = %v, want usage", got)
+	}
+	if r.count() != 0 {
+		t.Errorf("the close reached the CLI anyway: %v", r.calls)
+	}
+}
+
 func actionEnum(t *testing.T, tl *sdk.Tool) []string {
 	t.Helper()
 	raw, err := json.Marshal(tl.InputSchema)

@@ -191,7 +191,7 @@ func (o Options) allowedActions(t *tool) []string {
 	}
 	out := make([]string, 0, len(t.actions))
 	for value, verb := range t.actions {
-		if o.ReadOnly && mutates(verb) {
+		if o.ReadOnly && refusedByReadOnly(verb) {
 			continue
 		}
 		out = append(out, value)
@@ -199,6 +199,20 @@ func (o Options) allowedActions(t *tool) []string {
 	sort.Strings(out)
 	return out
 }
+
+// destructiveVerbs are verbs a --read-only server withholds even though the
+// policy table classifies them as Exempt rather than Mutating.
+//
+// `close` is the whole list. It is Exempt because it touches no page CONTENT,
+// which is the right answer for a person at a shell — but a server that
+// announces "only reading verbs are exposed and nothing can modify a page" and
+// then closes the user's tabs on request is making a claim it does not keep.
+// The classification table stays the single source of truth for what modifies a
+// page; this names the one exposed verb that modifies the BROWSER instead.
+var destructiveVerbs = map[string]bool{"close": true}
+
+// refusedByReadOnly reports whether --read-only withholds a verb.
+func refusedByReadOnly(verb string) bool { return mutates(verb) || destructiveVerbs[verb] }
 
 // mutates reports whether any of a tool's verbs modifies page state, per the
 // policy classification table.
@@ -340,9 +354,9 @@ func (s *Server) callTool(ctx context.Context, t *tool, raw map[string]any) *sdk
 		return usageResult(err)
 	}
 	// Belt to the enum's braces: even if a grouped tool's filtering missed a
-	// value, a mutating verb never runs on a --read-only server.
-	if s.opts.ReadOnly && mutates(verb) {
-		return usageResult(usagef("%s: %q modifies the page and this server is running --read-only", t.name, verb))
+	// value, a verb --read-only withholds never runs on a --read-only server.
+	if s.opts.ReadOnly && refusedByReadOnly(verb) {
+		return usageResult(usagef("%s: %q changes the page or the set of open tabs, and this server is running --read-only", t.name, verb))
 	}
 
 	// The capture verbs return their bytes through a file. With no `output`
