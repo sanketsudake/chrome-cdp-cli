@@ -120,7 +120,7 @@ func (c *CDP) configureCapture(buffer, maxEntry int) {
 //
 // It takes no lock, deliberately: the field is written only by newCDP and
 // configureCapture, both of which run before any tab is attached and therefore
-// before any reader exists. Locking here would deadlock instead — startCapture
+// before any reader exists. Locking here would deadlock instead — listenCapture
 // is called from on(), which already holds c.mu.
 func (c *CDP) consoleBuf() *eventbuf.Set[consoleMessage] { return c.console }
 
@@ -135,8 +135,8 @@ func (c *CDP) attached(id string) bool {
 
 // listenCapture registers every event-capture listener for a tab. It is called
 // from on(), under c.mu, exactly once per tab — and BEFORE the attach, so the
-// backlog Log.enable flushes during chromedp's own attach sequence is received
-// rather than dropped on the floor.
+// backlog the domain enables flush during chromedp's own attach sequence is
+// received rather than dropped on the floor.
 //
 // This is the hook every event-backed verb shares; RFC-0003's network capture
 // and RFC-0011's screencast register here too.
@@ -195,16 +195,17 @@ func (c *CDP) listenConsole(tctx context.Context, id string) {
 //
 // Chrome can describe one uncaught exception twice: Runtime.exceptionThrown and
 // Log.entryAdded with source "javascript". Suppressing the second by SOURCE, as
-// this used to, throws away the pre-attach backlog along with the duplicates —
-// Log.enable's replay of "the entries collected so far" is the ONLY record of an
-// error that predates the attach, and Runtime.enable replays nothing. A page
-// that had already thrown answered `console --only-errors` with an empty list
-// and exit 0, which reads as "the page is clean": RFC-0002 US-1 exactly
+// this used to, throws the pre-attach backlog away along with the duplicates —
+// what a domain replays when it is enabled is the only record of an error that
+// predates the attach, and which domain replays it varies by Chrome version.
+// A page that had already thrown answered `console --only-errors` with an empty
+// list and exit 0, which reads as "the page is clean": RFC-0002 US-1 exactly
 // inverted.
 //
 // So duplicates are judged on IDENTITY — what was said, and where — inside a
-// short window, and the backlog survives. The window matters: an app that throws
-// the same error on every poll is reporting a real repeat, not a duplicate.
+// short window, and every replay survives whichever domain it came from. The
+// window matters the other way: an app that throws the same error on every poll
+// is reporting a real repeat, not a duplicate.
 type consoleDedup struct {
 	mu     sync.Mutex
 	recent []consoleSeen

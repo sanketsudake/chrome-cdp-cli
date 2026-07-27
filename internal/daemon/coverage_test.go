@@ -42,3 +42,25 @@ func TestDispatchCoversBrowser(t *testing.T) {
 		}
 	}
 }
+
+// TestIsStreamMethodCoversEveryStreamingBrowserMethod fails when a streaming
+// Browser method is missing from isStreamMethod.
+//
+// The consequence of missing one is invisible in every stub-backed test and in
+// any single-terminal use: the method would take the dispatch mutex for the
+// whole life of the caller's --follow window, so every other command against the
+// daemon would block behind it. A streaming method is the one whose last
+// parameter is the emit callback, which is exactly why it cannot ride the unary
+// one-request/one-response protocol.
+func TestIsStreamMethodCoversEveryStreamingBrowserMethod(t *testing.T) {
+	t.Parallel()
+	emit := reflect.TypeOf(func(any) error { return nil })
+	for m := range reflect.TypeFor[chrome.Browser]().Methods() {
+		last := m.Type.NumIn() - 1
+		streams := last >= 0 && m.Type.In(last) == emit
+		if got := isStreamMethod(m.Name); got != streams {
+			t.Errorf("isStreamMethod(%q) = %v, want %v — it must name exactly the methods "+
+				"streamDispatch serves, or a stream holds the dispatch mutex for its whole window", m.Name, got, streams)
+		}
+	}
+}

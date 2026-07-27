@@ -89,7 +89,7 @@ type CDP struct {
 	// Retained CDP events, per target. The buffers live HERE — on the object
 	// that holds the connection, which in normal use is owned by the daemon —
 	// because a per-command process cannot retain events it was not running to
-	// receive. Capture starts at attach (see startCapture in console.go), not
+	// receive. Capture starts at attach (see listenCapture in console.go), not
 	// at the first read. Sized once by configureCapture, before any attach.
 	console         *eventbuf.Set[consoleMessage]
 	consoleMaxEntry int
@@ -333,12 +333,13 @@ func (c *CDP) on(id string) (context.Context, error) {
 	// somebody thought to look. See listenCapture in console.go.
 	//
 	// The listeners go on BEFORE chromedp.Run, which is the attach. chromedp's
-	// own attach sequence issues Runtime.enable and Log.enable itself, and
-	// Log.enable is what flushes "the entries collected so far" — so a listener
-	// registered after the attach misses that flush entirely, and with it the
-	// ONLY record of anything the page did before we arrived (Runtime.enable
-	// replays nothing). ListenTarget before Run is supported: the callback is
-	// held on the context and attached to the target before those enables run.
+	// own attach sequence issues Runtime.enable, Log.enable and Network.enable
+	// itself, and enabling a domain is what makes Chrome describe what it
+	// already holds for the page — so a listener registered after the attach
+	// misses that flush entirely, and with it the only record of anything the
+	// page did before we arrived. ListenTarget before Run is supported: the
+	// callback is held on the context and attached to the target before those
+	// enables run.
 	c.listenCapture(tctx, id)
 	if err := chromedp.Run(tctx); err != nil { // attach once, tied to tctx
 		cancel()
