@@ -147,7 +147,7 @@ func tabsTool() *tool {
 		build: func(c *call) (string, []string, error) {
 			action := c.str("action")
 			if err := c.only(action, map[string][]string{
-				"all": {"close"}, "title": {"list", "close"},
+				"all": {"close"}, "title": {"list", "close"}, "url": {"open", "list", "close"},
 			}); err != nil {
 				return "", nil, err
 			}
