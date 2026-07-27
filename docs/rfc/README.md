@@ -40,6 +40,7 @@ The ordering below follows that: make the interaction surface complete, then mak
 | [0010](0010-page-reading-ergonomics.md) | Page-reading ergonomics: `text --article`, `eval --await` | P2 | reading | Draft |
 | [0011](0011-session-recording.md) | Session recording: `record` and GIF export | P2 | capture | Draft |
 | [0012](0012-domain-allowlist.md) | Domain allow-list: bounding what the CLI may drive | P2 | safety | Draft |
+| [0013](0013-consent-prompt-lifecycle.md) | Surviving Chrome's consent prompt | P0 | connection | Draft |
 
 ## Dependency graph
 
