@@ -189,3 +189,19 @@ func sameStringSlices(a, b []string) bool {
 	}
 	return true
 }
+
+// findPhraseFloor + findBrevityWeight are the text score's ceiling. If they
+// stop summing to 1 every score silently rescales, and findTextWeight stops
+// meaning what its comment says.
+func TestFindTextScoreCeiling(t *testing.T) {
+	t.Parallel()
+	if got := findPhraseFloor + findBrevityWeight; got != 1 {
+		t.Fatalf("findPhraseFloor + findBrevityWeight = %v, want exactly 1", got)
+	}
+	if got := findTextScore([]string{"save"}, []string{"save"}); got != 1 {
+		t.Errorf("an exact single-token match scored %v, want 1", got)
+	}
+	if got := findTextScore([]string{"save", "draft"}, []string{"save", "draft"}); got != 1 {
+		t.Errorf("an exact phrase match scored %v, want 1", got)
+	}
+}

@@ -11,10 +11,12 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/chromedp/cdproto/accessibility"
+	"github.com/chromedp/chromedp"
 )
 
 // axV builds an accessibility value the way Chrome encodes them (raw JSON).
@@ -66,11 +68,11 @@ func TestBuildFindMatches(t *testing.T) {
 		if len(ms) < 3 {
 			t.Fatalf("got %d matches (%v), want the two Save buttons and the heading", len(ms), matchNames(ms))
 		}
-		if ms[0].name != "Save" || ms[0].role != "button" || ms[0].ref != "e101" {
+		if ms[0].name != "Save" || ms[0].role != "button" || ms[0].ref() != "e101" {
 			t.Errorf("first match = %+v, want the first Save button with ref e101", ms[0])
 		}
-		if ms[1].ref != "e102" {
-			t.Errorf("second match ref = %q, want e102 (document order among equals)", ms[1].ref)
+		if ms[1].ref() != "e102" {
+			t.Errorf("second match ref = %q, want e102 (document order among equals)", ms[1].ref())
 		}
 		if ms[0].score <= ms[2].score {
 			t.Errorf("button score %.3f not above heading score %.3f", ms[0].score, ms[2].score)
@@ -94,7 +96,7 @@ func TestBuildFindMatches(t *testing.T) {
 	t.Run("region scopes to the container subtree", func(t *testing.T) {
 		t.Parallel()
 		ms, _ := buildFindMatches(findFixtureNodes(), "delete", FindOpts{Region: "Invoice 4102"})
-		if len(ms) != 1 || ms[0].ref != "e105" {
+		if len(ms) != 1 || ms[0].ref() != "e105" {
 			t.Fatalf("region matches = %v (refs %v), want exactly the in-region Delete e105", matchNames(ms), ms)
 		}
 	})
@@ -273,4 +275,178 @@ func TestFindLive(t *testing.T) {
 	if ms = find("flux capacitor", FindOpts{}); len(ms) != 0 {
 		t.Errorf("find 'flux capacitor' = %v, want none", ms)
 	}
+}
+
+// The DOM fallback must not leak what the accessibility tree deliberately
+// masks. Chrome reports a password field's a11y value as bullets; this path
+// reads the DOM, where .value is the literal typed text, so it masks too.
+// Without the mask, `find` on a backgrounded login tab would hand the user's
+// typed password to the caller (and into an agent's transcript).
+func TestFindDOMFallbackMasksSecrets(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping live-Chrome integration in -short mode")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	b, err := launch(true, tmpProfile(t), 0)
+	if err != nil {
+		t.Skipf("cannot launch a managed headless Chrome here: %v", err)
+	}
+	defer b.Close()
+
+	const secret = "hunter2-SECRET"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		fmt.Fprintf(w, `<!doctype html><title>Login</title><body>
+<label for="p">Password</label><input type="password" id="p" value=%q>
+<label for="u">Username</label><input type="text" id="u" value="alice">
+<input type="hidden" id="csrf" aria-label="csrf" value="tok-SECRET">
+</body>`, secret)
+	}))
+	defer srv.Close()
+
+	id := firstTab(ctx, t, b)
+	if _, err := b.Navigate(ctx, id, srv.URL); err != nil {
+		t.Fatalf("Navigate: %v", err)
+	}
+
+	// Drive the fallback's candidate collection directly: it is only reachable
+	// through a hidden tab, which a headless test cannot arrange reliably.
+	var cands []findMatchNode
+	err = b.run(ctx, id, chromedp.ActionFunc(func(actx context.Context) error {
+		cands, _ = findDOMFallback(actx, "password", FindOpts{})
+		return nil
+	}))
+	if err != nil {
+		t.Fatalf("fallback: %v", err)
+	}
+	if len(cands) == 0 {
+		t.Fatal("fallback matched nothing; the fixture should expose a Password field")
+	}
+	for _, c := range cands {
+		if strings.Contains(c.value, "SECRET") {
+			t.Errorf("fallback leaked a secret value for %q: %q", c.name, c.value)
+		}
+	}
+	// The masking preserves the field's shape, matching what the a11y tree
+	// reports, rather than dropping the value entirely.
+	if got := cands[0].value; got != strings.Repeat("•", len(secret)) {
+		t.Errorf("password value = %q, want %d bullets", got, len(secret))
+	}
+
+	// The primary (a11y) path was never the leak — assert it stays masked, so a
+	// future change to Snapshot's value handling trips this test too.
+	got, err := b.Find(ctx, id, "password field", FindOpts{Role: "textbox"})
+	if err != nil {
+		t.Fatalf("Find: %v", err)
+	}
+	raw, _ := json.Marshal(got)
+	if strings.Contains(string(raw), "SECRET") {
+		t.Errorf("a11y path leaked a secret: %s", raw)
+	}
+}
+
+// The DOM fallback's Go half is pure, so the behaviour that used to be
+// reachable only through a backgrounded tab is testable directly. This is the
+// path that shipped a hardcoded focusable:true and silently ignored --dedupe.
+func TestRankDOMCandidates(t *testing.T) {
+	t.Parallel()
+	raw := []findDOMCandidate{
+		{Role: "button", Name: "Save", Focusable: true, X: 10, Y: 20, W: 80, H: 30},
+		{Role: "button", Name: "Save", Focusable: true, X: 10, Y: 60, W: 80, H: 30},
+		{Role: "heading", Name: "Save area"},
+		{Role: "button", Name: "Save all", Disabled: true},
+	}
+
+	t.Run("carries per-element focusable and disabled, not a constant", func(t *testing.T) {
+		t.Parallel()
+		ms, _ := rankDOMCandidates(raw, "save button", FindOpts{})
+		byName := map[string]findMatchNode{}
+		for _, m := range ms {
+			byName[m.name] = m
+		}
+		// A heading is not focusable, so it must not carry the focusable state
+		// (nor the boost) the way an interactive control does.
+		if got := byName["Save area"]; slicesHas(got.states, "focusable") {
+			t.Errorf("heading reported focusable: %v", got.states)
+		}
+		if got := byName["Save"]; !slicesHas(got.states, "focusable") {
+			t.Errorf("button lost its focusable state: %v", got.states)
+		}
+		if got := byName["Save all"]; !slicesHas(got.states, "disabled") {
+			t.Errorf("disabled button lost its state: %v", got.states)
+		}
+		// The interactive control outranks the heading, matching the a11y path.
+		if byName["Save"].score <= byName["Save area"].score {
+			t.Errorf("button %.3f did not outrank heading %.3f",
+				byName["Save"].score, byName["Save area"].score)
+		}
+	})
+
+	t.Run("honours --dedupe", func(t *testing.T) {
+		t.Parallel()
+		ms, _ := rankDOMCandidates(raw, "save", FindOpts{Dedupe: true})
+		saves := 0
+		for _, m := range ms {
+			if m.name == "Save" {
+				saves++
+			}
+		}
+		if saves != 1 {
+			t.Errorf("got %d Save buttons after --dedupe, want 1", saves)
+		}
+	})
+
+	t.Run("honours --role and --limit", func(t *testing.T) {
+		t.Parallel()
+		ms, _ := rankDOMCandidates(raw, "save", FindOpts{Role: "heading"})
+		if len(ms) != 1 || ms[0].role != "heading" {
+			t.Errorf("--role heading = %v", matchNames(ms))
+		}
+		ms, truncated := rankDOMCandidates(raw, "save", FindOpts{Limit: 1})
+		if len(ms) != 1 || !truncated {
+			t.Errorf("--limit 1: %d matches, truncated=%v", len(ms), truncated)
+		}
+	})
+
+	t.Run("matches carry geometry but no ref", func(t *testing.T) {
+		t.Parallel()
+		ms, _ := rankDOMCandidates(raw, "save button", FindOpts{Limit: 1})
+		if len(ms) != 1 {
+			t.Fatalf("got %d matches", len(ms))
+		}
+		if ms[0].ref() != "" {
+			t.Errorf("fallback minted a ref %q; there is no a11y node behind it", ms[0].ref())
+		}
+		if ms[0].geometry == nil || ms[0].geometry.W == 0 {
+			t.Errorf("fallback match lost its geometry: %+v", ms[0].geometry)
+		}
+	})
+}
+
+// A --region naming no container yields zero matches, exactly as `snap` does.
+// The envelope has to say so, or a typo'd region is indistinguishable from a
+// region that exists and holds nothing.
+func TestShapeFindResultReportsMissingRegion(t *testing.T) {
+	t.Parallel()
+	res := shapeFindResult("delete", nil, false, false, true)
+	if res["count"] != 0 {
+		t.Errorf("count = %v, want 0", res["count"])
+	}
+	if res["region_found"] != false {
+		t.Errorf("region_found = %v, want false", res["region_found"])
+	}
+	// A region that DID resolve says nothing, keeping the common envelope clean.
+	if _, ok := shapeFindResult("delete", nil, false, false, false)["region_found"]; ok {
+		t.Error("region_found reported for a region that resolved")
+	}
+}
+
+func slicesHas(list []string, s string) bool {
+	for _, v := range list {
+		if v == s {
+			return true
+		}
+	}
+	return false
 }

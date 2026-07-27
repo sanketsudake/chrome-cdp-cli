@@ -525,30 +525,17 @@ func (c *CDP) Snapshot(ctx context.Context, id string, opts SnapOpts) (any, erro
 		Value  string   `json:"value,omitempty"`
 		States []string `json:"states,omitempty"`
 	}
-	byID := make(map[accessibility.NodeID]*accessibility.Node, len(nodes))
-	for _, n := range nodes {
-		byID[n.NodeID] = n
-	}
-	// --region scopes the node list to the subtree of the first container whose
-	// name contains the given text (alerts/focused stay page-wide).
-	var inRegion map[accessibility.NodeID]bool
-	if opts.Region != "" {
-		if rn := findRegion(nodes, opts.Region); rn != nil {
-			inRegion = map[accessibility.NodeID]bool{}
-			markSubtree(byID, rn, inRegion)
-		} else {
-			inRegion = map[accessibility.NodeID]bool{} // region not found -> nothing
-		}
-	}
-	out := make([]axNode, 0, len(nodes))
+	byID := axIndex(nodes)
+
+	// alerts and focused are computed over the FULL tree, before any
+	// --role/--grep/--region filter, because they answer "what did the page
+	// just tell the user" rather than "what did I ask to see".
 	var alerts []string        // aria-live / role=alert|status text — the toasts/notifications
 	var focused map[string]any // the currently-focused element
-	seen := map[string]bool{}
 	for _, n := range nodes {
 		role, name := axString(n.Role), axString(n.Name)
 		// A live region's text is usually in child StaticText nodes, not its own
 		// name — walk the subtree so toasts ("Success! Event approved") surface.
-		// Computed over the FULL tree, before any --role/--grep/--region filter.
 		if role == "alert" || role == "status" || axLive(n) {
 			if txt := axSubtreeText(byID, n); txt != "" {
 				alerts = append(alerts, txt)
@@ -557,33 +544,27 @@ func (c *CDP) Snapshot(ctx context.Context, id string, opts SnapOpts) (any, erro
 		if focused == nil && axHasState(n, "focused") {
 			focused = map[string]any{"role": role, "name": name}
 		}
-		if role == "" && name == "" {
-			continue
-		}
-		if opts.Role != "" && role != opts.Role {
-			continue
-		}
-		if re != nil && !re.MatchString(name) {
-			continue
-		}
-		if inRegion != nil && !inRegion[n.NodeID] {
-			continue
-		}
-		if opts.Dedupe {
-			key := role + "\x00" + name
-			if seen[key] {
-				continue
-			}
-			seen[key] = true
-		}
-		// A stable element ref (the CDP backend node id) that `--by ref` resolves
-		// without re-querying by name — the same node keeps the same ref across
-		// snaps for the document's lifetime.
-		var ref string
-		if n.BackendDOMNodeID != 0 {
-			ref = fmt.Sprintf("e%d", n.BackendDOMNodeID)
-		}
-		out = append(out, axNode{Ref: ref, Role: role, Name: name, Value: axString(n.Value), States: axStates(n)})
+	}
+
+	kept := axFilterNodes(nodes, axFilter{
+		Role:   opts.Role,
+		Region: opts.Region,
+		Dedupe: opts.Dedupe,
+		// A snapshot reports the tree as it is, ignored nodes included.
+		IncludeIgnored: true,
+		Keep: func(_ *accessibility.Node, _, name string) bool {
+			return re == nil || re.MatchString(name)
+		},
+	})
+	out := make([]axNode, 0, len(kept))
+	for _, n := range kept {
+		out = append(out, axNode{
+			Ref:    axRef(n),
+			Role:   axString(n.Role),
+			Name:   axString(n.Name),
+			Value:  axString(n.Value),
+			States: axStates(n),
+		})
 	}
 	res := map[string]any{"nodes": out}
 	if len(alerts) > 0 {
@@ -593,6 +574,105 @@ func (c *CDP) Snapshot(ctx context.Context, id string, opts SnapOpts) (any, erro
 		res["focused"] = focused
 	}
 	return res, nil
+}
+
+// axFilter is the node selection `snap` and `find` share: the same --role,
+// --region and --dedupe semantics, and the same ref minting.
+//
+// It exists because both verbs must agree on which nodes exist and what ref
+// each one carries — a caller reads with one and acts on the other, so a
+// divergence between two hand-mirrored loops would show up as a ref that
+// resolves in `snap` and not in `find`.
+type axFilter struct {
+	Role   string // only nodes with this ARIA role
+	Region string // only nodes within this container's subtree
+	Dedupe bool   // collapse identical role+name, keeping the first
+
+	// IncludeIgnored keeps nodes the accessibility tree marks ignored (hidden
+	// from assistive tech). `snap` reports the tree as it is and passes true;
+	// `find` ranks what a user could actually interact with, so it passes
+	// opts.All.
+	IncludeIgnored bool
+
+	// Keep is an optional extra predicate, for a filter only one caller has
+	// (`snap`'s --grep name regex).
+	Keep func(n *accessibility.Node, role, name string) bool
+}
+
+// axIndex maps nodes by id, for the subtree walks --region needs.
+func axIndex(nodes []*accessibility.Node) map[accessibility.NodeID]*accessibility.Node {
+	byID := make(map[accessibility.NodeID]*accessibility.Node, len(nodes))
+	for _, n := range nodes {
+		byID[n.NodeID] = n
+	}
+	return byID
+}
+
+// axRegionSet returns the id set --region scopes to, or nil when no region was
+// asked for. A region that does not resolve yields an EMPTY set rather than
+// nil: "scope to a container that is not here" must match nothing, not
+// silently match everything.
+func axRegionSet(nodes []*accessibility.Node, byID map[accessibility.NodeID]*accessibility.Node, region string) map[accessibility.NodeID]bool {
+	if region == "" {
+		return nil
+	}
+	set := map[accessibility.NodeID]bool{}
+	if rn := findRegion(nodes, region); rn != nil {
+		markSubtree(byID, rn, set)
+	}
+	return set
+}
+
+// axRef is the stable element ref a snapshot hands out (the CDP backend node
+// id). The same node keeps the same ref for the document's lifetime, which is
+// what lets `--by ref` act on something a previous read reported. Empty when
+// the node has no backing DOM node.
+func axRef(n *accessibility.Node) string {
+	if n.BackendDOMNodeID == 0 {
+		return ""
+	}
+	return fmt.Sprintf("e%d", n.BackendDOMNodeID)
+}
+
+// axFilterNodes applies f to a full tree and returns the surviving nodes in
+// document order.
+//
+// The node index is built only when --region asks for a subtree walk: it is an
+// O(tree) allocation, and most reads do not scope to a region.
+func axFilterNodes(nodes []*accessibility.Node, f axFilter) []*accessibility.Node {
+	var inRegion map[accessibility.NodeID]bool
+	if f.Region != "" {
+		inRegion = axRegionSet(nodes, axIndex(nodes), f.Region)
+	}
+	out := make([]*accessibility.Node, 0, len(nodes))
+	seen := map[string]bool{}
+	for _, n := range nodes {
+		role, name := axString(n.Role), axString(n.Name)
+		if role == "" && name == "" {
+			continue
+		}
+		if n.Ignored && !f.IncludeIgnored {
+			continue
+		}
+		if f.Role != "" && role != f.Role {
+			continue
+		}
+		if inRegion != nil && !inRegion[n.NodeID] {
+			continue
+		}
+		if f.Keep != nil && !f.Keep(n, role, name) {
+			continue
+		}
+		if f.Dedupe {
+			key := role + "\x00" + name
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+		}
+		out = append(out, n)
+	}
+	return out
 }
 
 // findRegion returns the first exposed node whose accessible name contains sub
@@ -1088,8 +1168,8 @@ func domNameQuery(ctx context.Context, name, role string, nth int, match, row st
 // row JSON (empty = any row; else keep only elements whose closest [role=row]/tr
 // ancestor's text contains it — case-insensitive).
 const domNameLocatorJS = `(() => {
-  const want = %[1]s, role = %[2]s, mode = %[3]s, nth = %[4]d, row = %[5]s;
-  const norm = s => (s || "").replace(/\s+/g, " ").trim();
+  const want = %[1]s, role = %[2]s, mode = %[3]s, nth = %[4]d, row = %[5]s;` +
+	axNameHelpersJS + `
   const inRow = el => {
     if (!row) return true;
     const tr = el.closest("[role=row],tr");
@@ -1100,49 +1180,6 @@ const domNameLocatorJS = `(() => {
     if (mode === "contains") return a.toLowerCase().includes(b.toLowerCase());
     if (mode === "regex") { try { return new RegExp(b).test(a); } catch (e) { return false; } }
     return a === b;
-  };
-  const visible = el => {
-    if (el.getAttribute("aria-hidden") === "true") return false;
-    const cs = getComputedStyle(el);
-    if (cs.visibility === "hidden" || cs.display === "none") return false;
-    const r = el.getBoundingClientRect();
-    return r.width > 0 && r.height > 0;
-  };
-  const roleOf = el => {
-    const ex = el.getAttribute("role"); if (ex) return ex;
-    const tag = el.tagName.toLowerCase();
-    if (tag === "button") return "button";
-    if (tag === "a" && el.hasAttribute("href")) return "link";
-    if (tag === "select") return "combobox";
-    if (tag === "textarea") return "textbox";
-    if (/^h[1-6]$/.test(tag)) return "heading";
-    if (tag === "input") {
-      const ty = (el.getAttribute("type") || "text").toLowerCase();
-      if (["button", "submit", "reset"].includes(ty)) return "button";
-      if (ty === "checkbox") return "checkbox";
-      if (ty === "radio") return "radio";
-      return "textbox";
-    }
-    return "";
-  };
-  const textRoles = ["button", "link", "heading", "option", "menuitem", "menuitemradio", "menuitemcheckbox", "tab", "treeitem", "cell", "columnheader", "rowheader"];
-  const accName = el => {
-    const al = el.getAttribute("aria-label"); if (al) return al;
-    const lb = el.getAttribute("aria-labelledby");
-    if (lb) {
-      const t = lb.split(/\s+/).map(id => { const e = document.getElementById(id); return e ? e.textContent : ""; }).join(" ");
-      if (norm(t)) return t;
-    }
-    if (el.id) { try { const lab = document.querySelector('label[for="' + CSS.escape(el.id) + '"]'); if (lab && norm(lab.textContent)) return lab.textContent; } catch (e) {} }
-    const wrap = el.closest("label"); if (wrap && norm(wrap.textContent)) return wrap.textContent;
-    if (textRoles.includes(roleOf(el)) && norm(el.textContent)) return el.textContent;
-    const ph = el.getAttribute("placeholder"); if (ph) return ph;
-    const ti = el.getAttribute("title"); if (ti) return ti;
-    const alt = el.getAttribute("alt"); if (alt) return alt;
-    if (el.tagName === "INPUT" && ["button", "submit", "reset"].includes((el.getAttribute("type") || "").toLowerCase())) {
-      const v = el.getAttribute("value"); if (v) return v;
-    }
-    return "";
   };
   const out = [];
   for (const el of document.querySelectorAll("*")) {

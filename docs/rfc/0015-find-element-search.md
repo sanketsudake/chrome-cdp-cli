@@ -116,7 +116,7 @@ Matches are ordered by descending score; ties break by document order.
 | Situation | `error.code` | Exit |
 |-----------|--------------|------|
 | Empty query; `--limit` out of range; `--min-score` outside 0..1 | `usage` | 2 |
-| `--region` selector never resolves | `target_timeout` | 4 |
+| `--region` names no container on the page | *not an error* — `ok: true`, `count: 0`, plus `region_found: false` | 0 |
 | A11y tree unavailable and DOM fallback also failed | `cdp_error` | 5 |
 | No matches | *not an error* — `ok: true`, `count: 0` | 0 |
 
@@ -157,6 +157,8 @@ The table and weights live in one file with golden tests; tuning them must never
   Its input schema mirrors the flags; its output is the same match list, which pairs with the existing `click`/`type_text` tools' ref addressing.
 - **Performance.**
   One tree fetch plus an in-process scoring pass over at most a few thousand nodes — comparable to `snap` itself; no per-candidate round trips.
+  Geometry is measured only for the matches actually RETURNED (bounded by `--limit`: 10 by default, 50 at most), which costs a pair of CDP calls each.
+  That measurement deliberately does not reuse the pointer verbs' `nodeCoord`, because that path scrolls the element into view — a side effect a read verb must not have.
 
 ## Verification scenarios
 

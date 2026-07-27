@@ -196,7 +196,17 @@ Role words are a nudge; `--role` is the hard filter.
 
 Finding nothing is an answer, not an error: `count: 0`, exit 0.
 `--min-score` drops weak matches, `--all` includes hidden/ignored nodes (ranked lower), and `--dedupe` collapses identical role+name pairs in virtualized grids.
-On a backgrounded tab the a11y tree may be throttled; when it yields nothing there, `find` falls back to a DOM-computed pass (`note: "dom_fallback"`) whose matches carry centres but no refs, and `--region` is not honoured.
+A `--region` that names no container on the page also yields zero matches rather than an error — the same as `snap` — but the envelope reports `region_found: false`, so a typo'd region is distinguishable from a region that exists and holds nothing.
+
+On a backgrounded tab the a11y tree may be throttled; when it yields nothing there, `find` falls back to a DOM-computed pass (`note: "dom_fallback"`) that uses the same accessible-name derivation `--by name` falls back to.
+Fallback matches carry centres but no refs, and `--region` is not honoured (region scoping is an accessibility-subtree notion); `--role`, `--dedupe`, `--limit`, and `--min-score` all still apply.
+
+A password field's `value` comes back masked on both paths, and a hidden input's is omitted — the fallback reads the DOM, where the value is the literal typed text, so it masks what Chrome's accessibility tree masks for you.
+Other field values are returned as-is, exactly as `snap` and `value` return them.
+
+`center` is the element's box centre in viewport CSS pixels.
+It is not occlusion-checked — `visible` here means "has a box", not "is hit-testable" — so an acting verb still resolves the element itself rather than trusting a coordinate from a search result.
+`find` never scrolls the page to measure, because a read verb must not move the page under a running automation.
 
 #### `text --article` — the page without the furniture
 

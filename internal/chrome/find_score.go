@@ -9,6 +9,7 @@ package chrome
 // never require touching the traversal code in find.go.
 
 import (
+	"slices"
 	"sort"
 	"strings"
 )
@@ -43,9 +44,14 @@ const (
 	findFocusableBonus  = 0.05 // focusable nodes are likelier to be the actionable target
 	findIgnoredPenalty  = 0.3  // hidden/ignored nodes (reachable only under --all)
 	findDisabledPenalty = 0.1  // found and reported, just ranked below enabled twins
-	findPhraseFloor     = 0.7  // all-tokens-present guarantees at least this much text score
-	findBrevityWeight   = 0.3  // share of text score reserved for short, exact-ish names
 	findSubstringCredit = 0.7  // a token found inside a longer evidence token
+
+	// findPhraseFloor and findBrevityWeight MUST sum to 1: together they are
+	// the text score's ceiling, so changing one without the other silently
+	// rescales every score (and with it what findTextWeight means downstream).
+	// TestFindTextScoreCeiling pins this.
+	findPhraseFloor   = 0.7 // all-tokens-present guarantees at least this much text score
+	findBrevityWeight = 0.3 // share of text score reserved for short, exact-ish names
 )
 
 // findQuery is a parsed `find` query: the text tokens left after role-word
@@ -99,7 +105,7 @@ func findScore(fq findQuery, c findCandidate) float64 {
 	}
 	s := findTextWeight * text
 	if len(fq.roles) > 0 {
-		if containsString(fq.roles, c.role) {
+		if slices.Contains(fq.roles, c.role) {
 			s += findRoleBonus
 		} else {
 			s -= findRoleMismatch
@@ -146,10 +152,9 @@ func findTextScore(tokens, evidence []string) float64 {
 		}
 		matched += credit
 	}
+	// A zero precision falls out of the multiplication below as zero; no early
+	// return needed.
 	precision := matched / float64(len(tokens))
-	if precision == 0 {
-		return 0
-	}
 	brevity := min(1, float64(len(tokens))/float64(len(evidence)))
 	return precision * (findPhraseFloor + findBrevityWeight*brevity)
 }
@@ -165,41 +170,44 @@ func findTokens(s string) []string {
 		return !('a' <= r && r <= 'z') && !('0' <= r && r <= '9')
 	})
 	var out []string
-	for i := 0; i < len(fields); i++ {
+	// The loop advances explicitly, because "sign in" consumes two fields
+	// while every other token consumes one.
+	for i := 0; i < len(fields); {
 		tok := fields[i]
 		if (tok == "sign" || tok == "log") && i+1 < len(fields) && fields[i+1] == "in" {
 			out = append(out, "login")
-			i++
+			i += 2
 			continue
 		}
 		if tok == "signin" {
 			tok = "login"
 		}
 		out = append(out, tok)
+		i++
 	}
 	return out
 }
 
-// rankFindCandidates scores every candidate and returns the indices of those
-// clearing minScore, best first, ties broken by document order (stable sort).
-func rankFindCandidates(fq findQuery, cands []findCandidate, minScore float64) ([]int, []float64) {
-	scores := make([]float64, len(cands))
-	idx := make([]int, 0, len(cands))
-	for i, c := range cands {
-		scores[i] = findScore(fq, c)
-		if scores[i] >= minScore && scores[i] > 0 {
-			idx = append(idx, i)
-		}
-	}
-	sort.SliceStable(idx, func(a, b int) bool { return scores[idx[a]] > scores[idx[b]] })
-	return idx, scores
+// findRanked is one candidate that cleared the score threshold: its index in
+// the candidate slice, and the score it earned. The score travels WITH the
+// index so a caller cannot mix up rank position and candidate position.
+type findRanked struct {
+	Index int
+	Score float64
 }
 
-func containsString(list []string, s string) bool {
-	for _, v := range list {
-		if v == s {
-			return true
+// rankFindCandidates scores every candidate and returns those clearing
+// minScore, best first, ties broken by document order (stable sort).
+func rankFindCandidates(fq findQuery, cands []findCandidate, minScore float64) []findRanked {
+	out := make([]findRanked, 0, len(cands))
+	for i, c := range cands {
+		// Scores are clamped to [0,1], so the >0 test is the real gate at the
+		// default minScore of 0: a zero score means "no text relevance", which
+		// is never a match, however permissive the threshold.
+		if s := findScore(fq, c); s >= minScore && s > 0 {
+			out = append(out, findRanked{Index: i, Score: s})
 		}
 	}
-	return false
+	sort.SliceStable(out, func(a, b int) bool { return out[a].Score > out[b].Score })
+	return out
 }
