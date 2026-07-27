@@ -195,8 +195,8 @@ func Connect(_ context.Context, opts Options) (*CDP, error) {
 	// The socket is then held (up.Close is deferred past the attach) so the
 	// consent the user just granted is still live when chromedp arrives.
 	ws := browser.WSRefused
-	if endpoint != "" {
-		up := browser.AwaitUpgrade(endpoint, consentDialTimeout, consentPendingAfter, consent, opts.OnConsentPending)
+	if wsURL, ok := browser.ResolveWSURL(endpoint, consentDialTimeout); ok {
+		up := browser.AwaitUpgrade(wsURL, consentDialTimeout, consentPendingAfter, consent, opts.OnConsentPending)
 		defer up.Close()
 		ws = up.State
 	}

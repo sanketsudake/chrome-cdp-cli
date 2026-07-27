@@ -5,8 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -245,5 +248,34 @@ func TestConnectNoEndpointLeadsWithTheLaunchFlag(t *testing.T) {
 	}
 	if flagAt > toggleAt {
 		t.Errorf("the message recommends the chrome://inspect toggle before the launch flag, which routes every new user through the consent prompt:\n%s", msg)
+	}
+}
+
+// TestConnectExplicitPortStillProbes guards the path RFC-0013 now tells everyone
+// to use. An explicit --port names an HTTP endpoint, not a WebSocket one; if the
+// probe handshakes against that URL directly it never sees a 101 and reports a
+// healthy Chrome as unreachable. Resolving through /json/version first is what
+// keeps the recommended route working.
+func TestConnectExplicitPortStillProbes(t *testing.T) {
+	stalled := stallListener(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/json/version" {
+			http.NotFound(w, r)
+			return
+		}
+		fmt.Fprintf(w, `{"webSocketDebuggerUrl":"ws://%s/devtools/browser/stub"}`, stalled.Addr())
+	}))
+	defer srv.Close()
+
+	_, port, _ := net.SplitHostPort(strings.TrimPrefix(srv.URL, "http://"))
+	p, _ := strconv.Atoi(port)
+	pinChromeRunning(t, false)
+	shrinkPendingThreshold(t, 100*time.Millisecond)
+
+	_, err := Connect(context.Background(), Options{
+		Port: p, NoLaunch: true, ConsentTimeout: 700 * time.Millisecond,
+	})
+	if got := connectErrCode(t, err); got != result.CodeConsentPending {
+		t.Errorf("error.code = %q, want %q — the --port endpoint was not probed as a WebSocket", got, result.CodeConsentPending)
 	}
 }

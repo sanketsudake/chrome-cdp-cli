@@ -4,7 +4,10 @@ import (
 	"bufio"
 	"crypto/rand"
 	"encoding/base64"
+	"encoding/json"
+	"io"
 	"net"
+	"net/http"
 	"net/url"
 	"strings"
 	"time"
@@ -83,6 +86,44 @@ func (u *Upgrade) Close() {
 	}
 	_ = u.conn.Close()
 	u.conn = nil
+}
+
+// ResolveWSURL returns the browser-level ws:// URL to probe and attach to.
+//
+// A ws:// endpoint (the DevToolsActivePort path) is already one. An explicit
+// --port names an http:// endpoint instead, and the browser-level WebSocket path
+// is only discoverable through Chrome's HTTP JSON API — the same resolution
+// chromedp's remote allocator performs, done here first so the probe and the
+// attach agree on what they are talking to.
+//
+// This is NOT the consent check, and the difference matters: /json/version
+// answers the same whether or not consent is pending (on the chrome://inspect
+// path it 404s either way), so it can locate an endpoint and can never classify
+// one. Only the upgrade does that.
+func ResolveWSURL(endpoint string, timeout time.Duration) (string, bool) {
+	switch {
+	case strings.HasPrefix(endpoint, "ws://"), strings.HasPrefix(endpoint, "wss://"):
+		return endpoint, true
+	case strings.HasPrefix(endpoint, "http://"), strings.HasPrefix(endpoint, "https://"):
+	default:
+		return "", false
+	}
+	client := &http.Client{Timeout: timeout}
+	resp, err := client.Get(strings.TrimSuffix(endpoint, "/") + "/json/version")
+	if err != nil {
+		return "", false
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return "", false
+	}
+	var v struct {
+		WS string `json:"webSocketDebuggerUrl"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&v); err != nil || v.WS == "" {
+		return "", false
+	}
+	return v.WS, true
 }
 
 // AwaitUpgrade dials wsURL and performs exactly ONE WebSocket handshake against

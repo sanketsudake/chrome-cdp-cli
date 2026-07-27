@@ -3,6 +3,8 @@ package browser
 import (
 	"fmt"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -187,6 +189,52 @@ func TestProbeWSClassifiesAllThree(t *testing.T) {
 			t.Parallel()
 			if got := ProbeWS(c.ws, time.Second, 400*time.Millisecond); got != c.want {
 				t.Errorf("ProbeWS = %v, want %v", got, c.want)
+			}
+		})
+	}
+}
+
+// TestResolveWSURL covers the endpoint shapes the two connection paths produce.
+// An explicit --port names an http:// endpoint, and without this resolution the
+// upgrade probe would handshake against "/" and classify a perfectly healthy
+// Chrome as refused.
+func TestResolveWSURL(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/json/version" {
+			http.NotFound(w, r)
+			return
+		}
+		fmt.Fprint(w, `{"Browser":"Chrome/1","webSocketDebuggerUrl":"ws://127.0.0.1:9222/devtools/browser/abc"}`)
+	}))
+	// t.Cleanup, not defer: the parallel subtests below run after this function
+	// returns, so a deferred Close would shut the server before they use it.
+	t.Cleanup(srv.Close)
+
+	// A 404 on /json/version is exactly what the chrome://inspect path returns,
+	// consent or no consent. It locates nothing, so it resolves to nothing — and
+	// it is never treated as a consent signal.
+	notFound := httptest.NewServer(http.HandlerFunc(http.NotFound))
+	t.Cleanup(notFound.Close)
+
+	for _, c := range []struct {
+		name     string
+		endpoint string
+		want     string
+		wantOK   bool
+	}{
+		{"a ws url passes through", "ws://127.0.0.1:9222/devtools/browser/x", "ws://127.0.0.1:9222/devtools/browser/x", true},
+		{"an http endpoint resolves via /json/version", srv.URL, "ws://127.0.0.1:9222/devtools/browser/abc", true},
+		{"a 404 resolves to nothing", notFound.URL, "", false},
+		{"nothing listening", "http://127.0.0.1:1", "", false},
+		{"empty", "", "", false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			got, ok := ResolveWSURL(c.endpoint, 2*time.Second)
+			if ok != c.wantOK || got != c.want {
+				t.Errorf("ResolveWSURL(%q) = %q,%v; want %q,%v", c.endpoint, got, ok, c.want, c.wantOK)
 			}
 		})
 	}
