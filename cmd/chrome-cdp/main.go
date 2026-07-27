@@ -125,13 +125,7 @@ func main() {
 
 	app.WithConnector(func(ctx context.Context, o cli.ConnOpts) (chrome.Browser, error) {
 		if o.NoDaemon {
-			return chrome.Connect(ctx, chrome.Options{
-				PortFile: portFile, NoLaunch: o.NoLaunch, ProfileDir: o.ProfileDir, Port: o.Port,
-				ConsentTimeout: o.ConsentTimeout,
-				ConsoleBuffer:  defs.ConsoleBuffer, ConsoleMaxEntry: defs.ConsoleMaxEntry,
-				NetBuffer: defs.NetBuffer, NetMaxBody: defs.NetMaxBody,
-				RecordBuffer: defs.RecordBuffer, RecordMaxBytes: defs.RecordMaxBytes,
-			})
+			return chrome.Connect(ctx, directConnectOptions(portFile, o, defs, os.Stderr))
 		}
 		client, err := daemon.Ensure(ctx, socketFor(o), exe, daemonEnv(o), o.ConsentTimeout)
 		if err != nil {
