@@ -92,6 +92,11 @@ const (
 	// recordMinRetained is the floor the byte ceiling may shrink a ring to. Two
 	// frames is the least that is still an animation.
 	recordMinRetained = 2
+
+	// recordPokeFloor bounds how often the recorder nudges the page into
+	// rendering (see poke). Never more often than the capture cadence, and never
+	// faster than this.
+	recordPokeFloor = 100 * time.Millisecond
 )
 
 // Recording lifecycle errors. They are sentinels because the CLI maps both to
@@ -165,11 +170,13 @@ type recorder struct {
 	truncated bool
 	reason    string
 
-	queue    []pendingFrame
-	wake     chan struct{}
-	done     chan struct{} // closed by stopCapture: "stop capturing"
-	exited   chan struct{} // closed by the pump: "no goroutine is still storing"
-	stopOnce sync.Once
+	queue     []pendingFrame
+	lastFrame time.Time // when a frame last ARRIVED, retained or not
+	lastData  []byte    // the last retained frame's bytes, for duplicate rejection
+	wake      chan struct{}
+	done      chan struct{} // closed by stopCapture: "stop capturing"
+	exited    chan struct{} // closed by the pump: "no goroutine is still storing"
+	stopOnce  sync.Once
 }
 
 // withDefaults fills the zero fields a non-CLI caller left behind.
@@ -387,6 +394,7 @@ func (r *recorder) offer(ev *page.EventScreencastFrame) {
 		r.mu.Unlock()
 		return
 	}
+	r.lastFrame = time.Now()
 	p := pendingFrame{sessionID: ev.SessionID, data: ev.Data, meta: ev.Metadata}
 	if len(r.queue) >= recordQueueDepth {
 		// Drop the payload, keep the acknowledgement. An unacked frame stalls
@@ -429,10 +437,15 @@ func (r *recorder) pump() {
 	defer close(r.exited)
 	deadline := time.NewTimer(r.opts.MaxDuration)
 	defer deadline.Stop()
+	gap := max(time.Duration(float64(time.Second)/r.opts.FPS), recordPokeFloor)
+	nudge := time.NewTicker(gap)
+	defer nudge.Stop()
 	for {
 		r.drainQueue()
 		select {
 		case <-r.wake:
+		case <-nudge.C:
+			r.pokeIfStalled(gap)
 		case <-deadline.C:
 			// The capture stops; the RECORDING does not. Whatever was captured
 			// stays exportable, flagged truncated with the reason.
@@ -447,6 +460,41 @@ func (r *recorder) pump() {
 			return
 		}
 	}
+}
+
+// pokeIfStalled nudges the page into producing a frame when it has stopped
+// producing them on its own.
+//
+// This is the recording half of the problem pokeFrame already solves for
+// element capture: a tab that is not the frontmost one — which is most tabs,
+// for a tool that drives the user's real browser — produces no compositor
+// frames, so a screencast of it goes silent even while the page is animating.
+// Measured on a headless tab: three frames at startup, then nothing for twenty
+// seconds. Waiting for a frame that is never coming would make `record` a
+// feature that works only on the tab you are looking at.
+//
+// The nudge is a 1x1 screenshot, exactly as pokeFrame does, and it fires only
+// when no frame has arrived for a whole cadence gap — so an actively rendering
+// page is never poked. A page that genuinely did not change answers with an
+// identical frame, which store() then discards as a duplicate: the promise that
+// a static page costs nothing survives the nudge.
+func (r *recorder) pokeIfStalled(gap time.Duration) {
+	r.mu.Lock()
+	stalled := r.stopped || time.Since(r.lastFrame) >= gap
+	if r.stopped {
+		r.mu.Unlock()
+		return
+	}
+	r.mu.Unlock()
+	if !stalled {
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.tctx, 5*time.Second)
+	defer cancel()
+	_ = chromedp.Run(ctx, chromedp.ActionFunc(func(actx context.Context) error {
+		pokeFrame(actx)
+		return nil
+	}))
 }
 
 // drainQueue acks and stores everything the event loop has handed over.
@@ -518,6 +566,13 @@ func (r *recorder) store(p pendingFrame) {
 	if r.stopped {
 		return
 	}
+	// A frame identical to the last retained one is not a frame: it is what a
+	// page that did not change answers a nudge with (see pokeIfStalled). Not a
+	// drop either — nothing was lost.
+	if bytes.Equal(r.lastData, raw) {
+		return
+	}
+	r.lastData = raw
 	r.buf.Add(f)
 	r.size = append(r.size, len(raw))
 	r.bytes += len(raw)

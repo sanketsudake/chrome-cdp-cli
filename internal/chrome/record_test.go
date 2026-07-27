@@ -9,6 +9,7 @@ import (
 	"image/color"
 	"image/gif"
 	"image/png"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -284,10 +285,11 @@ func TestRecordLive(t *testing.T) {
 	}))
 	defer srv.Close()
 
+	// No viewport emulation: an emulated viewport and the window's real surface
+	// are different sizes in headless, and --scale caps what the compositor
+	// actually produces. Emulating one here would make the scale assertion below
+	// a test of viewport emulation instead.
 	id := firstTab(ctx, t, b)
-	if _, err := b.EmulateViewport(ctx, id, 1000, 800); err != nil {
-		t.Fatalf("EmulateViewport: %v", err)
-	}
 	if _, err := b.Navigate(ctx, id, srv.URL); err != nil {
 		t.Fatalf("Navigate: %v", err)
 	}
@@ -307,11 +309,17 @@ func TestRecordLive(t *testing.T) {
 		t.Fatalf("click: %v", err)
 	}
 
-	// Poll rather than sleep a fixed time: how fast frames arrive depends on the
-	// machine, and this is exactly where a tuned sleep fails on slower CI.
-	deadline := time.Now().Add(20 * time.Second)
+	// Drive the change from HERE rather than trusting the page's own timer: a
+	// headless or backgrounded tab throttles setInterval, so a test that waited
+	// for the fixture to animate itself would be timing out on Chrome's power
+	// management rather than on anything this feature does. Polling (instead of
+	// sleeping a tuned amount) keeps it honest on slower, more contended CI.
+	deadline := time.Now().Add(30 * time.Second)
 	var frames int
-	for time.Now().Before(deadline) {
+	for i := 0; time.Now().Before(deadline); i++ {
+		if _, err := b.Eval(ctx, id, fmt.Sprintf("document.body.style.background='rgb(%d,40,%d)'", i%200, (i*7)%200), EvalOpts{}); err != nil {
+			t.Fatalf("Eval: %v", err)
+		}
 		st, err := b.RecordStatus(ctx, id)
 		if err != nil {
 			t.Fatalf("RecordStatus: %v", err)
@@ -326,7 +334,7 @@ func TestRecordLive(t *testing.T) {
 		time.Sleep(200 * time.Millisecond)
 	}
 	if frames < 3 {
-		t.Fatalf("only %d frames after 20s of an animating page — the screencast is not delivering", frames)
+		t.Fatalf("only %d frames while the page kept changing — the screencast is not delivering", frames)
 	}
 
 	got, meta, err := b.RecordStop(ctx, id)
@@ -340,11 +348,14 @@ func TestRecordLive(t *testing.T) {
 		t.Errorf("meta frames = %v, want %d (the envelope must match what came back)", meta["frames"], len(got))
 	}
 
-	// VS-8: --scale 0.5 of a 1000x800 viewport is about 500x400. Chrome fits the
-	// frame inside the requested maximum while preserving the aspect ratio, and
-	// the device scale factor is not necessarily 1, so this is a tolerance.
-	if got[0].Width < 350 || got[0].Width > 650 || got[0].Height < 280 || got[0].Height > 520 {
-		t.Errorf("frame is %dx%d, want roughly 500x400 for --scale 0.5 of 1000x800", got[0].Width, got[0].Height)
+	// VS-8: --scale halves the captured frame. The reference is a capture of the
+	// same page at scale 1, not the emulated viewport: a headless window's real
+	// surface and its emulated viewport need not agree, and this assertion is
+	// about the scale factor rather than about viewport emulation.
+	full := recordOneFrame(ctx, t, b, id, RecordOpts{FPS: 8, Scale: 1})
+	if !within(got[0].Width, float64(full.Width)*0.5, 0.15) || !within(got[0].Height, float64(full.Height)*0.5, 0.15) {
+		t.Errorf("--scale 0.5 produced %dx%d against an unscaled %dx%d, want about half",
+			got[0].Width, got[0].Height, full.Width, full.Height)
 	}
 
 	// VS-1: what came back really is an animation.
@@ -377,7 +388,12 @@ func TestRecordLive(t *testing.T) {
 	if _, err := b.RecordStart(ctx, id, RecordOpts{FPS: 8, Scale: 0.5, MaxDuration: time.Second}); err != nil {
 		t.Fatalf("RecordStart (max-duration): %v", err)
 	}
-	time.Sleep(3 * time.Second)
+	for i := range 6 {
+		if _, err := b.Eval(ctx, id, fmt.Sprintf("document.body.style.background='rgb(200,%d,10)'", i*30), EvalOpts{}); err != nil {
+			t.Fatalf("Eval: %v", err)
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
 	dur, dmeta, err := b.RecordStop(ctx, id)
 	if err != nil {
 		t.Fatalf("RecordStop (max-duration): %v", err)
@@ -399,6 +415,41 @@ func TestRecordLive(t *testing.T) {
 	if _, _, err := b.RecordStop(ctx, id); !IsNotRecording(err) {
 		t.Errorf("RecordStop after cancel = %v, want ErrNotRecording", err)
 	}
+}
+
+// recordOneFrame records just long enough to capture a frame, and returns it.
+func recordOneFrame(ctx context.Context, t *testing.T, b *CDP, id string, opts RecordOpts) Frame {
+	t.Helper()
+	if _, err := b.RecordStart(ctx, id, opts); err != nil {
+		t.Fatalf("RecordStart(%+v): %v", opts, err)
+	}
+	deadline := time.Now().Add(30 * time.Second)
+	for i := 0; time.Now().Before(deadline); i++ {
+		if _, err := b.Eval(ctx, id, fmt.Sprintf("document.body.style.background='rgb(10,%d,90)'", i%200), EvalOpts{}); err != nil {
+			t.Fatalf("Eval: %v", err)
+		}
+		st, err := b.RecordStatus(ctx, id)
+		if err != nil {
+			t.Fatalf("RecordStatus: %v", err)
+		}
+		if st["frames"].(int) >= 1 {
+			break
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	frames, _, err := b.RecordStop(ctx, id)
+	if err != nil {
+		t.Fatalf("RecordStop: %v", err)
+	}
+	if len(frames) == 0 {
+		t.Fatal("a reference recording captured no frames")
+	}
+	return frames[0]
+}
+
+// within reports whether got is within tol (a fraction) of want.
+func within(got int, want, tol float64) bool {
+	return math.Abs(float64(got)-want) <= want*tol
 }
 
 // toEncodeFrames is the same conversion the CLI does, kept here so the live
