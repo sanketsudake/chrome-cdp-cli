@@ -27,7 +27,7 @@ On failure, `ok` is `false`, `error{code,message,details}` explains it, and the 
 |-----:|---------|------------------------|
 | 0 | success | continue |
 | 2 | bad flags/args | fix the call |
-| 3 | connection | ask the user to enable `chrome://inspect` |
+| 3 | connection | check `error.code`: `consent_pending` means a modal "Allow remote debugging?" dialog is unanswered (tell the user it is behind the window and freezes all of Chrome); otherwise ask them to relaunch Chrome with `--remote-debugging-port=9222` |
 | 4 | not found / timeout / ambiguous | re-`snap` and retry, or foreground the tab |
 | 5 | CDP error | surface it |
 

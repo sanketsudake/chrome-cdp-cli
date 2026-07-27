@@ -560,3 +560,44 @@ func TestConsoleBufferPrecedence(t *testing.T) {
 		}
 	})
 }
+
+// TestConsentTimeoutPrecedence pins RFC-0013's new key through the whole
+// precedence chain. It matters more than most: the value decides how long a
+// daemon holds a connection open waiting for a human, so a config file that is
+// silently ignored means the wedge this key exists to prevent.
+func TestConsentTimeoutPrecedence(t *testing.T) {
+	t.Parallel()
+
+	// Built-in: two minutes, a human timescale for a dialog that can hide behind
+	// the window.
+	d, _ := ResolveFrom(filepath.Join(t.TempDir(), "absent.toml"), noEnv)
+	if d.ConsentTimeout != chrome.DefaultConsentTimeout {
+		t.Errorf("built-in consent_timeout = %v, want %v", d.ConsentTimeout, chrome.DefaultConsentTimeout)
+	}
+
+	p := writeConfig(t, "consent_timeout = \"45s\"\n")
+	d, err := ResolveFrom(p, noEnv)
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if d.ConsentTimeout != 45*time.Second {
+		t.Errorf("config consent_timeout = %v, want 45s", d.ConsentTimeout)
+	}
+
+	// Env beats the file.
+	d, _ = ResolveFrom(p, envFrom(map[string]string{"CHROME_CDP_CONSENT_TIMEOUT": "3m"}))
+	if d.ConsentTimeout != 3*time.Minute {
+		t.Errorf("env consent_timeout should win, got %v", d.ConsentTimeout)
+	}
+
+	// A malformed value leaves the lower-precedence value in place rather than
+	// bricking the connection, matching every other duration key here.
+	d, _ = ResolveFrom(p, envFrom(map[string]string{"CHROME_CDP_CONSENT_TIMEOUT": "banana"}))
+	if d.ConsentTimeout != 45*time.Second {
+		t.Errorf("a malformed env value should leave the file value alone, got %v", d.ConsentTimeout)
+	}
+	d, _ = ResolveFrom(writeConfig(t, "consent_timeout = \"nope\"\n"), noEnv)
+	if d.ConsentTimeout != chrome.DefaultConsentTimeout {
+		t.Errorf("a malformed file value should leave the built-in alone, got %v", d.ConsentTimeout)
+	}
+}

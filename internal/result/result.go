@@ -20,10 +20,17 @@ const (
 // Stable error.code strings emitted in the envelope's error object. Named so
 // call sites don't scatter bare string literals.
 const (
-	CodeGeneric        = "generic"
-	CodeUsage          = "usage"
-	CodeConnection     = "connection_failed"
-	CodeNotDebug       = "not_debug_enabled"
+	CodeGeneric    = "generic"
+	CodeUsage      = "usage"
+	CodeConnection = "connection_failed"
+	CodeNotDebug   = "not_debug_enabled"
+	// CodeConsentPending is Chrome holding its browser-modal "Allow remote
+	// debugging?" dialog: the port is open, the WebSocket upgrade is hanging,
+	// and nothing is wrong except that a human has not answered yet. It shares
+	// exit 3 with the other connection failures deliberately — a new number
+	// would break the documented contract — but it is a distinct code because
+	// the remedy is "click the dialog", not "check your setup".
+	CodeConsentPending = "consent_pending"
 	CodeTargetTimeout  = "target_timeout"
 	CodeTargetNotFound = "target_not_found"
 	CodeAmbiguous      = "ambiguous_target"
@@ -51,6 +58,7 @@ var codeToExit = map[string]int{
 	CodeUsage:          ExitUsage,
 	CodeConnection:     ExitConnection,
 	CodeNotDebug:       ExitConnection,
+	CodeConsentPending: ExitConnection,
 	CodeTargetTimeout:  ExitTarget,
 	CodeTargetNotFound: ExitTarget,
 	CodeAmbiguous:      ExitTarget,
@@ -74,7 +82,7 @@ func ExitCodes() []ExitCodeDoc {
 		{ExitOK, "success"},
 		{ExitGeneric, "generic / unclassified (also: an assertion tripped, e.g. console --fail-on-match)"},
 		{ExitUsage, "usage (bad flags/args)"},
-		{ExitConnection, "connection (attach/launch failed)"},
+		{ExitConnection, "connection (attach/launch failed, or Chrome's consent prompt is unanswered)"},
 		{ExitTarget, "target/timeout (selector not found, timeout, ambiguous/unknown target)"},
 		{ExitCDP, "cdp protocol error"},
 		{ExitDaemon, "daemon error"},

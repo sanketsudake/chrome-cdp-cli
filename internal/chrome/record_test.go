@@ -493,40 +493,38 @@ func TestRecordLive(t *testing.T) {
 
 	// VS-8: --scale halves the captured frame.
 	//
-	// Both references are taken here, back to back, rather than comparing the
-	// long-running recording above against a late capture. A headless window's
-	// viewport changes as it settles — observed flipping between 756x413 and
-	// 413x413 within one test — so two captures taken seconds apart can be
-	// sized from different windows and the comparison says nothing about scale.
-	// Adjacent captures share whatever the window happens to be, which is what
-	// makes this an assertion about the scale factor and not about window
-	// settling.
+	// Asserted against the box the recorder ASKED Chrome for, not against a
+	// second capture. The emulated viewport was observed reverting between two
+	// adjacent recordings (800x600 then 600x600), which makes a frame-to-frame
+	// comparison a measurement of window stability rather than of --scale.
 	//
-	// The viewport is pinned first because adjacency alone was not enough: the
-	// window was still observed changing between two back-to-back captures
-	// (413x413 then 756x413), which is a property of the headless window and
-	// not of --scale. Pinning removes that variable; the assertion is a RATIO
-	// between two captures, so it stays true whatever the box is.
-	if _, err := b.EmulateViewport(ctx, id, 800, 600); err != nil {
-		t.Fatalf("EmulateViewport: %v", err)
+	// So the claim is decomposed. Here, live: Chrome honours the cap it was
+	// given, so the frame matches the reported box. In TestScaleSizesTheBox,
+	// pure: the box is round(viewport x scale). Together those are VS-8, and
+	// neither half depends on the viewport holding still.
+	half, meta := recordOneFrame(ctx, t, b, id, RecordOpts{FPS: 8, Scale: 0.5})
+	maxW, _ := meta["max_width"].(int64)
+	maxH, _ := meta["max_height"].(int64)
+	if maxW <= 0 || maxH <= 0 {
+		t.Fatalf("RecordStart reported no max box (%v x %v) — nothing to check --scale against", meta["max_width"], meta["max_height"])
 	}
-	// And WAIT for the override to take effect. setDeviceMetricsOverride
-	// returns before the visual viewport reports the new size, so capturing
-	// immediately can size the screencast from a transient reading — observed
-	// producing a square 300x300 from a 600x600 mid-resize viewport. Polling
-	// the page's own view of the box is the deterministic precondition.
-	waitViewport(ctx, t, b, id, 800, 600)
-	full := recordOneFrame(ctx, t, b, id, RecordOpts{FPS: 8, Scale: 1})
-	half := recordOneFrame(ctx, t, b, id, RecordOpts{FPS: 8, Scale: 0.5})
-	// Check the precondition before the claim, so a window that moved under the
-	// test says so instead of being reported as a --scale defect.
-	if !within(full.Width, 800, 0.15) || !within(full.Height, 600, 0.15) {
-		t.Fatalf("the scale-1 reference is %dx%d, not the pinned 800x600 — the viewport moved under the test, so this run says nothing about --scale",
-			full.Width, full.Height)
+	// An UPPER BOUND, because that is what the cap actually promises. The
+	// comment on max_width in record.go says it outright: a screencast frame is
+	// never upscaled to fill the box, so the real dimensions are whatever the
+	// compositor produces WITHIN it. Asserting equality contradicted that and
+	// failed on CI with a legitimate 207x207 frame inside a 378x207 box — the
+	// window had resized between the box being computed and the frame being
+	// produced, which is Chrome's business, not this feature's.
+	//
+	// What is ours to guarantee is that the cap is honoured as a cap and that a
+	// scaled recording still produces frames. The arithmetic that makes the cap
+	// half the viewport is TestScaleSizesTheBox, with no browser involved.
+	if half.Width <= 0 || half.Height <= 0 {
+		t.Errorf("--scale 0.5 produced a %dx%d frame — no pixels at all", half.Width, half.Height)
 	}
-	if !within(half.Width, float64(full.Width)*0.5, 0.15) || !within(half.Height, float64(full.Height)*0.5, 0.15) {
-		t.Errorf("--scale 0.5 produced %dx%d against an unscaled %dx%d, want about half",
-			half.Width, half.Height, full.Width, full.Height)
+	if half.Width > int(maxW)+1 || half.Height > int(maxH)+1 {
+		t.Errorf("--scale 0.5 produced a %dx%d frame, larger than the %dx%d box it asked Chrome for",
+			half.Width, half.Height, maxW, maxH)
 	}
 
 	// VS-1: what came back really is an animation.
@@ -589,11 +587,13 @@ func TestRecordLive(t *testing.T) {
 }
 
 // recordOneFrame records just long enough to capture a frame, and returns it.
-func recordOneFrame(ctx context.Context, t *testing.T, b *CDP, id string, opts RecordOpts) Frame {
+func recordOneFrame(ctx context.Context, t *testing.T, b *CDP, id string, opts RecordOpts) (Frame, map[string]any) {
 	t.Helper()
-	if _, err := b.RecordStart(ctx, id, opts); err != nil {
+	start, err := b.RecordStart(ctx, id, opts)
+	if err != nil {
 		t.Fatalf("RecordStart(%+v): %v", opts, err)
 	}
+
 	deadline := time.Now().Add(30 * time.Second)
 	for i := 0; time.Now().Before(deadline); i++ {
 		if _, err := b.Eval(ctx, id, fmt.Sprintf("document.body.style.background='rgb(10,%d,90)'", i%200), EvalOpts{}); err != nil {
@@ -615,7 +615,7 @@ func recordOneFrame(ctx context.Context, t *testing.T, b *CDP, id string, opts R
 	if len(frames) == 0 {
 		t.Fatal("a reference recording captured no frames")
 	}
-	return frames[0]
+	return frames[0], start
 }
 
 // within reports whether got is within tol (a fraction) of want.
@@ -662,4 +662,33 @@ func waitViewport(ctx context.Context, t *testing.T, b *CDP, id string, w, h int
 		time.Sleep(50 * time.Millisecond)
 	}
 	t.Fatalf("viewport never reached %dx%d on both the layout and visual measures (last %v)", w, h, got)
+}
+
+// The arithmetic half of VS-8: the cap handed to startScreencast is the
+// viewport scaled, so --scale 0.5 asks for half. The live half (Chrome honours
+// that cap) is in TestRecordLive; neither depends on the viewport holding still,
+// which it was observed not doing.
+func TestScaleSizesTheBox(t *testing.T) {
+	t.Parallel()
+	cases := map[string]struct {
+		vw, vh, scale float64
+		wantW, wantH  int64
+	}{
+		"half":            {800, 600, 0.5, 400, 300},
+		"full":            {800, 600, 1, 800, 600},
+		"quarter":         {800, 600, 0.25, 200, 150},
+		"rounds to even":  {801, 601, 0.5, 401, 301},
+		"non-square":      {1440, 900, 0.5, 720, 450},
+		"rounds up at .5": {3, 3, 0.5, 2, 2},
+	}
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			gotW, gotH := scaleBox(c.vw, c.vh, c.scale)
+			if gotW != c.wantW || gotH != c.wantH {
+				t.Errorf("scaleBox(%v, %v, %v) = %dx%d, want %dx%d",
+					c.vw, c.vh, c.scale, gotW, gotH, c.wantW, c.wantH)
+			}
+		})
+	}
 }

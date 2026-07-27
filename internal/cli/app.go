@@ -25,29 +25,33 @@ type App struct {
 	in      io.Reader // stdin for `session` NDJSON commands (defaults to os.Stdin)
 
 	// global flags
-	jsonOut     bool
-	targetFlag  string
-	timeout     time.Duration
-	noLaunch    bool
-	profileDir  string
-	port        int
-	byFlag      string
-	waitFlag    string
-	roleFlag    string
-	nthFlag     int
-	matchFlag   string
-	inRowFlag   string // --in-row: scope a --by name match to the row whose text contains this
-	onDialog    string // --on-dialog: auto-handle a native dialog opened during an action (accept|dismiss)
-	noWait      bool
-	actWaitText string // --wait-text: after an action verb succeeds, wait until this text appears
-	pierce      bool
-	noDaemon    bool
-	quiet       bool
-	verbose     bool
-	noColor     bool
-	noInput     bool
-	allowFlag   []string // --allow: one-off origin allow-list, replacing the configured one
-	policyOff   bool     // --policy-off: explicit, logged, never implicit
+	jsonOut    bool
+	targetFlag string
+	timeout    time.Duration
+	// consentTimeout is how long the connection holder waits out Chrome's
+	// browser-modal consent prompt. It is NOT --timeout: a command deadline
+	// bounds work, this one bounds a human finding a dialog.
+	consentTimeout time.Duration
+	noLaunch       bool
+	profileDir     string
+	port           int
+	byFlag         string
+	waitFlag       string
+	roleFlag       string
+	nthFlag        int
+	matchFlag      string
+	inRowFlag      string // --in-row: scope a --by name match to the row whose text contains this
+	onDialog       string // --on-dialog: auto-handle a native dialog opened during an action (accept|dismiss)
+	noWait         bool
+	actWaitText    string // --wait-text: after an action verb succeeds, wait until this text appears
+	pierce         bool
+	noDaemon       bool
+	quiet          bool
+	verbose        bool
+	noColor        bool
+	noInput        bool
+	allowFlag      []string // --allow: one-off origin allow-list, replacing the configured one
+	policyOff      bool     // --policy-off: explicit, logged, never implicit
 
 	// verbPath is the running command's full cobra path minus the root
 	// ("click", "cookie set"), captured per Execute in PersistentPreRun. It is
@@ -138,10 +142,25 @@ type ConnOpts struct {
 	ProfileDir string
 	Port       int
 	NoDaemon   bool
+	// ConsentTimeout travels with the connection options because it is the
+	// daemon that does the waiting, and the daemon is spawned from these. It is
+	// always normalised — see connOpts.
+	ConsentTimeout time.Duration
 }
 
 func (a *App) connOpts() ConnOpts {
-	return ConnOpts{NoLaunch: a.noLaunch, ProfileDir: a.profileDir, Port: a.port, NoDaemon: a.noDaemon}
+	return ConnOpts{
+		NoLaunch: a.noLaunch, ProfileDir: a.profileDir, Port: a.port,
+		NoDaemon: a.noDaemon,
+		// The flag is the last of the three ways this value gets set (config
+		// resolution clamps the file and the environment), so it is clamped
+		// here — with the same function, so no layer can read the number
+		// differently. An explicit `--consent-timeout 0s` otherwise reached
+		// daemon.Ensure as a literal zero while the daemon it spawned resolved
+		// the same key to 120s, and the client reported a failure that had not
+		// happened.
+		ConsentTimeout: chrome.ClampConsentTimeout(a.consentTimeout),
+	}
 }
 
 // WithConnector wires a lazy Browser connector (used by main()); it is invoked

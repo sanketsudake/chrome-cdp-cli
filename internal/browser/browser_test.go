@@ -59,10 +59,19 @@ func TestDecideConnection(t *testing.T) {
 		p    Probe
 		want Action
 	}{
-		{"reachable debug endpoint -> attach (Path B)",
-			Probe{PortFileWS: "ws://127.0.0.1:9222/x", WSReachable: true}, Attach},
-		{"stale port file + chrome running -> instruct toggle",
-			Probe{PortFileWS: "ws://127.0.0.1:9222/x", WSReachable: false, ChromeRunning: true}, InstructToggle},
+		{"completed upgrade -> attach (Path B)",
+			Probe{Endpoint: "ws://127.0.0.1:9222/x", WS: WSReady}, Attach},
+		{"open port, hanging upgrade -> consent pending (NOT a timeout, NOT the toggle)",
+			Probe{Endpoint: "ws://127.0.0.1:9222/x", WS: WSPending}, ConsentPending},
+		{"open port, hanging upgrade, chrome running -> still consent pending",
+			Probe{Endpoint: "ws://127.0.0.1:9222/x", WS: WSPending, ChromeRunning: true}, ConsentPending},
+		{"open port, hanging upgrade, --no-launch -> still consent pending (nothing to launch, it is asking)",
+			Probe{Endpoint: "ws://127.0.0.1:9222/x", WS: WSPending, NoLaunch: true}, ConsentPending},
+		// There is no "pending with no endpoint" case: an upgrade is only ever
+		// attempted against an endpoint, so WS being anything but WSRefused
+		// already says one was found.
+		{"stale port file (refused) + chrome running -> instruct toggle",
+			Probe{Endpoint: "ws://127.0.0.1:9222/x", WS: WSRefused, ChromeRunning: true}, InstructToggle},
 		{"no debug + chrome running -> instruct toggle (don't shadow)",
 			Probe{ChromeRunning: true}, InstructToggle},
 		{"no debug + no chrome -> launch managed (Path A)",

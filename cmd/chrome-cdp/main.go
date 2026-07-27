@@ -4,7 +4,6 @@ package main
 import (
 	"context"
 	"fmt"
-	"maps"
 	"os"
 	"strconv"
 	"time"
@@ -31,6 +30,7 @@ func main() {
 			ProfileDir:      env.ProfileDir,
 			Port:            env.Port,
 			NoLaunch:        env.NoLaunch,
+			ConsentTimeout:  env.ConsentTimeout,
 			ConsoleBuffer:   env.ConsoleBuffer,
 			ConsoleMaxEntry: env.ConsoleMaxEntry,
 			NetBuffer:       env.NetBuffer,
@@ -103,6 +103,12 @@ func main() {
 		if o.NoLaunch {
 			env = append(env, "CHROME_CDP_NO_LAUNCH=1")
 		}
+		// The daemon is the process that actually waits out the consent prompt,
+		// so --consent-timeout has to reach it; it only ever parses the
+		// environment. Forwarded unconditionally: o.ConsentTimeout is already
+		// normalised, and a "> 0" guard here is how the client and the daemon
+		// it spawned ended up waiting for different lengths of time.
+		env = append(env, "CHROME_CDP_CONSENT_TIMEOUT="+o.ConsentTimeout.String())
 		// The daemon parses only the environment, so config-file values for the
 		// event-capture bounds have to be forwarded explicitly or the buffers it
 		// holds would silently fall back to the built-in sizes.
@@ -119,14 +125,9 @@ func main() {
 
 	app.WithConnector(func(ctx context.Context, o cli.ConnOpts) (chrome.Browser, error) {
 		if o.NoDaemon {
-			return chrome.Connect(ctx, chrome.Options{
-				PortFile: portFile, NoLaunch: o.NoLaunch, ProfileDir: o.ProfileDir, Port: o.Port,
-				ConsoleBuffer: defs.ConsoleBuffer, ConsoleMaxEntry: defs.ConsoleMaxEntry,
-				NetBuffer: defs.NetBuffer, NetMaxBody: defs.NetMaxBody,
-				RecordBuffer: defs.RecordBuffer, RecordMaxBytes: defs.RecordMaxBytes,
-			})
+			return chrome.Connect(ctx, directConnectOptions(portFile, o, defs, os.Stderr))
 		}
-		client, err := daemon.Ensure(socketFor(o), exe, daemonEnv(o))
+		client, err := daemon.Ensure(ctx, socketFor(o), exe, daemonEnv(o), o.ConsentTimeout)
 		if err != nil {
 			return nil, err
 		}
@@ -136,7 +137,7 @@ func main() {
 	app.WithDaemonCtl(
 		func(o cli.ConnOpts) (map[string]any, error) {
 			sock := socketFor(o)
-			if _, err := daemon.Ensure(sock, exe, daemonEnv(o)); err != nil {
+			if _, err := daemon.Ensure(context.Background(), sock, exe, daemonEnv(o), o.ConsentTimeout); err != nil {
 				return nil, err
 			}
 			return map[string]any{"started": true, "socket": sock, "endpoint": browser.EndpointKey(portFile, o.Port)}, nil
@@ -152,27 +153,11 @@ func main() {
 			return map[string]any{"stopped": true}, nil
 		},
 		func(o cli.ConnOpts) (map[string]any, error) {
-			return daemonStatus(socketFor(o), browser.EndpointKey(portFile, o.Port))
+			return daemon.Status(socketFor(o), browser.EndpointKey(portFile, o.Port))
 		},
 	)
 
 	code := app.Execute(os.Args[1:]...)
 	app.Close()
 	os.Exit(code)
-}
-
-// daemonStatus reports whether the daemon for this endpoint is running and, when
-// it is, what it's attached to (the live tab list, best-effort).
-func daemonStatus(sock, endpoint string) (map[string]any, error) {
-	res := map[string]any{"socket": sock, "endpoint": endpoint}
-	c := daemon.TryConnect(sock)
-	if c == nil {
-		res["running"] = false
-		return res, nil
-	}
-	res["running"] = true
-	if info, err := c.StatusInfo(); err == nil {
-		maps.Copy(res, info)
-	}
-	return res, nil
 }

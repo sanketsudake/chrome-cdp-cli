@@ -14,6 +14,9 @@ func TestExitCodeFor(t *testing.T) {
 		{"usage", ExitUsage},
 		{"connection_failed", ExitConnection},
 		{"not_debug_enabled", ExitConnection},
+		// A pending consent prompt is a distinct code on the EXISTING connection
+		// exit code: a caller branches on error.code, and the number is contract.
+		{"consent_pending", ExitConnection},
 		{"target_timeout", ExitTarget},
 		{"target_not_found", ExitTarget},
 		{"ambiguous_target", ExitTarget},
