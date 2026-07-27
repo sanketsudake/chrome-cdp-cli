@@ -63,7 +63,7 @@ func TestElementRefAddressing(t *testing.T) {
 	if _, err := clickVia(ctx, b, id, saveRef, QueryOpts{By: "ref"}); err != nil {
 		t.Fatalf("Click --by ref %q: %v", saveRef, err)
 	}
-	got, err := b.Eval(ctx, id, "window.__saved")
+	got, err := b.Eval(ctx, id, "window.__saved", EvalOpts{})
 	if err != nil {
 		t.Fatalf("Eval: %v", err)
 	}

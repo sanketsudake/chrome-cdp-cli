@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sanketsudake/chrome-cdp-cli/internal/chrome"
 	"github.com/sanketsudake/chrome-cdp-cli/internal/chrometest"
 	"github.com/sanketsudake/chrome-cdp-cli/internal/target"
 )
@@ -18,11 +19,11 @@ type fakeBrowser struct{ chrometest.StubBrowser }
 func (fakeBrowser) List(context.Context) ([]target.Info, error) {
 	return []target.Info{{ID: "aa11", Title: "A", URL: "u"}}, nil
 }
-func (fakeBrowser) Eval(context.Context, string, string) (any, error) {
+func (fakeBrowser) Eval(context.Context, string, string, chrome.EvalOpts) (any, error) {
 	return map[string]any{"value": 42}, nil
 }
-func (fakeBrowser) Screenshot(context.Context, string) ([]byte, error) {
-	return []byte("PNG"), nil
+func (fakeBrowser) Screenshot(_ context.Context, _ string, opts chrome.ShotOpts) ([]byte, map[string]any, error) {
+	return []byte("PNG"), map[string]any{"mode": string(chrome.ShotElement), "selector": opts.Selector}, nil
 }
 
 func serveTemp(t *testing.T) *Client {
@@ -48,7 +49,7 @@ func TestRPCRoundTrip(t *testing.T) {
 		t.Errorf("List = %v", tabs)
 	}
 
-	v, err := rb.Eval(context.Background(), "aa11", "1+1")
+	v, err := rb.Eval(context.Background(), "aa11", "1+1", chrome.EvalOpts{})
 	if err != nil {
 		t.Fatalf("Eval: %v", err)
 	}
@@ -57,10 +58,16 @@ func TestRPCRoundTrip(t *testing.T) {
 		t.Errorf("Eval = %v", v)
 	}
 
-	// []byte results survive the round-trip (base64 in JSON).
-	png, err := rb.Screenshot(context.Background(), "aa11")
+	// A capture's bytes AND its metadata survive the round-trip (the bytes as
+	// base64), and the options reach the far side — the daemon is the default
+	// connection path, so a dropped field here is invisible to every stub test
+	// and broken for every real user.
+	png, meta, err := rb.Screenshot(context.Background(), "aa11", chrome.ShotOpts{Selector: "#box"})
 	if err != nil || string(png) != "PNG" {
 		t.Errorf("Screenshot = %q, %v", png, err)
+	}
+	if meta["mode"] != "element" || meta["selector"] != "#box" {
+		t.Errorf("Screenshot meta = %v, want the element mode and the forwarded selector", meta)
 	}
 }
 
@@ -68,7 +75,7 @@ func TestRPCRoundTrip(t *testing.T) {
 // wedged/slow CDP action.
 type slowBrowser struct{ chrometest.StubBrowser }
 
-func (slowBrowser) Eval(ctx context.Context, _, _ string) (any, error) {
+func (slowBrowser) Eval(ctx context.Context, _, _ string, _ chrome.EvalOpts) (any, error) {
 	<-ctx.Done()
 	return nil, ctx.Err()
 }
@@ -86,7 +93,7 @@ func TestDaemonHonorsClientTimeout(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 	defer cancel()
 	start := time.Now()
-	_, err = rb.Eval(ctx, "aa11", "1+1")
+	_, err = rb.Eval(ctx, "aa11", "1+1", chrome.EvalOpts{})
 	if err == nil {
 		t.Fatal("expected a deadline error — the daemon ignored the client timeout or the client hung")
 	}
@@ -103,7 +110,7 @@ type gateBrowser struct {
 	release chan struct{}
 }
 
-func (g *gateBrowser) Eval(context.Context, string, string) (any, error) {
+func (g *gateBrowser) Eval(context.Context, string, string, chrome.EvalOpts) (any, error) {
 	close(g.entered)
 	<-g.release
 	return nil, nil
@@ -120,7 +127,7 @@ func TestStopRespondsWhileBusy(t *testing.T) {
 	t.Cleanup(func() { close(g.release); _ = ln.Close() })
 
 	// Occupy the dispatch mutex with a long-running Eval.
-	go func() { _, _ = Remote(&Client{path: sock}).Eval(context.Background(), "x", "y") }()
+	go func() { _, _ = Remote(&Client{path: sock}).Eval(context.Background(), "x", "y", chrome.EvalOpts{}) }()
 	<-g.entered // Eval now holds the mutex
 
 	start := time.Now()

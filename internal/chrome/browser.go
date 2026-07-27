@@ -163,6 +163,98 @@ type WaitCond struct {
 	Query   QueryOpts
 }
 
+// ShotMode names which capture path a screenshot took. It is reported in the
+// envelope so a caller can confirm which of the four ran without inspecting the
+// image.
+type ShotMode string
+
+// The capture modes a single Screenshot call can take.
+const (
+	ShotViewport ShotMode = "viewport"
+	ShotElement  ShotMode = "element"
+	ShotFullPage ShotMode = "full_page"
+	ShotRegion   ShotMode = "region"
+)
+
+// Rect is a rectangle in PAGE (document) coordinates, in CSS pixels — the same
+// space Page.captureScreenshot's clip uses, so it is unaffected by scrolling.
+// It is reported back as the envelope's `clip`: the single most useful field for
+// debugging a capture that came out wrong.
+type Rect struct {
+	X      float64 `json:"x"`
+	Y      float64 `json:"y"`
+	Width  float64 `json:"width"`
+	Height float64 `json:"height"`
+}
+
+// ShotOpts controls the `screenshot` verb. Selector, FullPage, and Region select
+// the capture mode and are mutually exclusive — the CLI rejects more than one
+// before connecting; the driver treats them in that precedence order.
+//
+// Every value here is already validated and normalized by the CLI: Format is a
+// known enum, Quality is in range and only set for a lossy format, Scale is
+// within 0.1–3. The driver does not re-check user input.
+type ShotOpts struct {
+	Selector string // capture this element's box (all QueryOpts flags apply)
+	FullPage bool   // capture the whole scrollable page, beyond the fold
+	Region   *Rect  // capture an explicit page-coordinate rectangle
+
+	Format  string  // png (default) | jpeg | webp
+	Quality int     // 0–100; jpeg/webp only (ignored for png, which the CLI rejects)
+	Scale   float64 // output scale factor, 0.1–3 (0 means 1)
+	Padding float64 // expand an element clip by this many px, clamped to the page
+
+	Query QueryOpts
+}
+
+// PDFOpts controls the `pdf` verb. Every user-facing spelling — named paper
+// sizes, `WxH` inches, one-or-four-value margins, page ranges — is parsed in the
+// CLI, so the driver receives numbers only and has no grammar of its own.
+//
+// Lengths are inches, matching Page.printToPDF. Zero margins are meaningful (the
+// CLI always resolves a value, defaulting to 0.4in), while a zero paper size
+// means "leave Chrome's default".
+type PDFOpts struct {
+	Landscape    bool
+	PaperWidth   float64 // inches; 0 = Chrome's default (letter)
+	PaperHeight  float64 // inches; 0 = Chrome's default (letter)
+	MarginTop    float64 // inches
+	MarginRight  float64 // inches
+	MarginBottom float64 // inches
+	MarginLeft   float64 // inches
+	Scale        float64 // 0.1–2 (0 means 1)
+	Background   bool    // print background graphics
+	Pages        string  // page ranges, e.g. "1-3,5" ("" = the whole document)
+	Header       string  // HTML template for the print header
+	Footer       string  // HTML template for the print footer
+}
+
+// TextOpts controls the `text` verb. The zero value is the long-standing
+// behaviour: the visible text of Query's selector, verbatim.
+//
+// Article turns on Readability-style main-content extraction, which is a
+// heuristic — so MinChars is the honesty threshold below which the extraction is
+// reported as failed (`extracted: false`) and the FULL page text is returned
+// instead of a plausible-looking fragment. Markdown preserves headings, lists,
+// links, code blocks, and blockquotes; it is deliberately not a general
+// HTML-to-markdown converter.
+type TextOpts struct {
+	Article  bool // extract the main readable content, dropping boilerplate
+	Markdown bool // with Article: emit markdown structure instead of plain text
+	MinChars int  // with Article: below this many extracted chars, report failure
+	Query    QueryOpts
+}
+
+// EvalOpts controls the `eval` verb. Await switches Runtime.evaluate to REPL
+// semantics — `awaitPromise` plus `replMode` — so a top-level `await` works and
+// a statement list yields its final expression, exactly as DevTools' own console
+// behaves. It is opt-in: replMode changes how bare object literals and
+// `let`/`const` re-declaration are treated, so turning it on by default would
+// silently alter existing scripts.
+type EvalOpts struct {
+	Await bool
+}
+
 // Browser is the set of Chrome operations the CLI commands need. The real
 // implementation is CDP (chromedp-backed); tests use a fake.
 type Browser interface {
@@ -182,7 +274,7 @@ type Browser interface {
 	History(ctx context.Context, targetID string, delta int) (map[string]any, error)
 	// Reload reloads the tab, optionally bypassing the cache.
 	Reload(ctx context.Context, targetID string, hard bool) (map[string]any, error)
-	Eval(ctx context.Context, targetID, expr string) (any, error)
+	Eval(ctx context.Context, targetID, expr string, opts EvalOpts) (any, error)
 	Snapshot(ctx context.Context, targetID string, opts SnapOpts) (any, error)
 	Key(ctx context.Context, targetID, selector string, keys []KeyStroke, opts KeyOpts) (map[string]any, error)
 	// Pointer dispatches every pointer gesture — click included. There is no
@@ -196,7 +288,7 @@ type Browser interface {
 	Type(ctx context.Context, targetID, selector, text string, q QueryOpts) (map[string]any, error)
 	Fill(ctx context.Context, targetID, selector, value string, q QueryOpts) (map[string]any, error)
 	HTML(ctx context.Context, targetID, selector string, inner bool, q QueryOpts) (map[string]any, error)
-	Text(ctx context.Context, targetID, selector string, q QueryOpts) (map[string]any, error)
+	Text(ctx context.Context, targetID, selector string, opts TextOpts) (map[string]any, error)
 	Value(ctx context.Context, targetID, selector string, q QueryOpts) (map[string]any, error)
 	Values(ctx context.Context, targetID, selector string, q QueryOpts) (map[string]any, error)
 	AttrGet(ctx context.Context, targetID, selector, name string, q QueryOpts) (map[string]any, error)
@@ -209,8 +301,12 @@ type Browser interface {
 	EmulateReset(ctx context.Context, targetID string) (map[string]any, error)
 	Frames(ctx context.Context, targetID string) (any, error)
 	Wait(ctx context.Context, targetID string, cond WaitCond) (map[string]any, error)
-	Screenshot(ctx context.Context, targetID string) ([]byte, error)
-	PDF(ctx context.Context, targetID string) ([]byte, error)
+	// Screenshot and PDF return the artifact bytes AND the metadata describing
+	// them (dimensions, format, mode, resolved clip / page count). The metadata
+	// travels with the bytes because only the driver can know it without the CLI
+	// decoding the image itself.
+	Screenshot(ctx context.Context, targetID string, opts ShotOpts) ([]byte, map[string]any, error)
+	PDF(ctx context.Context, targetID string, opts PDFOpts) ([]byte, map[string]any, error)
 	CookieList(ctx context.Context, targetID string) (any, error)
 	CookieSet(ctx context.Context, targetID, name, value, domain, path string) (map[string]any, error)
 	CookieDelete(ctx context.Context, targetID, name string) (map[string]any, error)

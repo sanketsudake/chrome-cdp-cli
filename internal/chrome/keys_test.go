@@ -406,7 +406,7 @@ func TestKeyLive(t *testing.T) {
 	}
 	fieldValue := func(t *testing.T) string {
 		t.Helper()
-		got, err := b.Eval(ctx, id, "document.getElementById('q').value")
+		got, err := b.Eval(ctx, id, "document.getElementById('q').value", EvalOpts{})
 		if err != nil {
 			t.Fatalf("Eval value: %v", err)
 		}
@@ -415,13 +415,13 @@ func TestKeyLive(t *testing.T) {
 	}
 	resetLog := func(t *testing.T) {
 		t.Helper()
-		if _, err := b.Eval(ctx, id, "window.__log = []"); err != nil {
+		if _, err := b.Eval(ctx, id, "window.__log = []", EvalOpts{}); err != nil {
 			t.Fatalf("reset log: %v", err)
 		}
 	}
 	readLog := func(t *testing.T) []keyEventLog {
 		t.Helper()
-		got, err := b.Eval(ctx, id, "JSON.stringify(window.__log)")
+		got, err := b.Eval(ctx, id, "JSON.stringify(window.__log)", EvalOpts{})
 		if err != nil {
 			t.Fatalf("Eval log: %v", err)
 		}
@@ -435,7 +435,7 @@ func TestKeyLive(t *testing.T) {
 
 	// A selector focuses the field first, and a printable key inserts its text.
 	t.Run("printable key with a selector", func(t *testing.T) {
-		if _, err := b.Eval(ctx, id, "document.getElementById('q').value = ''"); err != nil {
+		if _, err := b.Eval(ctx, id, "document.getElementById('q').value = ''", EvalOpts{}); err != nil {
 			t.Fatalf("clear field: %v", err)
 		}
 		resetLog(t)

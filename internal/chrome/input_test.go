@@ -42,7 +42,7 @@ func TestClickAndTypeCoordinate(t *testing.T) {
 	if _, err := b.Type(ctx, id, "Search", "hello world", QueryOpts{By: "name"}); err != nil {
 		t.Fatalf("Type: %v", err)
 	}
-	got, err := b.Eval(ctx, id, "document.getElementById('q').value")
+	got, err := b.Eval(ctx, id, "document.getElementById('q').value", EvalOpts{})
 	if err != nil {
 		t.Fatalf("Eval value: %v", err)
 	}
@@ -54,7 +54,7 @@ func TestClickAndTypeCoordinate(t *testing.T) {
 	if _, err := clickVia(ctx, b, id, "Go", QueryOpts{By: "name", Role: "button"}); err != nil {
 		t.Fatalf("Click: %v", err)
 	}
-	got, err = b.Eval(ctx, id, "window.__q")
+	got, err = b.Eval(ctx, id, "window.__q", EvalOpts{})
 	if err != nil {
 		t.Fatalf("Eval __q: %v", err)
 	}
@@ -63,7 +63,7 @@ func TestClickAndTypeCoordinate(t *testing.T) {
 	}
 
 	// An occluded target has no clickable centre — bounded so it fails fast.
-	if _, err := b.Eval(ctx, id, `(() => { const o=document.createElement('div'); o.style.cssText='position:fixed;inset:0;z-index:9999'; o.id='cover'; document.body.appendChild(o); })()`); err != nil {
+	if _, err := b.Eval(ctx, id, `(() => { const o=document.createElement('div'); o.style.cssText='position:fixed;inset:0;z-index:9999'; o.id='cover'; document.body.appendChild(o); })()`, EvalOpts{}); err != nil {
 		t.Fatalf("add overlay: %v", err)
 	}
 	occCtx, occCancel := context.WithTimeout(ctx, 3*time.Second)

@@ -36,7 +36,7 @@ func pointerFixture(t *testing.T, html string) *httptest.Server {
 // pointerEval evaluates expr in the tab and returns its JSON value.
 func pointerEval(ctx context.Context, t *testing.T, b *CDP, id, expr string) any {
 	t.Helper()
-	v, err := b.Eval(ctx, id, expr)
+	v, err := b.Eval(ctx, id, expr, EvalOpts{})
 	if err != nil {
 		t.Fatalf("eval %s: %v", expr, err)
 	}

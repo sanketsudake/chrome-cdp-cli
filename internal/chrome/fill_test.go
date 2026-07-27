@@ -111,7 +111,7 @@ func TestValuesReadsAll(t *testing.T) {
 
 func evalString(ctx context.Context, t *testing.T, b Browser, id, js string) string {
 	t.Helper()
-	got, err := b.Eval(ctx, id, js)
+	got, err := b.Eval(ctx, id, js, EvalOpts{})
 	if err != nil {
 		t.Fatalf("Eval %q: %v", js, err)
 	}

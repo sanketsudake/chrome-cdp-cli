@@ -92,7 +92,7 @@ func TestScrollIntoViewAndWheel(t *testing.T) {
 	if _, err := b.Scroll(ctx, id, "#target", ScrollOpts{Into: true}); err != nil {
 		t.Fatalf("Scroll --to: %v", err)
 	}
-	got, err := b.Eval(ctx, id, "(() => { const r = document.getElementById('target').getBoundingClientRect(); return r.top >= 0 && r.top <= window.innerHeight; })()")
+	got, err := b.Eval(ctx, id, "(() => { const r = document.getElementById('target').getBoundingClientRect(); return r.top >= 0 && r.top <= window.innerHeight; })()", EvalOpts{})
 	if err != nil {
 		t.Fatalf("Eval: %v", err)
 	}
@@ -101,13 +101,13 @@ func TestScrollIntoViewAndWheel(t *testing.T) {
 	}
 
 	// A default (JS) delta scroll moves the page deterministically.
-	if _, err := b.Eval(ctx, id, "window.scrollTo(0,0)"); err != nil {
+	if _, err := b.Eval(ctx, id, "window.scrollTo(0,0)", EvalOpts{}); err != nil {
 		t.Fatalf("reset scroll: %v", err)
 	}
 	if _, err := b.Scroll(ctx, id, "", ScrollOpts{Dy: 600}); err != nil {
 		t.Fatalf("Scroll by: %v", err)
 	}
-	got, err = b.Eval(ctx, id, "window.scrollY")
+	got, err = b.Eval(ctx, id, "window.scrollY", EvalOpts{})
 	if err != nil {
 		t.Fatalf("Eval scrollY: %v", err)
 	}

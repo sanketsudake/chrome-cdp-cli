@@ -309,15 +309,7 @@ func (c *CDP) Navigate(ctx context.Context, id, url string) (map[string]any, err
 	return map[string]any{"url": loc}, nil
 }
 
-func (c *CDP) Eval(ctx context.Context, id, expr string) (any, error) {
-	var res json.RawMessage
-	if err := c.run(ctx, id, chromedp.Evaluate(expr, &res)); err != nil {
-		return nil, err
-	}
-	var v any
-	_ = json.Unmarshal(res, &v)
-	return map[string]any{"value": v}, nil
-}
+// Eval and Text live in read.go — the page-reading verbs (RFC-0010).
 
 func (c *CDP) Snapshot(ctx context.Context, id string, opts SnapOpts) (any, error) {
 	var re *regexp.Regexp
@@ -1141,14 +1133,6 @@ func (c *CDP) HTML(ctx context.Context, id, selector string, inner bool, q Query
 	return map[string]any{"html": html}, nil
 }
 
-func (c *CDP) Text(ctx context.Context, id, selector string, q QueryOpts) (map[string]any, error) {
-	var text string
-	if err := c.run(ctx, id, chromedp.Text(selector, &text, query(selector, q)...)); err != nil {
-		return nil, err
-	}
-	return map[string]any{"text": text}, nil
-}
-
 func (c *CDP) Value(ctx context.Context, id, selector string, q QueryOpts) (map[string]any, error) {
 	var val string
 	if err := c.run(ctx, id, chromedp.Value(selector, &val, query(selector, q)...)); err != nil {
@@ -1171,27 +1155,7 @@ func (c *CDP) Values(ctx context.Context, id, selector string, q QueryOpts) (map
 	return map[string]any{"values": vals, "count": len(vals)}, nil
 }
 
-func (c *CDP) Screenshot(ctx context.Context, id string) ([]byte, error) {
-	var buf []byte
-	if err := c.run(ctx, id, chromedp.CaptureScreenshot(&buf)); err != nil {
-		return nil, err
-	}
-	return buf, nil
-}
-
-// PDF prints the page to PDF (no chromedp Action; raw page.PrintToPDF).
-func (c *CDP) PDF(ctx context.Context, id string) ([]byte, error) {
-	var buf []byte
-	err := c.run(ctx, id, chromedp.ActionFunc(func(ctx context.Context) error {
-		var e error
-		buf, _, e = page.PrintToPDF().WithPrintBackground(true).Do(ctx)
-		return e
-	}))
-	if err != nil {
-		return nil, err
-	}
-	return buf, nil
-}
+// Screenshot and PDF live in capture.go.
 
 func (c *CDP) CookieList(ctx context.Context, id string) (any, error) {
 	var cookies []*network.Cookie

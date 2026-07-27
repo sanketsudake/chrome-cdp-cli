@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -102,7 +101,7 @@ func (a *App) classifyWithTabHint(b chrome.Browser, id string, err error) (strin
 	}
 	vctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	v, verr := b.Eval(vctx, id, "document.visibilityState")
+	v, verr := b.Eval(vctx, id, "document.visibilityState", chrome.EvalOpts{})
 	if verr != nil {
 		return code, err.Error(), nil
 	}
@@ -246,14 +245,7 @@ func (a *App) cmdNav() *cobra.Command {
 	return a.withWaitText(c)
 }
 
-func (a *App) cmdEval() *cobra.Command {
-	return &cobra.Command{
-		Use: "eval <js>", Short: "Evaluate JS in the target tab", Args: cobra.ExactArgs(1),
-		RunE: a.targetAction("eval", func(ctx context.Context, b chrome.Browser, id string, args []string) (any, error) {
-			return b.Eval(ctx, id, args[0])
-		}),
-	}
-}
+// cmdEval and cmdText live in read.go — the page-reading verbs (RFC-0010).
 
 func (a *App) cmdSnap() *cobra.Command {
 	var role, grep, region string
@@ -285,15 +277,6 @@ func (a *App) cmdHTML() *cobra.Command {
 	}
 	c.Flags().BoolVar(&inner, "inner", false, "inner HTML instead of outer")
 	return c
-}
-
-func (a *App) cmdText() *cobra.Command {
-	return &cobra.Command{
-		Use: "text <selector>", Short: "Visible text of a selector", Args: cobra.ExactArgs(1),
-		RunE: a.targetAction("text", func(ctx context.Context, b chrome.Browser, id string, args []string) (any, error) {
-			return b.Text(ctx, id, args[0], a.queryOpts())
-		}),
-	}
 }
 
 func (a *App) cmdValue() *cobra.Command {
@@ -594,93 +577,8 @@ func (a *App) cmdScroll() *cobra.Command {
 	return c
 }
 
-func (a *App) cmdScreenshot() *cobra.Command {
-	var out string
-	c := &cobra.Command{
-		Use: "screenshot", Short: "Screenshot the target tab to a PNG (cwd, or -o)",
-		RunE: func(_ *cobra.Command, _ []string) error {
-			ctx, cancel := a.ctx()
-			defer cancel()
-			tgt, b, rerr := a.resolveTarget(ctx)
-			if rerr != nil {
-				a.emitErr("screenshot", rerr.Code, rerr.Message, nil)
-				return nil
-			}
-			png, err := b.Screenshot(ctx, tgt.ID)
-			if err != nil {
-				a.emitErr("screenshot", classifyActionErr(err), err.Error(), nil)
-				return nil
-			}
-			a.emitArtifact("screenshot", tgt, png, out, "png")
-			return nil
-		},
-	}
-	c.Flags().StringVarP(&out, "output", "o", "", "output path, or - for stdout (default ./screenshot-<timestamp>.png)")
-	return c
-}
-
-func (a *App) cmdPDF() *cobra.Command {
-	var out string
-	c := &cobra.Command{
-		Use: "pdf", Short: "Print the target tab to PDF (cwd, or -o)",
-		RunE: func(_ *cobra.Command, _ []string) error {
-			ctx, cancel := a.ctx()
-			defer cancel()
-			tgt, b, rerr := a.resolveTarget(ctx)
-			if rerr != nil {
-				a.emitErr("pdf", rerr.Code, rerr.Message, nil)
-				return nil
-			}
-			pdf, err := b.PDF(ctx, tgt.ID)
-			if err != nil {
-				a.emitErr("pdf", classifyActionErr(err), err.Error(), nil)
-				return nil
-			}
-			a.emitArtifact("pdf", tgt, pdf, out, "pdf")
-			return nil
-		},
-	}
-	c.Flags().StringVarP(&out, "output", "o", "", "output path, or - for stdout (default ./pdf-<timestamp>.pdf)")
-	return c
-}
-
-// emitArtifact writes binary output: raw to stdout for "-o -", else to `out`
-// (or a default ./<command>-<ts>.<ext> with a collision counter), then emits.
-func (a *App) emitArtifact(command string, tgt *result.TargetInfo, data []byte, out, ext string) {
-	if out == "-" {
-		_, _ = a.out.Write(data)
-		if !a.quiet {
-			fmt.Fprintf(a.err, "wrote %d bytes to stdout\n", len(data))
-		}
-		return
-	}
-	path := out
-	if path == "" {
-		// The default name gets a collision counter; an explicit -o path is
-		// honored as-is (overwrite), as the user named it.
-		path = uniquePath(fmt.Sprintf("./%s-%s.%s", command, time.Now().Format("20060102-150405"), ext))
-	}
-	if err := os.WriteFile(path, data, 0o644); err != nil {
-		a.emitErr(command, result.CodeGeneric, err.Error(), nil)
-		return
-	}
-	a.emitOK(command, tgt, map[string]any{"path": path, "bytes": len(data)})
-}
-
-// uniquePath returns path if free, else inserts -1, -2, … before the extension.
-func uniquePath(path string) string {
-	if _, err := os.Stat(path); err != nil {
-		return path
-	}
-	ext := filepath.Ext(path)
-	base := strings.TrimSuffix(path, ext)
-	for i := 1; ; i++ {
-		cand := fmt.Sprintf("%s-%d%s", base, i, ext)
-		if _, err := os.Stat(cand); err != nil {
-			return cand
-		}
-	}
-}
+// screenshot and pdf — including emitArtifact and uniquePath, which only they
+// use — live in capture.go.
 
 func (a *App) cmdRaw() *cobra.Command {
 	var browserLevel, listDomains bool

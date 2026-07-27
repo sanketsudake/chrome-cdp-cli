@@ -111,14 +111,14 @@ func TestSelectCascadePrompt(t *testing.T) {
 	}
 
 	// The fixture records the chosen leaf and reflects it in the field value.
-	got, err := b.Eval(ctx, id, "window.__selected")
+	got, err := b.Eval(ctx, id, "window.__selected", EvalOpts{})
 	if err != nil {
 		t.Fatalf("Eval: %v", err)
 	}
 	if v := got.(map[string]any)["value"]; v != "ShiftLeft: Qwiet" {
 		t.Errorf("window.__selected = %v, want ShiftLeft: Qwiet", v)
 	}
-	val, err := b.Eval(ctx, id, "document.getElementById('ttinput').value")
+	val, err := b.Eval(ctx, id, "document.getElementById('ttinput').value", EvalOpts{})
 	if err != nil {
 		t.Fatalf("Eval value: %v", err)
 	}
@@ -197,7 +197,7 @@ func TestSelectNativeSelect(t *testing.T) {
 	if res["widget"] != "native-select" {
 		t.Errorf("widget = %v, want native-select", res["widget"])
 	}
-	got, err := b.Eval(ctx, id, "window.__country")
+	got, err := b.Eval(ctx, id, "window.__country", EvalOpts{})
 	if err != nil {
 		t.Fatalf("Eval: %v", err)
 	}
