@@ -105,7 +105,7 @@ func wsRoot(httpURL string) string {
 func TestAwaitUpgradeRefusedIsFast(t *testing.T) {
 	t.Parallel()
 	start := time.Now()
-	u := AwaitUpgrade(closedWS(t), 2*time.Second, time.Second, 30*time.Second, nil)
+	u := AwaitUpgrade(closedWS(t), UpgradeTimings{PendingAfter: time.Second, Total: 30 * time.Second}, nil)
 	defer u.Close()
 	if u.State != WSRefused {
 		t.Errorf("closed port classified %v, want refused", u.State)
@@ -122,7 +122,7 @@ func TestAwaitUpgradePendingIsBoundedAndAnnounced(t *testing.T) {
 	ws, conns := stallListener(t)
 	var pendingAt time.Duration
 	start := time.Now()
-	u := AwaitUpgrade(ws, time.Second, 100*time.Millisecond, 600*time.Millisecond, func() {
+	u := AwaitUpgrade(ws, UpgradeTimings{PendingAfter: 100 * time.Millisecond, Total: 600 * time.Millisecond}, func() {
 		pendingAt = time.Since(start)
 	})
 	defer u.Close()
@@ -155,7 +155,7 @@ func TestAwaitUpgradeLateAnswerStillSucceeds(t *testing.T) {
 	t.Parallel()
 	ws, answeredLive := answerListener(t, 300*time.Millisecond, "HTTP/1.1 101 Switching Protocols")
 	var announced bool
-	u := AwaitUpgrade(ws, time.Second, 50*time.Millisecond, 5*time.Second, func() { announced = true })
+	u := AwaitUpgrade(ws, UpgradeTimings{PendingAfter: 50 * time.Millisecond, Total: 5 * time.Second}, func() { announced = true })
 	defer u.Close()
 
 	if u.State != WSReady {
@@ -213,7 +213,7 @@ func floodListener(t *testing.T) string {
 func TestAwaitUpgradeBoundsTheResponse(t *testing.T) {
 	t.Parallel()
 	start := time.Now()
-	u := AwaitUpgrade(floodListener(t), time.Second, 30*time.Second, 30*time.Second, nil)
+	u := AwaitUpgrade(floodListener(t), UpgradeTimings{PendingAfter: 30 * time.Second, Total: 30 * time.Second}, nil)
 	defer u.Close()
 	if u.State != WSRefused {
 		t.Errorf("an endpoint that answers with garbage classified %v, want refused", u.State)
@@ -246,7 +246,7 @@ func TestProbeWSClassifiesAllThree(t *testing.T) {
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			t.Parallel()
-			if got := ProbeWS(c.ws, time.Second, 400*time.Millisecond); got != c.want {
+			if got := ProbeWS(c.ws, 400*time.Millisecond); got != c.want {
 				t.Errorf("ProbeWS = %v, want %v", got, c.want)
 			}
 		})
@@ -296,10 +296,36 @@ func TestResolveWSURL(t *testing.T) {
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			t.Parallel()
-			got, ok := ResolveWSURL(c.endpoint, 2*time.Second)
+			got, ok := ResolveWSURL(c.endpoint)
 			if ok != c.wantOK || got != c.want {
 				t.Errorf("ResolveWSURL(%q) = %q,%v; want %q,%v", c.endpoint, got, ok, c.want, c.wantOK)
 			}
 		})
+	}
+}
+
+// TestAwaitUpgradeAnswerDuringOnPendingIsNotDiscarded.
+//
+// With PendingAfter >= Total — which is every doctor probe, since ProbeWS
+// passes the same value for both — the old code computed a remainder of <= 0
+// and returned WSPending WITHOUT ever selecting on the answer channel again.
+// Anything delivered while onPending was running was therefore thrown away and
+// its socket closed, and onPending is not instantaneous: the daemon's writes a
+// file. So an endpoint that had completed the handshake was reported as
+// holding a consent prompt.
+func TestAwaitUpgradeAnswerDuringOnPendingIsNotDiscarded(t *testing.T) {
+	t.Parallel()
+	const budget = 50 * time.Millisecond
+	// The answer lands after the budget is up but WHILE onPending is still
+	// running, so it is sitting in the channel when the wait ends.
+	ws, _ := answerListener(t, budget+10*time.Millisecond, "HTTP/1.1 101 Switching Protocols")
+
+	u := AwaitUpgrade(ws, UpgradeTimings{PendingAfter: budget, Total: budget}, func() {
+		time.Sleep(30 * time.Millisecond)
+	})
+	defer u.Close()
+
+	if u.State != WSReady {
+		t.Errorf("a completed handshake classified %v: the answer arrived while onPending ran and was discarded unread", u.State)
 	}
 }

@@ -161,9 +161,8 @@ const (
 	// the ceiling it stops being a timeout: the daemon spawn lock is held for
 	// as long as this value, so an inherited CHROME_CDP_CONSENT_TIMEOUT=8760h
 	// would block every other invocation for a year.
-	MinConsentTimeout  = 1 * time.Second
-	MaxConsentTimeout  = 10 * time.Minute
-	consentDialTimeout = 2 * time.Second
+	MinConsentTimeout = 1 * time.Second
+	MaxConsentTimeout = 10 * time.Minute
 )
 
 // ClampConsentTimeout normalises a configured consent budget: zero or negative
@@ -224,8 +223,8 @@ func Connect(_ context.Context, opts Options) (*CDP, error) {
 	// The socket is then held (up.Close is deferred past the attach) so the
 	// consent the user just granted is still live when chromedp arrives.
 	ws := browser.WSRefused
-	if wsURL, ok := browser.ResolveWSURL(endpoint, consentDialTimeout); ok {
-		up := browser.AwaitUpgrade(wsURL, consentDialTimeout, consentPendingAfter, consent, opts.OnConsentPending)
+	if wsURL, ok := browser.ResolveWSURL(endpoint); ok {
+		up := browser.AwaitUpgrade(wsURL, browser.UpgradeTimings{PendingAfter: consentPendingAfter, Total: consent}, opts.OnConsentPending)
 		defer up.Close()
 		ws = up.State
 	}

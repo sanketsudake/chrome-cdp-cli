@@ -130,7 +130,7 @@ func (u *Upgrade) Close() {
 // nothing in the granted case (an endpoint that will not upgrade there is
 // classified refused, which is where it already was) and makes the hang — the
 // one unambiguous consent signature — visible.
-func ResolveWSURL(endpoint string, timeout time.Duration) (string, bool) {
+func ResolveWSURL(endpoint string) (string, bool) {
 	switch {
 	case strings.HasPrefix(endpoint, "ws://"), strings.HasPrefix(endpoint, "wss://"):
 		return endpoint, true
@@ -142,7 +142,7 @@ func ResolveWSURL(endpoint string, timeout time.Duration) (string, bool) {
 	if !ok {
 		return "", false
 	}
-	if ws, ok := wsFromJSONVersion(endpoint, hostport, timeout); ok {
+	if ws, ok := wsFromJSONVersion(endpoint); ok {
 		return ws, true
 	}
 	return "ws://" + hostport + "/", true
@@ -151,8 +151,8 @@ func ResolveWSURL(endpoint string, timeout time.Duration) (string, bool) {
 // wsFromJSONVersion asks Chrome's HTTP JSON API where the browser-level
 // WebSocket is. It reports false for every way that can fail to answer, all of
 // which mean the same thing here: ask the socket instead.
-func wsFromJSONVersion(endpoint, hostport string, timeout time.Duration) (string, bool) {
-	client := &http.Client{Timeout: timeout}
+func wsFromJSONVersion(endpoint string) (string, bool) {
+	client := &http.Client{Timeout: dialTimeout}
 	resp, err := client.Get(strings.TrimSuffix(endpoint, "/") + "/json/version")
 	if err != nil {
 		return "", false
@@ -175,23 +175,34 @@ func wsFromJSONVersion(endpoint, hostport string, timeout time.Duration) (string
 // and still nothing at all to hold.
 const maxStatusLine = 8 << 10
 
+// UpgradeTimings bounds one probe. It is a struct rather than two positional
+// durations because the two are easy to swap and the consequences are not
+// symmetric: a pending threshold longer than the budget announces nothing, and
+// a budget shorter than the threshold abandons the prompt it just raised.
+type UpgradeTimings struct {
+	// PendingAfter is how much silence counts as "Chrome is asking the user".
+	// Reaching it calls onPending (once) so the caller can say so WHILE it
+	// waits, rather than afterwards, which would be a post-mortem.
+	PendingAfter time.Duration
+	// Total is the whole budget. The same upgrade stays open across it, so an
+	// answer that arrives late still lands on a live connection instead of an
+	// orphaned one.
+	Total time.Duration
+}
+
+// dialTimeout bounds the TCP connect. Nothing listening is a fast, ordinary
+// failure and must stay one — that is the safety property that makes the long
+// consent wait acceptable at all. It is a constant, not a parameter: this is
+// loopback, both call sites had independently declared the same two seconds,
+// and a caller has no information that would make a different value right.
+const dialTimeout = 2 * time.Second
+
 // AwaitUpgrade dials wsURL and performs exactly ONE WebSocket handshake against
 // it, classifying the result.
 //
 // It is deliberately a single connection: every connection to the debug endpoint
-// is a consent request, and stacking those is what wedges a browser. The timings
-// have three distinct jobs:
-//
-//   - dialTimeout bounds the TCP connect. Nothing listening is a fast, ordinary
-//     failure and must stay one — this is the safety property that makes the long
-//     wait below acceptable.
-//   - pendingAfter is how much silence counts as "Chrome is asking the user".
-//     Reaching it calls onPending (once) so the caller can say so while it waits,
-//     rather than after.
-//   - wait is the total budget. The same upgrade stays open across it, so an
-//     answer that arrives late still lands on a live connection instead of an
-//     orphaned one.
-func AwaitUpgrade(wsURL string, dialTimeout, pendingAfter, wait time.Duration, onPending func()) *Upgrade {
+// is a consent request, and stacking those is what wedges a browser.
+func AwaitUpgrade(wsURL string, t UpgradeTimings, onPending func()) *Upgrade {
 	hostport, ok := HostPort(wsURL)
 	if !ok {
 		return &Upgrade{State: WSRefused}
@@ -204,6 +215,7 @@ func AwaitUpgrade(wsURL string, dialTimeout, pendingAfter, wait time.Duration, o
 		_ = conn.Close()
 		return &Upgrade{State: WSRefused}
 	}
+	wait := t.Total
 
 	// The read runs in a goroutine because there is nothing else to bound its
 	// COMPLETION: a pending endpoint never writes and never closes. Closing
@@ -217,7 +229,14 @@ func AwaitUpgrade(wsURL string, dialTimeout, pendingAfter, wait time.Duration, o
 	// second for the caller's whole budget — two minutes in the daemon. The
 	// read deadline is the matching bound in time, so the goroutine cannot
 	// outlive the wait even if nobody closes the socket.
-	_ = conn.SetReadDeadline(time.Now().Add(wait))
+	//
+	// The deadline sits a little PAST the budget rather than on it. It is a
+	// backstop against a goroutine that outlives everything, not a second copy
+	// of the budget — the timers below own that — and putting it exactly on the
+	// budget makes an answer that lands as the wait ends unreadable, so a
+	// completed handshake still in flight would be reported as a pending
+	// prompt.
+	_ = conn.SetReadDeadline(time.Now().Add(wait + dialTimeout))
 	answered := make(chan bool, 1)
 	go func() {
 		line, err := bufio.NewReader(io.LimitReader(conn, maxStatusLine)).ReadString('\n')
@@ -231,36 +250,41 @@ func AwaitUpgrade(wsURL string, dialTimeout, pendingAfter, wait time.Duration, o
 		answered <- err == nil && isSwitchingProtocols(line)
 	}()
 
-	if pendingAfter > wait {
-		pendingAfter = wait
-	}
-	first := time.NewTimer(pendingAfter)
-	defer first.Stop()
-	select {
-	case ok := <-answered:
-		return settle(conn, ok)
-	case <-first.C:
-	}
-
-	// Silence past pendingAfter on an OPEN port: the consent signature. Report it
-	// now — a user who has not seen the dialog needs telling while it is still on
-	// screen — and keep this same upgrade open for the rest of the budget.
-	if onPending != nil {
-		onPending()
-	}
-	rest := wait - pendingAfter
-	if rest <= 0 {
-		_ = conn.Close()
-		return &Upgrade{State: WSPending}
-	}
-	second := time.NewTimer(rest)
-	defer second.Stop()
-	select {
-	case ok := <-answered:
-		return settle(conn, ok)
-	case <-second.C:
-		_ = conn.Close()
-		return &Upgrade{State: WSPending}
+	// Two independent timers on one loop. They were once two sequential selects
+	// with a "rest" computation between them, which had a case the loop simply
+	// does not have: when PendingAfter was >= Total the remainder came out <= 0
+	// and the function returned WSPending having never looked at the answer
+	// channel again, so a completed handshake sitting in the buffer was thrown
+	// away and its socket closed — doctor reporting consent_pending for a ready
+	// endpoint.
+	pending := time.NewTimer(min(t.PendingAfter, wait))
+	defer pending.Stop()
+	total := time.NewTimer(wait)
+	defer total.Stop()
+	for {
+		select {
+		case ok := <-answered:
+			return settle(conn, ok)
+		case <-pending.C:
+			// Silence past PendingAfter on an OPEN port: the consent
+			// signature. Say so now — a user who has not seen the dialog needs
+			// telling while it is still on screen — and keep this same upgrade
+			// open for the rest of the budget.
+			if onPending != nil {
+				onPending()
+			}
+		case <-total.C:
+			// The budget and the answer can come ready in the same instant,
+			// and select picks between ready cases at random. Ask once more
+			// before discarding a handshake that did complete.
+			select {
+			case ok := <-answered:
+				return settle(conn, ok)
+			default:
+			}
+			_ = conn.Close()
+			return &Upgrade{State: WSPending}
+		}
 	}
 }
 
@@ -287,8 +311,8 @@ func settle(conn net.Conn, ok bool) *Upgrade {
 // the command that made it would be worse. What it must not do is pretend
 // otherwise, so doctor's ready verdict says the connection was closed and the
 // next command may prompt again — see runDoctor.
-func ProbeWS(wsURL string, dialTimeout, wait time.Duration) WSState {
-	u := AwaitUpgrade(wsURL, dialTimeout, wait, wait, nil)
+func ProbeWS(wsURL string, wait time.Duration) WSState {
+	u := AwaitUpgrade(wsURL, UpgradeTimings{PendingAfter: wait, Total: wait}, nil)
 	defer u.Close()
 	return u.State
 }

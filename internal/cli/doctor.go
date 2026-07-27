@@ -10,12 +10,10 @@ import (
 	"github.com/sanketsudake/chrome-cdp-cli/internal/result"
 )
 
-// doctor's own probe timings. They are much shorter than the connect path's
-// consent budget on purpose: doctor answers a question, it does not wait out a
-// dialog. Five seconds of silence from a loopback endpoint is already conclusive.
-const doctorDialTimeout = 2 * time.Second
-
-// doctorProbeWait is a var only so a test can shrink the clock.
+// doctorProbeWait is doctor's own probe budget. It is much shorter than the
+// connect path's consent budget on purpose: doctor answers a question, it does
+// not wait out a dialog, and five seconds of silence from a loopback endpoint
+// is already conclusive. A var only so a test can shrink the clock.
 var doctorProbeWait = 5 * time.Second
 
 // The three states doctor distinguishes, reported as `state` in the envelope so
@@ -105,7 +103,7 @@ func (a *App) runDoctor(noProbe bool) {
 	}
 	// An explicit --port names an HTTP endpoint; the browser-level WebSocket
 	// path has to be resolved before anything can be upgraded against it.
-	ws, ok := browser.ResolveWSURL(ep.URL, doctorDialTimeout)
+	ws, ok := browser.ResolveWSURL(ep.URL)
 	if !ok {
 		a.emitErr("doctor", result.CodeConnection,
 			"nothing usable answered at "+ep.URL+" (stale port file, or another process on that port) — "+browser.EnableAdvice,
@@ -113,7 +111,7 @@ func (a *App) runDoctor(noProbe bool) {
 		return
 	}
 	base["ws"] = ws
-	switch browser.ProbeWS(ws, doctorDialTimeout, doctorProbeWait) {
+	switch browser.ProbeWS(ws, doctorProbeWait) {
 	case browser.WSReady:
 		base["state"] = stateReady
 		// Say what the verdict cost. ProbeWS hangs up on every outcome,
