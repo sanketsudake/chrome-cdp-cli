@@ -476,6 +476,15 @@ printf '%s\n' \
   | chrome-cdp session
 ```
 
+| Flag | Default | Purpose |
+|------|---------|---------|
+| `--record <path>` | — | [record](#recording) the whole batch and write it here |
+| `--record-fps <n>` | `4` | with `--record`: frames per second to retain |
+| `--record-annotate` | off | with `--record`: mark action positions on the exported frames |
+
+`--record` starts as soon as a line resolves a tab (usually the first `use`) and stops after the last line, so it needs no manual bracketing.
+The file is written even when a step failed — which is when a recording is worth the most — and the batch emits one extra NDJSON line describing it.
+
 ### Recipes
 
 A **recipe** is a saved `session` script with a small header: a YAML file whose steps are argv arrays, with declared inputs substituted into argv elements.
@@ -643,6 +652,82 @@ The result reports `path`, `bytes`, and `pages`.
 
 Every value above is parsed before anything connects to Chrome, so a malformed rectangle, paper name, margin spec or page range — or an out-of-range quality or scale — is `usage` / exit 2 with the browser untouched.
 An element that resolves but has a zero-area box (`display:none`, collapsed) is exit 4 with `zero_area: true`: the selector was right, so it is reported differently from "not found".
+
+### Recording
+
+`record` captures the tab while other commands drive it, and exports the frames as an animated GIF (or an MP4/WebM, or a directory of numbered PNGs).
+
+```sh
+chrome-cdp record start --annotate
+chrome-cdp click --by name "Save"
+chrome-cdp record stop -o demo.gif
+```
+
+> **This records your real, logged-in browser.**
+> A recording attached to a public issue may contain your own data — your tabs, your name, whatever the page was showing.
+> Nothing in the CLI can know which pixels are sensitive, so look at the file before you share it.
+> `record stop` prints the frame count and the path in human mode, so it is never ambiguous that a file was written.
+
+| Command | Does |
+|---------|------|
+| `record start` | begin capturing the target tab |
+| `record stop [-o <path>]` | stop and write the animation (default `./record-<timestamp>.gif`) |
+| `record status` | report whether the tab is being recorded, and how much is held |
+| `record cancel` | discard the recording without writing anything |
+
+**record start**
+
+| Flag | Default | Purpose |
+|------|---------|---------|
+| `--fps <n>` | `4` | frames per second to retain; a **ceiling**, not a fixed interval |
+| `--scale <f>` | `0.5` | capture scale relative to the viewport, 0.1–1 |
+| `--annotate` | off | mark action positions when exporting (overridable at `record stop`) |
+| `--max-duration <dur>` | `2m` | stop capturing after this long; the frames stay exportable |
+| `--max-frames <n>` | `600` | ring-buffer size (config key `record_buffer`) |
+
+**record stop**
+
+| Flag | Default | Purpose |
+|------|---------|---------|
+| `-o, --output <path>` | `./record-<timestamp>.<ext>` | output path, or `-` for stdout |
+| `--format` | from the extension, else `gif` | `gif` \| `mp4` \| `webm` \| `frames` |
+| `--max-size <size>` | — | best-effort ceiling, e.g. `2MB` or `1500000` |
+| `--loop <n>` | `0` (forever) | GIF loop count |
+| `--annotate` | from `record start` | draw the action markers |
+
+The result reports `path`, `format`, `frames`, `fps`, `duration_ms`, `width`, `height`, `bytes`, `annotated`, and the capture's own `dropped_frames` / `truncated` / `reason`.
+
+**Frames live in the daemon, not in the command that started the recording.**
+That is what makes a run which crashed half way still have a recording of the failure: `record stop` afterwards writes it, and it writes it even when the tab itself has since closed (the result then says `tab_closed: true`).
+
+**Capture is a screencast, not a screenshot loop.**
+Chrome pushes a frame only when the page actually changes, so a static page costs almost nothing and `--fps` throttles a busy one rather than polling a quiet one.
+A frame skipped by that throttle is *not* a dropped frame — you asked for 4fps.
+A tab that renders nothing at all (fully backgrounded, on some platforms) produces no frames, and `record stop` says so rather than writing an empty file.
+
+**Truncation is always reported.**
+The ring keeps the most recent `--max-frames`, a byte ceiling (`record_max_bytes`) keeps the retained frames bounded no matter how large the viewport is, and `--max-duration` stops the capture.
+Whichever fires sets `truncated: true` with a `reason` and counts the loss in `dropped_frames`, so a partial recording is never presented as a complete one.
+
+**Annotation is composited at export, never at capture.**
+The daemon records `(timestamp, command, coordinates)` alongside the frames — the coordinates come from the pointer verbs, which already resolve and report a centre point — and the exporter draws position markers.
+Without `--annotate` the exported frames are pixel-identical to what Chrome captured, which is what makes a recording usable as a README asset.
+One recording can therefore be exported both ways.
+
+**Formats.**
+`gif` and `frames` need nothing installed, and `gif` is the default because the dependency-free path should be the one that works out of the box.
+`mp4` and `webm` need `ffmpeg` on `PATH`, and its absence is a `usage` error naming the requirement — checked **before** the recording is drained, so the frames survive to be exported as a GIF instead.
+`--format` conflicting with the output extension is an error rather than a guess, since a WebM in a file called `demo.gif` plays nowhere.
+
+**`--max-size` is best-effort.**
+It re-encodes at a smaller scale, and then at a lower frame count, until the file fits; the result reports `reduced`, the `export_scale` used, and `within_max_size: false` when the ceiling could not be met.
+
+Recording is **per-tab**.
+A batch that opens new tabs records the one it started on; a multi-tab recording is out of scope.
+
+`session --record <path>` brackets a whole batch (see [Batch mode](#batch-mode)).
+
+Agents: `record` is deliberately outside the default MCP tool set — an agent silently recording the user's browser is a surprising capability — and is available only under the full tool set.
 
 ### Browser state
 
