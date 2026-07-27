@@ -301,6 +301,71 @@ func TestAnnotationScalesPageCoordinates(t *testing.T) {
 	}
 }
 
+// TestMixedDimensionsAreLetterboxed: a window resized mid-recording changes the
+// frame's aspect ratio, and forcing the later frames onto the first frame's
+// canvas would silently distort every one of them.
+//
+// Padding is the honest answer — a letterboxed frame still shows what the page
+// looked like, a stretched one shows something that was never on screen.
+func TestMixedDimensionsAreLetterboxed(t *testing.T) {
+	t.Parallel()
+	frames := []Frame{
+		{Data: solidPNG(t, 40, 20, green)}, // sets the canvas: 40x20
+		{Data: solidPNG(t, 20, 20, red)},   // square: must not be stretched to 40 wide
+	}
+	res, err := Encode(frames, Options{Format: FormatFrames, FPS: 4})
+	if err != nil {
+		t.Fatalf("Encode: %v", err)
+	}
+	if res.Width != 40 || res.Height != 20 {
+		t.Fatalf("canvas = %dx%d, want the first frame's 40x20", res.Width, res.Height)
+	}
+	img := decodePNG(t, res.Files[1].Data)
+	// The square frame fits the 20px height, so its content is 20x20 centred at
+	// x = 10..29 with pad either side.
+	if got := rgbaAt(img, 20, 10); got != red {
+		t.Errorf("centre pixel = %v, want the frame's %v", got, red)
+	}
+	for _, x := range []int{0, 5, 34, 39} {
+		if got := rgbaAt(img, x, 10); got == red {
+			t.Errorf("pixel (%d,10) = %v: the square frame was stretched across the canvas instead of padded", x, got)
+		}
+	}
+	// The frame that DEFINED the canvas is still exact — letterboxing must not
+	// cost the common case anything (VS-13).
+	first := decodePNG(t, res.Files[0].Data)
+	for _, p := range [][2]int{{0, 0}, {39, 19}, {20, 10}} {
+		if got := rgbaAt(first, p[0], p[1]); got != green {
+			t.Errorf("first frame pixel %v = %v, want the untouched %v", p, got, green)
+		}
+	}
+}
+
+// TestLetterboxedAnnotationLandsOnTheContent: a mark is in PAGE coordinates, so
+// once a frame is padded the marker has to follow the content, not the canvas.
+func TestLetterboxedAnnotationLandsOnTheContent(t *testing.T) {
+	t.Parallel()
+	frames := []Frame{
+		{Data: solidPNG(t, 40, 20, green)},
+		{
+			Data:      solidPNG(t, 20, 20, red),
+			CSSWidth:  20,
+			CSSHeight: 20,
+			Marks:     []Mark{{X: 10, Y: 10, Command: "click"}},
+		},
+	}
+	res, err := Encode(frames, Options{Format: FormatFrames, FPS: 4, Annotate: true})
+	if err != nil {
+		t.Fatalf("Encode: %v", err)
+	}
+	img := decodePNG(t, res.Files[1].Data)
+	// Content occupies x = 10..29; the page's (10,10) is the content centre,
+	// which is canvas (20,10).
+	if got := rgbaAt(img, 20, 10); got == red {
+		t.Error("the marker did not land at the letterboxed content's centre")
+	}
+}
+
 // TestMaxSizeReductionTerminates is the property that matters about the
 // --max-size loop: it always stops, it reports the values it actually used, and
 // it says so when the ceiling could not be met rather than pretending.

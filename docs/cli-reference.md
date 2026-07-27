@@ -719,6 +719,9 @@ One recording can therefore be exported both ways.
 `mp4` and `webm` need `ffmpeg` on `PATH`, and its absence is a `usage` error naming the requirement — checked **before** the recording is drained, so the frames survive to be exported as a GIF instead.
 `--format` conflicting with the output extension is an error rather than a guess, since a WebM in a file called `demo.gif` plays nowhere.
 
+**A window resized mid-recording is letterboxed, not stretched.**
+The canvas comes from the first frame; a later frame with a different shape is scaled to fit and padded, so the export never shows a page at an aspect ratio it never had.
+
 **`--max-size` is best-effort.**
 It re-encodes at a smaller scale, and then at a lower frame count, until the file fits; the result reports `reduced`, the `export_scale` used, and `within_max_size: false` when the ceiling could not be met.
 

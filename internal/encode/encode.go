@@ -321,9 +321,9 @@ func encodeAt(frames []Frame, imgs []image.Image, opts Options, p plan) (Result,
 	w, h := scaledSize(imgs[0], p.scale)
 	canvas := make([]*image.RGBA, 0, len(keptImgs))
 	for i, src := range keptImgs {
-		dst := resize(src, w, h)
+		dst, pl := render(src, w, h)
 		if opts.Annotate {
-			drawMarks(dst, kept[i], src)
+			drawMarks(dst, kept[i], src, pl)
 		}
 		canvas = append(canvas, dst)
 	}
@@ -554,11 +554,16 @@ const markRadius = 9
 // colour, and a "where did the click land" artifact that is invisible on some
 // pages is worse than none. There is no caption bar — RFC-0011 open question 3
 // settles on position markers only.
-func drawMarks(dst *image.RGBA, f Frame, src image.Image) {
+//
+// pl is where this frame's content actually sits on the canvas, which is not the
+// whole canvas once a differently-shaped frame has been letterboxed. The marks
+// are in PAGE coordinates and belong on the content, so the mapping has to go
+// through pl rather than through dst.Bounds().
+func drawMarks(dst *image.RGBA, f Frame, src image.Image, pl placement) {
 	if len(f.Marks) == 0 {
 		return
 	}
-	db, sb := dst.Bounds(), src.Bounds()
+	sb := src.Bounds()
 	// Page CSS pixels -> canvas pixels. CSSWidth is what the capture covered in
 	// page coordinates; without it the source image's own size is the best
 	// available assumption (a 1:1 capture).
@@ -569,15 +574,15 @@ func drawMarks(dst *image.RGBA, f Frame, src image.Image) {
 	if ch <= 0 {
 		ch = float64(sb.Dy())
 	}
-	kx, ky := float64(db.Dx())/cw, float64(db.Dy())/ch
+	kx, ky := float64(pl.w)/cw, float64(pl.h)/ch
 	r := int(math.Round(markRadius * math.Min(kx, ky)))
 	r = max(r, 3)
 
 	red := color.RGBA{R: 0xE1, G: 0x1D, B: 0x48, A: 0xFF}
 	white := color.RGBA{R: 0xFF, G: 0xFF, B: 0xFF, A: 0xFF}
 	for _, m := range f.Marks {
-		cx := int(math.Round(m.X * kx))
-		cy := int(math.Round(m.Y * ky))
+		cx := pl.x + int(math.Round(m.X*kx))
+		cy := pl.y + int(math.Round(m.Y*ky))
 		disc(dst, cx, cy, r+2, white)
 		disc(dst, cx, cy, r, red)
 	}
@@ -601,6 +606,63 @@ func disc(dst *image.RGBA, cx, cy, r int, c color.RGBA) {
 			}
 		}
 	}
+}
+
+// placement is where one frame's content sits on the export canvas: the origin
+// and size in canvas pixels. For a frame with the canvas's own aspect ratio it
+// is the whole canvas; for any other it is the letterboxed rectangle inside it.
+type placement struct{ x, y, w, h int }
+
+// padColor fills the letterbox bars. Opaque black, both because it is the
+// convention every video player uses and because it cannot be mistaken for page
+// content the way a white or grey bar can.
+var padColor = color.RGBA{A: 0xFF}
+
+// render draws src onto a w×h canvas, PRESERVING its aspect ratio.
+//
+// A window resized mid-recording changes the frame shape, and every frame after
+// the resize would otherwise be stretched onto the first frame's canvas — a
+// recording that shows a page which was never on screen. Padding instead keeps
+// every frame truthful at the cost of some bars.
+//
+// The common case (every frame the same shape) fits exactly, pads nothing, and
+// costs one comparison — including the 1:1 case VS-13 rests on.
+func render(src image.Image, w, h int) (*image.RGBA, placement) {
+	pl := fit(src.Bounds(), w, h)
+	if pl.x == 0 && pl.y == 0 && pl.w == w && pl.h == h {
+		return resize(src, w, h), pl
+	}
+	dst := image.NewRGBA(image.Rect(0, 0, w, h))
+	for y := 0; y < h; y++ {
+		for x := 0; x < w; x++ {
+			dst.SetRGBA(x, y, padColor)
+		}
+	}
+	content := resize(src, pl.w, pl.h)
+	for y := 0; y < pl.h; y++ {
+		for x := 0; x < pl.w; x++ {
+			dst.SetRGBA(pl.x+x, pl.y+y, content.RGBAAt(x, y))
+		}
+	}
+	return dst, pl
+}
+
+// fit is the largest rectangle with src's aspect ratio that fits a w×h canvas,
+// centred.
+func fit(src image.Rectangle, w, h int) placement {
+	sw, sh := src.Dx(), src.Dy()
+	if sw <= 0 || sh <= 0 {
+		return placement{w: w, h: h}
+	}
+	// sw/sh <= w/h means the source is the narrower shape, so height is the
+	// binding axis and the width is derived from it (and vice versa). Comparing
+	// cross-products keeps the decision exact rather than float-rounded.
+	if h*sw <= w*sh {
+		cw := min(max(int(math.Round(float64(h)*float64(sw)/float64(sh))), 1), w)
+		return placement{x: (w - cw) / 2, w: cw, h: h}
+	}
+	ch := min(max(int(math.Round(float64(w)*float64(sh)/float64(sw))), 1), h)
+	return placement{y: (h - ch) / 2, w: w, h: ch}
 }
 
 // resize renders src onto a w×h RGBA canvas.
