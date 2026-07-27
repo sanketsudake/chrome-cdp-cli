@@ -41,9 +41,12 @@ type Options struct {
 	Headless   bool   // headless for the managed-launch fallback (tests use this)
 
 	// ConsentTimeout bounds the wait for Chrome's "Allow remote debugging?"
-	// dialog (config key consent_timeout). Zero means DefaultConsentTimeout.
-	// It applies ONLY to an open port whose upgrade is hanging; a refused
-	// endpoint still fails in milliseconds. See browser.AwaitUpgrade.
+	// dialog (config key consent_timeout). It applies ONLY to an open port
+	// whose upgrade is hanging; a refused endpoint still fails in
+	// milliseconds. See browser.AwaitUpgrade.
+	//
+	// It arrives already normalised: config resolution is the one boundary
+	// where flag, env and file meet, and ClampConsentTimeout runs there.
 	ConsentTimeout time.Duration
 	// OnConsentPending fires once, as soon as the upgrade is classified as
 	// pending — i.e. while the dialog is still on screen, not after the wait.
@@ -152,8 +155,38 @@ const (
 	// browser-modal dialog that can sit behind the window; ten seconds is not,
 	// and ten seconds is what used to abandon the prompt it had just raised.
 	DefaultConsentTimeout = 120 * time.Second
-	consentDialTimeout    = 2 * time.Second
+	// MinConsentTimeout and MaxConsentTimeout bound what a configured value is
+	// allowed to be. Below the floor the "wait" is not a wait at all and the
+	// prompt is abandoned as soon as it is raised — the original defect. Above
+	// the ceiling it stops being a timeout: the daemon spawn lock is held for
+	// as long as this value, so an inherited CHROME_CDP_CONSENT_TIMEOUT=8760h
+	// would block every other invocation for a year.
+	MinConsentTimeout  = 1 * time.Second
+	MaxConsentTimeout  = 10 * time.Minute
+	consentDialTimeout = 2 * time.Second
 )
+
+// ClampConsentTimeout normalises a configured consent budget: zero or negative
+// (unset, or a "0s" that meant nothing in particular) becomes the default, and
+// anything outside [MinConsentTimeout, MaxConsentTimeout] is pulled to the
+// nearer bound.
+//
+// It exists so that every layer that reads this number reads it the SAME way.
+// Before, chrome.Connect mapped <= 0 to the default, daemon.Ensure took the
+// zero literally, and main forwarded the env var only when > 0 — so
+// consent_timeout = "0s" produced a daemon waiting 120s, a client giving up at
+// 10s, and the message "still waiting ... after 0s".
+func ClampConsentTimeout(d time.Duration) time.Duration {
+	switch {
+	case d <= 0:
+		return DefaultConsentTimeout
+	case d < MinConsentTimeout:
+		return MinConsentTimeout
+	case d > MaxConsentTimeout:
+		return MaxConsentTimeout
+	}
+	return d
+}
 
 // consentPendingAfter is how much silence from an open port counts as "Chrome is
 // asking the user". It is a var only so a test can shrink the clock; production
@@ -184,10 +217,11 @@ func Connect(_ context.Context, opts Options) (*CDP, error) {
 			endpoint = ws
 		}
 	}
-	consent := opts.ConsentTimeout
-	if consent <= 0 {
-		consent = DefaultConsentTimeout
-	}
+	// Already clamped by whoever resolved the flag/env/config; run it again
+	// rather than trust that. It is the same function, so this cannot become a
+	// second, disagreeing policy — which is the only thing that went wrong here
+	// before.
+	consent := ClampConsentTimeout(opts.ConsentTimeout)
 	// One upgrade decides the ladder's first two rungs, and it is the ONLY thing
 	// here that can raise a consent prompt. chromedp cannot do this itself:
 	// bounding its first Run with a context deadline would tear down the browser

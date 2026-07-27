@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sanketsudake/chrome-cdp-cli/internal/chrome"
 	"github.com/sanketsudake/chrome-cdp-cli/internal/result"
 )
 
@@ -301,5 +302,38 @@ func TestDoctorNoProbeRefusesToClaimReadiness(t *testing.T) {
 	}
 	if n := conns.Load(); n != 0 {
 		t.Errorf("--no-probe opened %d connection(s), want 0", n)
+	}
+}
+
+// TestConsentTimeoutFlagIsNormalised: the flag is the third way this value can
+// be set, and the only one config resolution does not see. An explicit
+// `--consent-timeout 0s` used to reach daemon.Ensure as a literal zero while
+// the daemon it spawned resolved the same key to 120s from its environment —
+// so the client reported "still waiting ... after 0s" for a daemon that was
+// still holding the prompt open.
+func TestConsentTimeoutFlagIsNormalised(t *testing.T) {
+	prev := doctorProbeWait
+	doctorProbeWait = 100 * time.Millisecond
+	t.Cleanup(func() { doctorProbeWait = prev })
+	stubEndpoint(t, "")
+	for _, c := range []struct {
+		flag string
+		want time.Duration
+	}{
+		{"0s", chrome.DefaultConsentTimeout},
+		{"-3s", chrome.DefaultConsentTimeout},
+		{"8760h", chrome.MaxConsentTimeout},
+		{"45s", 45 * time.Second},
+	} {
+		t.Run(c.flag, func(t *testing.T) {
+			var got time.Duration
+			runDoctorApp(t, func(o ConnOpts) (map[string]any, error) {
+				got = o.ConsentTimeout
+				return map[string]any{"running": false}, nil
+			}, "--consent-timeout", c.flag)
+			if got != c.want {
+				t.Errorf("--consent-timeout %s reached the connector as %v, want %v", c.flag, got, c.want)
+			}
+		})
 	}
 }

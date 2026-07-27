@@ -105,10 +105,10 @@ func main() {
 		}
 		// The daemon is the process that actually waits out the consent prompt,
 		// so --consent-timeout has to reach it; it only ever parses the
-		// environment.
-		if o.ConsentTimeout > 0 {
-			env = append(env, "CHROME_CDP_CONSENT_TIMEOUT="+o.ConsentTimeout.String())
-		}
+		// environment. Forwarded unconditionally: o.ConsentTimeout is already
+		// normalised, and a "> 0" guard here is how the client and the daemon
+		// it spawned ended up waiting for different lengths of time.
+		env = append(env, "CHROME_CDP_CONSENT_TIMEOUT="+o.ConsentTimeout.String())
 		// The daemon parses only the environment, so config-file values for the
 		// event-capture bounds have to be forwarded explicitly or the buffers it
 		// holds would silently fall back to the built-in sizes.

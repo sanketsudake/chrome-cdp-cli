@@ -183,6 +183,7 @@ func ResolveFrom(path string, getenv func(string) string) (Defaults, error) {
 	d := Builtin()
 	err := applyFile(&d, path)
 	applyEnv(&d, getenv)
+	normalise(&d)
 	return d, err
 }
 
@@ -192,7 +193,23 @@ func ResolveFrom(path string, getenv func(string) string) (Defaults, error) {
 func FromEnv() Defaults {
 	d := Builtin()
 	applyEnv(&d, os.Getenv)
+	normalise(&d)
 	return d
+}
+
+// normalise pulls resolved values into the range the rest of the program is
+// entitled to assume. This is the single place it happens: resolution is where
+// flag defaults, environment and config file meet, so a value that is sane here
+// is sane in every layer downstream.
+//
+// The consent budget is the one that needed it. A zero (from consent_timeout =
+// "0s", or an env var someone cleared) meant "the default" to chrome.Connect
+// and "no wait at all" to daemon.Ensure, which put back the orphaned-prompt
+// failure the setting exists to prevent — and an inherited
+// CHROME_CDP_CONSENT_TIMEOUT=8760h would have held the daemon spawn lock for a
+// year.
+func normalise(d *Defaults) {
+	d.ConsentTimeout = chrome.ClampConsentTimeout(d.ConsentTimeout)
 }
 
 // applyFile overlays a config file onto d. A missing file is not an error; a

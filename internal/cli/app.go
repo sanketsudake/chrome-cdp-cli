@@ -143,14 +143,23 @@ type ConnOpts struct {
 	Port       int
 	NoDaemon   bool
 	// ConsentTimeout travels with the connection options because it is the
-	// daemon that does the waiting, and the daemon is spawned from these.
+	// daemon that does the waiting, and the daemon is spawned from these. It is
+	// always normalised — see connOpts.
 	ConsentTimeout time.Duration
 }
 
 func (a *App) connOpts() ConnOpts {
 	return ConnOpts{
 		NoLaunch: a.noLaunch, ProfileDir: a.profileDir, Port: a.port,
-		NoDaemon: a.noDaemon, ConsentTimeout: a.consentTimeout,
+		NoDaemon: a.noDaemon,
+		// The flag is the last of the three ways this value gets set (config
+		// resolution clamps the file and the environment), so it is clamped
+		// here — with the same function, so no layer can read the number
+		// differently. An explicit `--consent-timeout 0s` otherwise reached
+		// daemon.Ensure as a literal zero while the daemon it spawned resolved
+		// the same key to 120s, and the client reported a failure that had not
+		// happened.
+		ConsentTimeout: chrome.ClampConsentTimeout(a.consentTimeout),
 	}
 }
 
