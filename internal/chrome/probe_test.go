@@ -1,4 +1,4 @@
-package browser
+package chrome
 
 import (
 	"bytes"
@@ -10,6 +10,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/sanketsudake/chrome-cdp-cli/internal/browser"
 )
 
 // The consent-pending state is reproducible without a browser: it is a TCP
@@ -19,7 +21,7 @@ import (
 
 // stallListener accepts connections and never answers — Chrome holding a consent
 // prompt. It counts accepted connections, so a test can prove nothing connected.
-func stallListener(t *testing.T) (wsURL string, conns *atomic.Int32) {
+func stallWSListener(t *testing.T) (wsURL string, conns *atomic.Int32) {
 	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -107,7 +109,7 @@ func TestAwaitUpgradeRefusedIsFast(t *testing.T) {
 	start := time.Now()
 	u := AwaitUpgrade(closedWS(t), UpgradeTimings{PendingAfter: time.Second, Total: 30 * time.Second}, nil)
 	defer u.Close()
-	if u.State != WSRefused {
+	if u.State != browser.WSRefused {
 		t.Errorf("closed port classified %v, want refused", u.State)
 	}
 	if el := time.Since(start); el > 2*time.Second {
@@ -119,7 +121,7 @@ func TestAwaitUpgradeRefusedIsFast(t *testing.T) {
 // silence on an open port is reported while it is happening, and the wait ends.
 func TestAwaitUpgradePendingIsBoundedAndAnnounced(t *testing.T) {
 	t.Parallel()
-	ws, conns := stallListener(t)
+	ws, conns := stallWSListener(t)
 	var pendingAt time.Duration
 	start := time.Now()
 	u := AwaitUpgrade(ws, UpgradeTimings{PendingAfter: 100 * time.Millisecond, Total: 600 * time.Millisecond}, func() {
@@ -128,7 +130,7 @@ func TestAwaitUpgradePendingIsBoundedAndAnnounced(t *testing.T) {
 	defer u.Close()
 	elapsed := time.Since(start)
 
-	if u.State != WSPending {
+	if u.State != browser.WSPending {
 		t.Fatalf("a stalling endpoint classified %v, want pending", u.State)
 	}
 	if pendingAt == 0 {
@@ -158,7 +160,7 @@ func TestAwaitUpgradeLateAnswerStillSucceeds(t *testing.T) {
 	u := AwaitUpgrade(ws, UpgradeTimings{PendingAfter: 50 * time.Millisecond, Total: 5 * time.Second}, func() { announced = true })
 	defer u.Close()
 
-	if u.State != WSReady {
+	if u.State != browser.WSReady {
 		t.Fatalf("a late-but-completed upgrade classified %v, want ready", u.State)
 	}
 	if !announced {
@@ -215,7 +217,7 @@ func TestAwaitUpgradeBoundsTheResponse(t *testing.T) {
 	start := time.Now()
 	u := AwaitUpgrade(floodListener(t), UpgradeTimings{PendingAfter: 30 * time.Second, Total: 30 * time.Second}, nil)
 	defer u.Close()
-	if u.State != WSRefused {
+	if u.State != browser.WSRefused {
 		t.Errorf("an endpoint that answers with garbage classified %v, want refused", u.State)
 	}
 	if el := time.Since(start); el > 5*time.Second {
@@ -227,7 +229,7 @@ func TestAwaitUpgradeBoundsTheResponse(t *testing.T) {
 // and the ready one established by a completed upgrade rather than a port file.
 func TestProbeWSClassifiesAllThree(t *testing.T) {
 	t.Parallel()
-	stalling, _ := stallListener(t)
+	stalling, _ := stallWSListener(t)
 	ready, _ := answerListener(t, 0, "HTTP/1.1 101 Switching Protocols")
 	// An endpoint that ANSWERS with something other than 101 is a live server
 	// that is not a CDP browser (a stale port file reused by another process).
@@ -236,13 +238,13 @@ func TestProbeWSClassifiesAllThree(t *testing.T) {
 	for _, c := range []struct {
 		name string
 		ws   string
-		want WSState
+		want browser.WSState
 	}{
-		{"nothing listening", closedWS(t), WSRefused},
-		{"accepts and stalls", stalling, WSPending},
-		{"completes the upgrade", ready, WSReady},
-		{"answers 404", wrong, WSRefused},
-		{"not a ws url", "::::", WSRefused},
+		{"nothing listening", closedWS(t), browser.WSRefused},
+		{"accepts and stalls", stalling, browser.WSPending},
+		{"completes the upgrade", ready, browser.WSReady},
+		{"answers 404", wrong, browser.WSRefused},
+		{"not a ws url", "::::", browser.WSRefused},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			t.Parallel()
@@ -308,7 +310,7 @@ func TestResolveWSURL(t *testing.T) {
 //
 // With PendingAfter >= Total — which is every doctor probe, since ProbeWS
 // passes the same value for both — the old code computed a remainder of <= 0
-// and returned WSPending WITHOUT ever selecting on the answer channel again.
+// and returned browser.WSPending WITHOUT ever selecting on the answer channel again.
 // Anything delivered while onPending was running was therefore thrown away and
 // its socket closed, and onPending is not instantaneous: the daemon's writes a
 // file. So an endpoint that had completed the handshake was reported as
@@ -325,7 +327,7 @@ func TestAwaitUpgradeAnswerDuringOnPendingIsNotDiscarded(t *testing.T) {
 	})
 	defer u.Close()
 
-	if u.State != WSReady {
+	if u.State != browser.WSReady {
 		t.Errorf("a completed handshake classified %v: the answer arrived while onPending ran and was discarded unread", u.State)
 	}
 }

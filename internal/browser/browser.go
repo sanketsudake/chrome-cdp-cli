@@ -1,6 +1,10 @@
 // Package browser holds the connection-layer logic for reaching Chrome over CDP:
-// the DevToolsActivePort reader (Path B) and the connection-ladder decision.
-// It is deliberately free of chromedp so it unit-tests without a live browser.
+// the DevToolsActivePort reader (Path B), the endpoint resolution, the
+// vocabulary a probe answers in (WSState), and the connection-ladder decision.
+//
+// It is deliberately free of chromedp AND of any I/O against Chrome itself, so
+// it unit-tests without a live browser. The socket work that classifies an
+// endpoint used to live here and no longer does: see chrome.AwaitUpgrade.
 package browser
 
 import (
@@ -139,6 +143,75 @@ func HostPort(wsURL string) (string, bool) {
 	}
 	hp, _, _ := strings.Cut(rest, "/")
 	return hp, hp != ""
+}
+
+// EnableAdvice is the single authored answer to "how do I make Chrome
+// debuggable?", and it leads with the launch flag ON PURPOSE.
+//
+// --remote-debugging-port skips the consent dialog entirely. The
+// chrome://inspect toggle raises a browser-modal prompt on every fresh attach,
+// and every message in this tool used to recommend it first — which routed each
+// new user straight through the failure RFC-0013 exists to remove. The order of
+// these two clauses is the fix.
+const EnableAdvice = "relaunch Chrome with --remote-debugging-port=9222 " +
+	"(on macOS: open -a \"Google Chrome\" --args --remote-debugging-port=9222), which never prompts; " +
+	"or enable chrome://inspect/#remote-debugging, which raises a consent prompt on every fresh attach"
+
+// ConsentPromptAdvice is the single authored explanation of Chrome's consent
+// dialog, for every place that has to describe it: the connect timeout, the
+// generic dial failure, the daemon's wait notice, the client's give-up message,
+// and doctor's consent_pending state.
+//
+// Every clause is here because a user cannot deduce it. That the dialog is
+// modal to the BROWSER is why the frozen window is a symptom and not a crash;
+// that it can sit behind the window is why they have not seen it; that nothing
+// else in Chrome responds until it is answered is why the tool looks like the
+// thing that broke. Five hand-written copies had already drifted — one said
+// "behind" where the others shouted it, one said "blocks all other input" —
+// and two test files asserted on a substring list that one of those copies
+// would have failed.
+const ConsentPromptAdvice = "Chrome is holding its \"Allow remote debugging?\" consent prompt. " +
+	"The prompt is browser-modal and can sit BEHIND the Chrome window, and Chrome accepts no other input until it is answered, " +
+	"so a browser that looks frozen or crashed is usually this dialog. Find it and click Allow."
+
+// WSState is what one WebSocket upgrade against Chrome's browser-level debug
+// endpoint actually did. It is three-way, and that is the whole point.
+//
+// While consent for a fresh attach is pending, Chrome does not refuse the
+// connection: it accepts the TCP connect, then holds the upgrade open and says
+// nothing until the user answers a browser-modal dialog. There is no error to
+// classify — only silence. A boolean "reachable" collapses that silence into the
+// same value as a refused port, so the tool cannot tell "nothing is listening"
+// (a real failure, and fast) from "Chrome is waiting for a human" (not a failure
+// at all, and slow by nature). Splitting them is what lets a refused endpoint
+// keep failing in milliseconds while a pending one is waited out for minutes.
+//
+// Note that Chrome's HTTP JSON API is NOT a substitute signal: on the
+// chrome://inspect toggle path GET /json/version answers 404 whether or not
+// consent has been granted. Only the upgrade distinguishes the states.
+type WSState int
+
+const (
+	// WSRefused: nothing accepted the connection, or something answered the
+	// upgrade with anything other than 101 (a stale port file, a different
+	// server on the port). A real failure.
+	WSRefused WSState = iota
+	// WSPending: the port accepted and the upgrade never completed. This is the
+	// consent signature.
+	WSPending
+	// WSReady: the upgrade completed — the endpoint is live and consented.
+	WSReady
+)
+
+func (s WSState) String() string {
+	switch s {
+	case WSPending:
+		return "pending"
+	case WSReady:
+		return "ready"
+	default:
+		return "refused"
+	}
 }
 
 // Action is the connection-ladder outcome for a given Probe.

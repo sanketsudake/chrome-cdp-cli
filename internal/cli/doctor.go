@@ -7,6 +7,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/sanketsudake/chrome-cdp-cli/internal/browser"
+	"github.com/sanketsudake/chrome-cdp-cli/internal/chrome"
 	"github.com/sanketsudake/chrome-cdp-cli/internal/result"
 )
 
@@ -103,7 +104,7 @@ func (a *App) runDoctor(noProbe bool) {
 	}
 	// An explicit --port names an HTTP endpoint; the browser-level WebSocket
 	// path has to be resolved before anything can be upgraded against it.
-	ws, ok := browser.ResolveWSURL(ep.URL)
+	ws, ok := chrome.ResolveWSURL(ep.URL)
 	if !ok {
 		a.emitErr("doctor", result.CodeConnection,
 			"nothing usable answered at "+ep.URL+" (stale port file, or another process on that port) — "+browser.EnableAdvice,
@@ -111,7 +112,7 @@ func (a *App) runDoctor(noProbe bool) {
 		return
 	}
 	base["ws"] = ws
-	switch browser.ProbeWS(ws, doctorProbeWait) {
+	switch chrome.ProbeWS(ws, doctorProbeWait) {
 	case browser.WSReady:
 		base["state"] = stateReady
 		// Say what the verdict cost. ProbeWS hangs up on every outcome,

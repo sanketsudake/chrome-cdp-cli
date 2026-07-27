@@ -1,4 +1,15 @@
-package browser
+// Probe classification of Chrome's debug endpoint: the one WebSocket handshake
+// that tells "nothing is listening" apart from "Chrome is asking the user".
+//
+// It lives here, next to the chromedp connection it feeds, rather than in
+// internal/browser — whose own doc says it is deliberately free of chromedp so
+// it unit-tests without a live browser. That claim held for a port-file parser
+// and a decision table; it did not survive a TCP dialer, an HTTP client, a
+// hand-rolled RFC 6455 handshake, a reader goroutine, and a live net.Conn
+// handed across the package boundary for this package to close. The tests are
+// net.Listen-based and need no browser either way.
+
+package chrome
 
 import (
 	"bufio"
@@ -13,76 +24,9 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	"github.com/sanketsudake/chrome-cdp-cli/internal/browser"
 )
-
-// EnableAdvice is the single authored answer to "how do I make Chrome
-// debuggable?", and it leads with the launch flag ON PURPOSE.
-//
-// --remote-debugging-port skips the consent dialog entirely. The
-// chrome://inspect toggle raises a browser-modal prompt on every fresh attach,
-// and every message in this tool used to recommend it first — which routed each
-// new user straight through the failure RFC-0013 exists to remove. The order of
-// these two clauses is the fix.
-const EnableAdvice = "relaunch Chrome with --remote-debugging-port=9222 " +
-	"(on macOS: open -a \"Google Chrome\" --args --remote-debugging-port=9222), which never prompts; " +
-	"or enable chrome://inspect/#remote-debugging, which raises a consent prompt on every fresh attach"
-
-// ConsentPromptAdvice is the single authored explanation of Chrome's consent
-// dialog, for every place that has to describe it: the connect timeout, the
-// generic dial failure, the daemon's wait notice, the client's give-up message,
-// and doctor's consent_pending state.
-//
-// Every clause is here because a user cannot deduce it. That the dialog is
-// modal to the BROWSER is why the frozen window is a symptom and not a crash;
-// that it can sit behind the window is why they have not seen it; that nothing
-// else in Chrome responds until it is answered is why the tool looks like the
-// thing that broke. Five hand-written copies had already drifted — one said
-// "behind" where the others shouted it, one said "blocks all other input" —
-// and two test files asserted on a substring list that one of those copies
-// would have failed.
-const ConsentPromptAdvice = "Chrome is holding its \"Allow remote debugging?\" consent prompt. " +
-	"The prompt is browser-modal and can sit BEHIND the Chrome window, and Chrome accepts no other input until it is answered, " +
-	"so a browser that looks frozen or crashed is usually this dialog. Find it and click Allow."
-
-// WSState is what one WebSocket upgrade against Chrome's browser-level debug
-// endpoint actually did. It is three-way, and that is the whole point.
-//
-// While consent for a fresh attach is pending, Chrome does not refuse the
-// connection: it accepts the TCP connect, then holds the upgrade open and says
-// nothing until the user answers a browser-modal dialog. There is no error to
-// classify — only silence. A boolean "reachable" collapses that silence into the
-// same value as a refused port, so the tool cannot tell "nothing is listening"
-// (a real failure, and fast) from "Chrome is waiting for a human" (not a failure
-// at all, and slow by nature). Splitting them is what lets a refused endpoint
-// keep failing in milliseconds while a pending one is waited out for minutes.
-//
-// Note that Chrome's HTTP JSON API is NOT a substitute signal: on the
-// chrome://inspect toggle path GET /json/version answers 404 whether or not
-// consent has been granted. Only the upgrade distinguishes the states.
-type WSState int
-
-const (
-	// WSRefused: nothing accepted the connection, or something answered the
-	// upgrade with anything other than 101 (a stale port file, a different
-	// server on the port). A real failure.
-	WSRefused WSState = iota
-	// WSPending: the port accepted and the upgrade never completed. This is the
-	// consent signature.
-	WSPending
-	// WSReady: the upgrade completed — the endpoint is live and consented.
-	WSReady
-)
-
-func (s WSState) String() string {
-	switch s {
-	case WSPending:
-		return "pending"
-	case WSReady:
-		return "ready"
-	default:
-		return "refused"
-	}
-}
 
 // Upgrade is one probe's outcome plus, when the endpoint accepted, the socket it
 // used.
@@ -94,7 +38,7 @@ func (s WSState) String() string {
 // established means the click the user just made is still doing work when the
 // attach lands. Close it as soon as the attach returns — see chrome.Connect.
 type Upgrade struct {
-	State WSState
+	State browser.WSState
 	conn  net.Conn
 }
 
@@ -138,7 +82,7 @@ func ResolveWSURL(endpoint string) (string, bool) {
 	default:
 		return "", false
 	}
-	hostport, ok := HostPort(endpoint)
+	hostport, ok := browser.HostPort(endpoint)
 	if !ok {
 		return "", false
 	}
@@ -203,17 +147,17 @@ const dialTimeout = 2 * time.Second
 // It is deliberately a single connection: every connection to the debug endpoint
 // is a consent request, and stacking those is what wedges a browser.
 func AwaitUpgrade(wsURL string, t UpgradeTimings, onPending func()) *Upgrade {
-	hostport, ok := HostPort(wsURL)
+	hostport, ok := browser.HostPort(wsURL)
 	if !ok {
-		return &Upgrade{State: WSRefused}
+		return &Upgrade{State: browser.WSRefused}
 	}
 	conn, err := net.DialTimeout("tcp", hostport, dialTimeout)
 	if err != nil {
-		return &Upgrade{State: WSRefused}
+		return &Upgrade{State: browser.WSRefused}
 	}
 	if err := writeUpgradeRequest(conn, wsURL, hostport, dialTimeout); err != nil {
 		_ = conn.Close()
-		return &Upgrade{State: WSRefused}
+		return &Upgrade{State: browser.WSRefused}
 	}
 	wait := t.Total
 
@@ -253,7 +197,7 @@ func AwaitUpgrade(wsURL string, t UpgradeTimings, onPending func()) *Upgrade {
 	// Two independent timers on one loop. They were once two sequential selects
 	// with a "rest" computation between them, which had a case the loop simply
 	// does not have: when PendingAfter was >= Total the remainder came out <= 0
-	// and the function returned WSPending having never looked at the answer
+	// and the function returned browser.WSPending having never looked at the answer
 	// channel again, so a completed handshake sitting in the buffer was thrown
 	// away and its socket closed — doctor reporting consent_pending for a ready
 	// endpoint.
@@ -264,7 +208,7 @@ func AwaitUpgrade(wsURL string, t UpgradeTimings, onPending func()) *Upgrade {
 	for {
 		select {
 		case ok := <-answered:
-			return settle(conn, ok)
+			return upgraded(conn, ok)
 		case <-pending.C:
 			// Silence past PendingAfter on an OPEN port: the consent
 			// signature. Say so now — a user who has not seen the dialog needs
@@ -279,26 +223,28 @@ func AwaitUpgrade(wsURL string, t UpgradeTimings, onPending func()) *Upgrade {
 			// before discarding a handshake that did complete.
 			select {
 			case ok := <-answered:
-				return settle(conn, ok)
+				return upgraded(conn, ok)
 			default:
 			}
 			_ = conn.Close()
-			return &Upgrade{State: WSPending}
+			return &Upgrade{State: browser.WSPending}
 		}
 	}
 }
 
-// settle turns a completed handshake into an Upgrade, keeping the socket only
-// when it is worth keeping.
-func settle(conn net.Conn, ok bool) *Upgrade {
+// upgraded turns a completed handshake into an Upgrade, keeping the socket only
+// when it is worth keeping. NOT called settle: everything else in this package
+// that says "settle" means "wait until it stops moving" (settle, settledPageRect,
+// settledNodePoint), and this one means "close it or keep it".
+func upgraded(conn net.Conn, ok bool) *Upgrade {
 	if !ok {
 		_ = conn.Close()
-		return &Upgrade{State: WSRefused}
+		return &Upgrade{State: browser.WSRefused}
 	}
 	// The probe's read deadline bounded the handshake; a socket that is being
 	// KEPT must not carry it into the attach that follows.
 	_ = conn.SetReadDeadline(time.Time{})
-	return &Upgrade{State: WSReady, conn: conn}
+	return &Upgrade{State: browser.WSReady, conn: conn}
 }
 
 // ProbeWS classifies an endpoint for a caller that wants the answer and not the
@@ -311,7 +257,7 @@ func settle(conn net.Conn, ok bool) *Upgrade {
 // the command that made it would be worse. What it must not do is pretend
 // otherwise, so doctor's ready verdict says the connection was closed and the
 // next command may prompt again — see runDoctor.
-func ProbeWS(wsURL string, wait time.Duration) WSState {
+func ProbeWS(wsURL string, wait time.Duration) browser.WSState {
 	u := AwaitUpgrade(wsURL, UpgradeTimings{PendingAfter: wait, Total: wait}, nil)
 	defer u.Close()
 	return u.State
