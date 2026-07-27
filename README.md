@@ -61,39 +61,48 @@ The [logged-in web app guide](docs/scenarios/automating-a-logged-in-web-app.md) 
 
 - **Your real session.**
   It drives the Chrome you're logged into — real cookies, SSO, extensions — so there's nothing to authenticate and no secret to store.
-- **Address by meaning.**
-  Target controls by ARIA **accessible name**, visible **label**, or grid **cell** — not CSS ids that change every session.
-  Reads and writes survive the app's cosmetic churn.
+- **Three ways to point at a control**, in order of durability.
+  By **meaning** — ARIA accessible name, visible label, or grid cell — which survives the cosmetic churn that breaks CSS ids.
+  By **description**, when you don't know the name: `find "login button"` ranks candidates and returns the exact name, a ref, and a centre point.
+  By **pixel**, when there is nothing to name: `click --at 512,340` is the only way into a canvas, map, or PDF viewer, which expose a single node to the accessibility tree.
+  (A drop zone with no file input behind it takes `upload --drop`, for the same reason.)
 - **Made for automation.**
   One JSON envelope, one [exit-code contract](docs/cli-reference.md#output-contract); a background daemon holds the connection so the consent prompt appears once per session, not per command.
 - **Drives the hard widgets.**
   Portal menus, multi-level cascade prompts, and native `<select>`s that a synthetic click can't open — the [`select`](docs/scenarios/driving-widgets-with-select.md) verb opens them.
-- **Describe what you want.**
-  `find "login button"` ranks the page's elements against a plain-language query and hands back the exact accessible name, a ref, and a centre point — so you stop guessing at names that read nothing like their visible label.
-- **Reaches past the DOM.**
-  Canvas, WebGL, maps, and PDF viewers expose one node to the accessibility tree, so no selector gets inside them: `click --at 512,340` acts at a pixel instead, in the same coordinate space a `screenshot --scale 1` gives you.
-  Drop zones with no file input behind them take `upload --drop`.
 - **Works on modern Chrome.**
   It reads Chrome's `DevToolsActivePort` and connects directly, so it keeps working where the classic `--remote-debugging-port` flag stopped (default profile, Chrome M136+).
 
-## A taste of the commands
+## The loop, in commands
+
+The Quickstart covered picking a tab. What follows is the part you repeat.
+
+**Read what's there** — as structure, not pixels.
 
 ```sh
-chrome-cdp list --url outlook              # list tabs (--url/--title filter)
-chrome-cdp snap --role button --grep "[AP]M"   # filter the a11y tree server-side
-chrome-cdp grid                            # read a table as {headers, rows}
-chrome-cdp fill --by cell "Mon, 7/13" "8"  # a grid input by its column header
-chrome-cdp fill --by label "Notes" "hi"    # a form control by its visible label
-chrome-cdp select "Time Type" "Projects > Acme: Platform > Project > Time Entry" --role textbox
-chrome-cdp click --by name "Approve" --role button --wait-text "Success"   # act, then confirm
-chrome-cdp find "search bar"                # describe it; get its ref, exact name, centre
-chrome-cdp click --at 512,340              # act at a pixel (canvas, maps, WebGL)
-chrome-cdp upload --drop ".dropzone" ./report.pdf   # a drop zone with no file input
-chrome-cdp wait --idle                     # settle an SPA (network, not a fixed sleep)
-chrome-cdp net --failed --body             # what the page requested, bodies included
-chrome-cdp raw Network.setCacheDisabled '{"cacheDisabled":true}'   # any CDP method
+chrome-cdp snap --role button --grep "[AP]M"   # the a11y tree, filtered server-side
+chrome-cdp find "search bar" --role textbox    # or describe it: ref, exact name, centre
+chrome-cdp grid                                # a table as {headers, rows}
 ```
 
+**Act on it** — by meaning where there is one, by pixel where there isn't.
+
+```sh
+chrome-cdp fill --by cell "Mon, 7/13" "8"           # a grid input by its column header
+chrome-cdp fill --by label "Notes" "hi"             # a form control by its visible label
+chrome-cdp select "Time Type" "Projects > Acme > Time Entry" --role textbox
+chrome-cdp upload --drop ".dropzone" ./report.pdf   # a drop zone with no file input
+```
+
+**Confirm it worked** — before the next step depends on it.
+
+```sh
+chrome-cdp click --by name "Approve" --wait-text "Success"   # act and confirm in one call
+chrome-cdp wait --idle                                       # settle an SPA, not a fixed sleep
+chrome-cdp net --failed --body                               # what the page actually requested
+```
+
+When no verb covers what you need, `raw` reaches any CDP method directly — `chrome-cdp raw Network.setCacheDisabled '{"cacheDisabled":true}'`.
 Full command, flag, and exit-code tables live in the **[CLI reference](docs/cli-reference.md)**.
 
 ## For AI agents
