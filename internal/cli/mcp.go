@@ -225,7 +225,12 @@ func (a *App) newMCPRunner() *mcpRunner {
 	// Only connection and output settings are propagated. Selector semantics
 	// (--by, --role, …) belong to the individual tool call, where the client
 	// chose them.
-	a.defaults.Timeout = a.timeout
+	if a.timeout > 0 {
+		// Zero means the flags were never parsed (a caller that built the
+		// runner directly); the built-in default stands rather than becoming an
+		// instantly-expired deadline on every call.
+		a.defaults.Timeout = a.timeout
+	}
 	a.defaults.NoLaunch = a.noLaunch
 	a.defaults.NoDaemon = a.noDaemon
 	a.defaults.ProfileDir = a.profileDir
