@@ -7,15 +7,14 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
-	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/sanketsudake/chrome-cdp-cli/internal/browser"
+	"github.com/sanketsudake/chrome-cdp-cli/internal/probetest"
 	"github.com/sanketsudake/chrome-cdp-cli/internal/result"
 )
 
@@ -24,77 +23,6 @@ import (
 // That is not a convenience: reproducing this by hand wedged a real user's
 // Chrome twice, and a regression test that needs a human to click a modal is not
 // a test.
-
-// stallListener accepts and never answers — Chrome holding the consent prompt.
-func stallListener(t *testing.T) net.Listener {
-	t.Helper()
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("listen: %v", err)
-	}
-	t.Cleanup(func() { _ = ln.Close() })
-	go func() {
-		var held []net.Conn
-		defer func() {
-			for _, c := range held {
-				_ = c.Close()
-			}
-		}()
-		for {
-			c, err := ln.Accept()
-			if err != nil {
-				return
-			}
-			held = append(held, c)
-		}
-	}()
-	return ln
-}
-
-// lateAnswerListener stalls for delay and then completes the upgrade — the user
-// finding the dialog behind the window and clicking Allow. answeredLive records
-// that the answer landed on a still-open socket, which is precisely what "the
-// prompt was not orphaned" means.
-func lateAnswerListener(t *testing.T, delay time.Duration) (net.Listener, *atomic.Bool) {
-	t.Helper()
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("listen: %v", err)
-	}
-	t.Cleanup(func() { _ = ln.Close() })
-	var live atomic.Bool
-	go func() {
-		for {
-			c, err := ln.Accept()
-			if err != nil {
-				return
-			}
-			go func(c net.Conn) {
-				defer c.Close()
-				time.Sleep(delay)
-				if _, err := c.Write([]byte("HTTP/1.1 101 Switching Protocols\r\n\r\n")); err == nil {
-					live.Store(true)
-				}
-				time.Sleep(100 * time.Millisecond)
-			}(c)
-		}
-	}()
-	return ln, &live
-}
-
-// portFileFor writes a DevToolsActivePort file pointing at addr.
-func portFileFor(t *testing.T, addr net.Addr) string {
-	t.Helper()
-	_, port, err := net.SplitHostPort(addr.String())
-	if err != nil {
-		t.Fatalf("SplitHostPort: %v", err)
-	}
-	p := filepath.Join(t.TempDir(), "DevToolsActivePort")
-	if err := os.WriteFile(p, []byte(fmt.Sprintf("%s\n/devtools/browser/stub\n", port)), 0o600); err != nil {
-		t.Fatalf("write port file: %v", err)
-	}
-	return p
-}
 
 // shrinkPendingThreshold shortens the silence that counts as consent-pending, so
 // a test can assert the announce-during-the-wait property in milliseconds.
@@ -132,14 +60,14 @@ func connectErrCode(t *testing.T, err error) string {
 // exited, and the modal it had raised was left on screen with nothing behind it.
 // Clicking Allow then granted consent to a connection that no longer existed.
 func TestConnectConsentPendingWaitsAndReports(t *testing.T) {
-	ln := stallListener(t)
+	ep := probetest.Stall(t)
 	pinChromeRunning(t, true) // even so: a hanging upgrade is not "enable the toggle"
 	shrinkPendingThreshold(t, 200*time.Millisecond)
 
 	var pendingAt time.Duration
 	start := time.Now()
 	_, err := Connect(context.Background(), Options{
-		PortFile:         portFileFor(t, ln.Addr()),
+		PortFile:         ep.PortFile(t),
 		NoLaunch:         true,
 		ConsentTimeout:   2 * time.Second,
 		OnConsentPending: func() { pendingAt = time.Since(start) },
@@ -181,12 +109,7 @@ func TestConnectConsentPendingWaitsAndReports(t *testing.T) {
 // TestConnectRefusedEndpointFailsFast is VS-2, the safety property that makes a
 // two-minute wait acceptable at all: only an OPEN port earns it.
 func TestConnectRefusedEndpointFailsFast(t *testing.T) {
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("listen: %v", err)
-	}
-	pf := portFileFor(t, ln.Addr())
-	_ = ln.Close() // nothing is listening there now
+	pf := probetest.Closed(t).PortFile(t) // nothing is listening there
 	pinChromeRunning(t, false)
 
 	start := time.Now()
@@ -213,12 +136,12 @@ func TestConnectRefusedEndpointFailsFast(t *testing.T) {
 // fake Chrome speaking the protocol, and the defect this pins is entirely about
 // whether we were still connected when the answer arrived.
 func TestConnectLateConsentIsNotAbandoned(t *testing.T) {
-	ln, answeredLive := lateAnswerListener(t, 700*time.Millisecond)
+	ep := probetest.Answer(t, 700*time.Millisecond, "HTTP/1.1 101 Switching Protocols")
 	pinChromeRunning(t, true)
 
 	start := time.Now()
 	_, err := Connect(context.Background(), Options{
-		PortFile:       portFileFor(t, ln.Addr()),
+		PortFile:       ep.PortFile(t),
 		NoLaunch:       true,
 		ConsentTimeout: 10 * time.Second,
 	})
@@ -227,7 +150,7 @@ func TestConnectLateConsentIsNotAbandoned(t *testing.T) {
 	if code := connectErrCode(t, err); code == result.CodeConsentPending {
 		t.Errorf("a completed upgrade was still reported as %q — a late Allow must be accepted, not timed out", code)
 	}
-	if !answeredLive.Load() {
+	if !ep.AnsweredLive() {
 		t.Error("the endpoint answered into a closed socket: the consent prompt was orphaned")
 	}
 	if elapsed < 600*time.Millisecond {
@@ -262,13 +185,13 @@ func TestConnectNoEndpointLeadsWithTheLaunchFlag(t *testing.T) {
 // healthy Chrome as unreachable. Resolving through /json/version first is what
 // keeps the recommended route working.
 func TestConnectExplicitPortStillProbes(t *testing.T) {
-	stalled := stallListener(t)
+	stalled := probetest.Stall(t)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/json/version" {
 			http.NotFound(w, r)
 			return
 		}
-		fmt.Fprintf(w, `{"webSocketDebuggerUrl":"ws://%s/devtools/browser/stub"}`, stalled.Addr())
+		fmt.Fprintf(w, `{"webSocketDebuggerUrl":%q}`, stalled.WS())
 	}))
 	defer srv.Close()
 

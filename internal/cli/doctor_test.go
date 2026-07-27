@@ -4,17 +4,13 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
-	"fmt"
-	"net"
-	"os"
-	"path/filepath"
 	"strings"
-	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/sanketsudake/chrome-cdp-cli/internal/browser"
 	"github.com/sanketsudake/chrome-cdp-cli/internal/chrome"
+	"github.com/sanketsudake/chrome-cdp-cli/internal/probetest"
 	"github.com/sanketsudake/chrome-cdp-cli/internal/result"
 )
 
@@ -24,53 +20,22 @@ import (
 // unanswered consent prompt. These tests pin the three states it must now
 // distinguish, and the one case where it must NOT connect at all.
 
-// stubEndpoint starts a listener in one of the shapes doctor has to tell apart
-// and points CHROME_CDP_PORT_FILE at it. It returns the accepted-connection
-// count, which is how "doctor opened no connection" is proved.
-func stubEndpoint(t *testing.T, answer string) *atomic.Int32 {
+// stubEndpoint points CHROME_CDP_PORT_FILE at a stub endpoint in one of the
+// shapes doctor has to tell apart, and returns it so a test can assert how many
+// connections doctor opened — each one being a consent request.
+func stubEndpoint(t *testing.T, answer string) *probetest.Endpoint {
 	t.Helper()
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("listen: %v", err)
+	var ep *probetest.Endpoint
+	switch answer {
+	case "":
+		ep = probetest.Stall(t) // accepts and stalls: consent pending
+	case "closed":
+		ep = probetest.Closed(t) // nothing listening: no endpoint
+	default:
+		ep = probetest.Answer(t, 0, answer)
 	}
-	var conns atomic.Int32
-	go func() {
-		var held []net.Conn
-		defer func() {
-			for _, c := range held {
-				_ = c.Close()
-			}
-		}()
-		for {
-			c, err := ln.Accept()
-			if err != nil {
-				return
-			}
-			conns.Add(1)
-			if answer == "" { // accept and stall: consent pending
-				held = append(held, c)
-				continue
-			}
-			go func(c net.Conn) {
-				defer c.Close()
-				_, _ = c.Write([]byte(answer + "\r\n\r\n"))
-				time.Sleep(50 * time.Millisecond)
-			}(c)
-		}
-	}()
-
-	_, port, _ := net.SplitHostPort(ln.Addr().String())
-	pf := filepath.Join(t.TempDir(), "DevToolsActivePort")
-	if err := os.WriteFile(pf, []byte(fmt.Sprintf("%s\n/devtools/browser/stub\n", port)), 0o600); err != nil {
-		t.Fatalf("write port file: %v", err)
-	}
-	t.Setenv("CHROME_CDP_PORT_FILE", pf)
-	if answer == "closed" {
-		_ = ln.Close() // nothing listening: no endpoint
-	} else {
-		t.Cleanup(func() { _ = ln.Close() })
-	}
-	return &conns
+	ep.UsePortFile(t)
+	return ep
 }
 
 // runDoctorApp runs `doctor --json`, optionally with a daemon-status seam wired.
@@ -203,7 +168,7 @@ func TestDoctorAnswersThroughARunningDaemon(t *testing.T) {
 	if res["target_count"] != float64(3) {
 		t.Errorf("the daemon's own status fields should survive into the envelope: %v", res)
 	}
-	if n := conns.Load(); n != 0 {
+	if n := conns.Conns(); n != 0 {
 		t.Errorf("doctor opened %d connection(s) to Chrome while a daemon was running — each one is a fresh consent request", n)
 	}
 	if strings.Contains(stderr, "opens one connection") {
@@ -289,7 +254,7 @@ func TestDoctorNoDaemonStatusStillProbes(t *testing.T) {
 	if env["result"].(map[string]any)["via"] != "probe" {
 		t.Errorf("with no daemon the answer must come from a probe: %v", env["result"])
 	}
-	if n := conns.Load(); n != 1 {
+	if n := conns.Conns(); n != 1 {
 		t.Errorf("probed with %d connections, want exactly 1", n)
 	}
 }
@@ -302,7 +267,7 @@ func TestDoctorNoProbeRefusesToClaimReadiness(t *testing.T) {
 	if got := doctorState(t, env); got == browser.WSReady.String() {
 		t.Error("--no-probe reported ready without verifying anything, which is the bug this RFC exists to fix")
 	}
-	if n := conns.Load(); n != 0 {
+	if n := conns.Conns(); n != 0 {
 		t.Errorf("--no-probe opened %d connection(s), want 0", n)
 	}
 }
@@ -354,35 +319,13 @@ func TestDoctorHonoursExplicitPort(t *testing.T) {
 	stubEndpoint(t, "HTTP/1.1 101 Switching Protocols")
 
 	// ...and --port names one that is holding a consent prompt.
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("listen: %v", err)
-	}
-	t.Cleanup(func() { _ = ln.Close() })
-	var stalled atomic.Int32
-	go func() {
-		var held []net.Conn
-		defer func() {
-			for _, c := range held {
-				_ = c.Close()
-			}
-		}()
-		for {
-			c, err := ln.Accept()
-			if err != nil {
-				return
-			}
-			stalled.Add(1)
-			held = append(held, c)
-		}
-	}()
-	_, port, _ := net.SplitHostPort(ln.Addr().String())
+	stalled := probetest.Stall(t)
 
-	env, _, _ := runDoctorApp(t, nil, "--port", port)
+	env, _, _ := runDoctorApp(t, nil, "--port", stalled.Port())
 	if got := doctorState(t, env); got != browser.WSPending.String() {
 		t.Errorf("state = %q, want %q — doctor diagnosed a different Chrome than --port named: %v", got, browser.WSPending.String(), env)
 	}
-	if stalled.Load() == 0 {
+	if stalled.Conns() == 0 {
 		t.Error("doctor never contacted the --port endpoint at all")
 	}
 }

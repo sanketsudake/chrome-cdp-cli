@@ -7,93 +7,12 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
-	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/sanketsudake/chrome-cdp-cli/internal/browser"
+	"github.com/sanketsudake/chrome-cdp-cli/internal/probetest"
 )
-
-// The consent-pending state is reproducible without a browser: it is a TCP
-// listener that accepts and then stalls. These helpers build the three endpoint
-// shapes the probe has to tell apart. The manual reproduction of this bug wedged
-// a real browser twice, so it must never be the regression test.
-
-// stallListener accepts connections and never answers — Chrome holding a consent
-// prompt. It counts accepted connections, so a test can prove nothing connected.
-func stallWSListener(t *testing.T) (wsURL string, conns *atomic.Int32) {
-	t.Helper()
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("listen: %v", err)
-	}
-	t.Cleanup(func() { _ = ln.Close() })
-	var n atomic.Int32
-	go func() {
-		var held []net.Conn
-		defer func() {
-			for _, c := range held {
-				_ = c.Close()
-			}
-		}()
-		for {
-			c, err := ln.Accept()
-			if err != nil {
-				return
-			}
-			n.Add(1)
-			held = append(held, c) // hold it open, saying nothing
-		}
-	}()
-	return wsFor(ln), &n
-}
-
-// answerListener accepts and completes the WebSocket upgrade after delay — the
-// user finding the dialog and clicking Allow. It records whether the connection
-// was still open when the answer was written: that is what "no orphaned prompt"
-// means in the failure this exists to prevent.
-func answerListener(t *testing.T, delay time.Duration, status string) (wsURL string, answeredLive *atomic.Bool) {
-	t.Helper()
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("listen: %v", err)
-	}
-	t.Cleanup(func() { _ = ln.Close() })
-	var live atomic.Bool
-	go func() {
-		for {
-			c, err := ln.Accept()
-			if err != nil {
-				return
-			}
-			go func(c net.Conn) {
-				defer c.Close()
-				time.Sleep(delay)
-				if _, err := c.Write([]byte(status + "\r\n\r\n")); err == nil {
-					live.Store(true)
-				}
-				time.Sleep(50 * time.Millisecond)
-			}(c)
-		}
-	}()
-	return wsFor(ln), &live
-}
-
-// closedWS returns a ws:// URL for a port with nothing listening.
-func closedWS(t *testing.T) string {
-	t.Helper()
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("listen: %v", err)
-	}
-	url := wsFor(ln)
-	_ = ln.Close()
-	return url
-}
-
-func wsFor(ln net.Listener) string {
-	return fmt.Sprintf("ws://%s/devtools/browser/stub", ln.Addr().String())
-}
 
 // wsRoot is the ws:// root of an http:// endpoint — where the browser-level
 // endpoint lives when /json/version cannot say.
@@ -107,7 +26,7 @@ func wsRoot(httpURL string) string {
 func TestAwaitUpgradeRefusedIsFast(t *testing.T) {
 	t.Parallel()
 	start := time.Now()
-	u := AwaitUpgrade(closedWS(t), UpgradeTimings{PendingAfter: time.Second, Total: 30 * time.Second}, nil)
+	u := AwaitUpgrade(probetest.Closed(t).WS(), UpgradeTimings{PendingAfter: time.Second, Total: 30 * time.Second}, nil)
 	defer u.Close()
 	if u.State != browser.WSRefused {
 		t.Errorf("closed port classified %v, want refused", u.State)
@@ -121,10 +40,10 @@ func TestAwaitUpgradeRefusedIsFast(t *testing.T) {
 // silence on an open port is reported while it is happening, and the wait ends.
 func TestAwaitUpgradePendingIsBoundedAndAnnounced(t *testing.T) {
 	t.Parallel()
-	ws, conns := stallWSListener(t)
+	ep := probetest.Stall(t)
 	var pendingAt time.Duration
 	start := time.Now()
-	u := AwaitUpgrade(ws, UpgradeTimings{PendingAfter: 100 * time.Millisecond, Total: 600 * time.Millisecond}, func() {
+	u := AwaitUpgrade(ep.WS(), UpgradeTimings{PendingAfter: 100 * time.Millisecond, Total: 600 * time.Millisecond}, func() {
 		pendingAt = time.Since(start)
 	})
 	defer u.Close()
@@ -145,7 +64,7 @@ func TestAwaitUpgradePendingIsBoundedAndAnnounced(t *testing.T) {
 	if elapsed > 3*time.Second {
 		t.Errorf("the wait is unbounded (%v)", elapsed)
 	}
-	if got := conns.Load(); got != 1 {
+	if got := ep.Conns(); got != 1 {
 		t.Errorf("probe opened %d connections, want exactly 1 — each one is a consent request", got)
 	}
 }
@@ -155,9 +74,9 @@ func TestAwaitUpgradePendingIsBoundedAndAnnounced(t *testing.T) {
 // live connection.
 func TestAwaitUpgradeLateAnswerStillSucceeds(t *testing.T) {
 	t.Parallel()
-	ws, answeredLive := answerListener(t, 300*time.Millisecond, "HTTP/1.1 101 Switching Protocols")
+	ep := probetest.Answer(t, 300*time.Millisecond, "HTTP/1.1 101 Switching Protocols")
 	var announced bool
-	u := AwaitUpgrade(ws, UpgradeTimings{PendingAfter: 50 * time.Millisecond, Total: 5 * time.Second}, func() { announced = true })
+	u := AwaitUpgrade(ep.WS(), UpgradeTimings{PendingAfter: 50 * time.Millisecond, Total: 5 * time.Second}, func() { announced = true })
 	defer u.Close()
 
 	if u.State != browser.WSReady {
@@ -166,7 +85,7 @@ func TestAwaitUpgradeLateAnswerStillSucceeds(t *testing.T) {
 	if !announced {
 		t.Error("the pending state was never announced even though the answer took 6x the threshold")
 	}
-	if !answeredLive.Load() {
+	if !ep.AnsweredLive() {
 		t.Error("the endpoint answered into a closed socket — the prompt was orphaned")
 	}
 	if u.conn == nil {
@@ -201,7 +120,7 @@ func floodListener(t *testing.T) string {
 			}(c)
 		}
 	}()
-	return wsFor(ln)
+	return fmt.Sprintf("ws://%s/devtools/browser/stub", ln.Addr().String())
 }
 
 // TestAwaitUpgradeBoundsTheResponse: the status line is one line of HTTP, and
@@ -229,21 +148,21 @@ func TestAwaitUpgradeBoundsTheResponse(t *testing.T) {
 // and the ready one established by a completed upgrade rather than a port file.
 func TestProbeWSClassifiesAllThree(t *testing.T) {
 	t.Parallel()
-	stalling, _ := stallWSListener(t)
-	ready, _ := answerListener(t, 0, "HTTP/1.1 101 Switching Protocols")
+	stalling := probetest.Stall(t)
+	ready := probetest.Answer(t, 0, "HTTP/1.1 101 Switching Protocols")
 	// An endpoint that ANSWERS with something other than 101 is a live server
 	// that is not a CDP browser (a stale port file reused by another process).
-	wrong, _ := answerListener(t, 0, "HTTP/1.1 404 Not Found")
+	wrong := probetest.Answer(t, 0, "HTTP/1.1 404 Not Found")
 
 	for _, c := range []struct {
 		name string
 		ws   string
 		want browser.WSState
 	}{
-		{"nothing listening", closedWS(t), browser.WSRefused},
-		{"accepts and stalls", stalling, browser.WSPending},
-		{"completes the upgrade", ready, browser.WSReady},
-		{"answers 404", wrong, browser.WSRefused},
+		{"nothing listening", probetest.Closed(t).WS(), browser.WSRefused},
+		{"accepts and stalls", stalling.WS(), browser.WSPending},
+		{"completes the upgrade", ready.WS(), browser.WSReady},
+		{"answers 404", wrong.WS(), browser.WSRefused},
 		{"not a ws url", "::::", browser.WSRefused},
 	} {
 		t.Run(c.name, func(t *testing.T) {
@@ -320,9 +239,9 @@ func TestAwaitUpgradeAnswerDuringOnPendingIsNotDiscarded(t *testing.T) {
 	const budget = 50 * time.Millisecond
 	// The answer lands after the budget is up but WHILE onPending is still
 	// running, so it is sitting in the channel when the wait ends.
-	ws, _ := answerListener(t, budget+10*time.Millisecond, "HTTP/1.1 101 Switching Protocols")
+	ep := probetest.Answer(t, budget+10*time.Millisecond, "HTTP/1.1 101 Switching Protocols")
 
-	u := AwaitUpgrade(ws, UpgradeTimings{PendingAfter: budget, Total: budget}, func() {
+	u := AwaitUpgrade(ep.WS(), UpgradeTimings{PendingAfter: budget, Total: budget}, func() {
 		time.Sleep(30 * time.Millisecond)
 	})
 	defer u.Close()
