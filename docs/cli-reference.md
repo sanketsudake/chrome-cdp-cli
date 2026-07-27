@@ -864,9 +864,12 @@ Use `--policy-off` to run while you fix it.
 | Acting (`click`, `type`, `fill`, `select`, `scroll`, `key`, pointer verbs, `upload`, `attr set/rm`, `cookie set/rm/clear`, `headers`, `emulate`, `eval`, `raw`) | `allow`/`deny`, `read_only`, `verbs_denied` |
 | Reading (`snap`, `text`, `html`, `value`, `grid`, `screenshot`, `pdf`, `frame`, `wait`, `attr get/list`, `cookie list`) | `allow`/`deny`, `verbs_denied` |
 | Navigating (`nav <url>`, `open`) | the **destination** origin, before navigating |
-| Tabs and meta (`list`, `use`, `close`, `activate`, `version`, …) | not checked; every envelope's `target`, and every tab `list` or an ambiguous `close` enumerates, is reduced to a bare origin with no full URL and no title when the policy does not cover it |
+| Tabs and meta (`list`, `use`, `close`, `activate`, `version`, `session`, `recipe run`, …) | `verbs_denied` only; no origin check, and every envelope's `target`, and every tab `list` or an ambiguous `close` enumerates, is reduced to a bare origin with no full URL and no title when the policy does not cover it |
 
 A verb that is not classified is treated as **acting**, so a new verb over-restricts rather than slipping through.
+
+`verbs_denied` is checked **first**, ahead of the class, so it reaches every verb including the tab and meta ones.
+`verbs_denied = ["recipe run"]` therefore refuses running a saved recipe — a file someone else wrote, driving your authenticated browser — while leaving `recipe show` and `recipe run --dry-run` available for reading one.
 
 Redirects are the honest limitation: a `nav` to an allowed origin that redirects elsewhere cannot be stopped, so the policy is re-evaluated on the **settled** URL and the *next* command is refused.
 
