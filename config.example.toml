@@ -12,6 +12,13 @@
 # target = "url:github" # default tab when neither --target nor `use` is set
 # json = false          # emit the machine-readable JSON envelope by default
 # timeout = "30s"       # max time to wait per command (Go duration string)
+# consent_timeout = "120s" # how long to hold the connection open waiting for Chrome's
+#                       # browser-modal "Allow remote debugging?" prompt to be answered.
+#                       # Only an OPEN port whose upgrade is hanging waits this long; a
+#                       # refused endpoint still fails in milliseconds. Shorten it if you
+#                       # only ever launch Chrome with --remote-debugging-port (which
+#                       # never prompts); lengthen it if the dialog tends to hide behind
+#                       # the window and you want more time to find it.
 # no_launch = false     # never auto-launch a managed fallback Chrome
 # no_daemon = false     # connect directly instead of via the shared daemon
 # no_color = false      # plain, symbol-free human output

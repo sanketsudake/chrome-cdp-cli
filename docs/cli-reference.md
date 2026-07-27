@@ -20,11 +20,15 @@ Branch on the exit code, not on message text.
 | 0 | — | success |
 | 1 | generic | unclassified failure |
 | 2 | usage | bad flags or arguments |
-| 3 | connection | attach / launch failed |
+| 3 | connection | attach / launch failed, or Chrome's consent prompt is unanswered |
 | 4 | target/timeout | selector not found, timed out, or ambiguous/unknown target |
 | 5 | cdp | CDP protocol error |
 | 6 | daemon | daemon error |
 | 7 | permission_denied | refused by [policy](#policy) — the origin, the verb, or the upload path is out of bounds |
+
+Exit 3 covers three `error.code` values: `connection_failed`, `not_debug_enabled`, and `consent_pending`.
+The last one means Chrome accepted the connection and then went silent because it is holding its browser-modal "Allow remote debugging?" dialog — nothing is broken, a human has not answered yet.
+It is a distinct code on the same number because the remedy is "click the dialog", not "check your setup"; the numbers are contract and do not grow for a new failure mode.
 
 Exit 7 is deliberately distinct from exit 4: an agent has to be able to tell "policy forbids this, stop and tell the user" from "element not found, retry differently".
 
@@ -39,6 +43,7 @@ These apply to every command.
 | `--json` | off | one JSON value to stdout |
 | `--target <spec>` | sticky tab | tab to act on (see [Targeting](#targeting-a-tab)) |
 | `--timeout <dur>` | `30s` | max time to wait for the command |
+| `--consent-timeout <dur>` | `120s` | how long to wait for Chrome's "Allow remote debugging?" prompt (a refused endpoint still fails fast) |
 | `--by <mode>` | `css` | selector syntax (see [Addressing](#addressing-elements)) |
 | `--wait <cond>` | `visible` | element wait: `visible` \| `ready` \| `enabled` |
 | `--no-wait` | off | act immediately; fail fast instead of waiting |
@@ -873,7 +878,7 @@ chrome-cdp raw Browser.getVersion --browser                  # browser-level met
 
 | Command | Does |
 |---------|------|
-| `doctor` | check the connection and print the exact fix if it's not ready |
+| `doctor` | probe the connection, report `no_endpoint` \| `consent_pending` \| `ready`, and print the exact fix (`--no-probe` to connect to nothing) |
 | `daemon start\|stop\|status` | manage the background connection |
 | `policy init` | write a starter [`[policy]`](#policy) table allow-listing the current tab's origin (`--wildcard`, `--print`, `-o`) |
 | `exit-codes` | print the exit-code table |
@@ -882,13 +887,55 @@ chrome-cdp raw Browser.getVersion --browser                  # browser-level met
 
 ## Connection model
 
-`chrome-cdp` attaches to your **real** Chrome via the one-time `chrome://inspect/#remote-debugging` toggle; it reads Chrome's `DevToolsActivePort` file and connects the WebSocket directly (the classic `--remote-debugging-port` flag no longer works on the default profile since Chrome M136).
+`chrome-cdp` attaches to your **real** Chrome.
+There are two ways to let it, and they are not equivalent.
+
+**Recommended — launch Chrome with the flag.**
+It never prompts:
+
+```sh
+open -a "Google Chrome" --args --remote-debugging-port=9222   # macOS
+google-chrome --remote-debugging-port=9222                    # Linux
+```
+
+**Alternative — the `chrome://inspect/#remote-debugging` toggle.**
+It works on the default profile where the classic flag does not (Chrome M136+ dropped `--remote-debugging-port` for the *default* profile, which is why the toggle exists), but it raises a consent prompt on **every fresh attach**.
+That prompt is browser-modal: until it is answered, Chrome accepts no other input, so an unanswered one looks exactly like a crashed browser.
+Read [The consent prompt](#the-consent-prompt) before choosing it.
+
+Either way, `chrome-cdp` reads Chrome's `DevToolsActivePort` file and connects the WebSocket directly.
 If no debug-enabled Chrome is found, it launches a managed Chrome on a dedicated profile alongside your real one.
 
-A background **daemon** holds the connection, so Chrome's "Allow debugging?" prompt appears once per session rather than once per command.
+A background **daemon** holds the connection, so the consent prompt appears once per session rather than once per command.
 It starts lazily on first use and idles out after 30 minutes; manage it with `daemon start|stop|status`, or bypass it with `--no-daemon`.
 
-Run `chrome-cdp doctor` to check the connection and get the exact fix when it isn't ready.
+### The consent prompt
+
+On the `chrome://inspect` path, a fresh attach makes Chrome ask "Allow remote debugging?".
+Three things about it are worth knowing before it happens:
+
+- It is **modal to the whole browser**, not to a tab.
+  Nothing else in Chrome responds until it is answered.
+- It can sit **behind** the Chrome window, so the usual experience is a browser that appears frozen with no visible dialog.
+- Answering it late is fine.
+  `chrome-cdp` holds the connection open for `--consent-timeout` (default 120s) and connects the moment you click Allow.
+
+If the wait runs out you get exit 3 with `error.code: consent_pending` and a message naming the dialog.
+A **refused** endpoint is unaffected by any of this and still fails in milliseconds — only an open port whose upgrade is hanging earns the long wait.
+
+### `doctor`
+
+`chrome-cdp doctor` answers "can I connect?" by connecting, and reports one of three states:
+
+| `state` | Means | Envelope |
+|---------|-------|----------|
+| `ready` | the WebSocket upgrade completed | `ok: true` |
+| `consent_pending` | the port accepted and went silent — Chrome is holding the prompt | exit 3, `consent_pending` |
+| `no_endpoint` | nothing usable answered (no port file, a stale one, or another process on the port) | exit 3, `connection_failed` |
+
+When the daemon is running, `doctor` answers **through it** (`via: "daemon"`) and opens no new connection — probing is itself a connection request, and on the toggle path that is what raises the prompt.
+Otherwise it says on stderr that it is about to connect, then probes (`via: "probe"`).
+`--no-probe` reports only what the port file says, clearly marked `state: "unverified"`.
 
 ## Policy
 
@@ -1051,6 +1098,7 @@ Persist flags you'd otherwise retype in `$XDG_CONFIG_HOME/chrome-cdp/config.toml
 ```toml
 json = true            # default to machine-readable output
 timeout = "10s"
+consent_timeout = "2m" # how long to wait for Chrome's consent prompt
 by = "search"          # default selector syntax
 target = "url:github"  # default tab when neither --target nor `use` is set
 ```

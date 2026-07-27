@@ -30,9 +30,19 @@ Because it attaches to the browser you're already using, an app you're signed in
    Recent Homebrew may print a tap-trust notice for third-party taps on first install.
    The install still proceeds; to acknowledge it explicitly, run `brew trust --cask sanketsudake/tap/chrome-cdp` first.
 
-2. **Let Chrome accept a debugger** — open `chrome://inspect/#remote-debugging` and toggle it on (a one-time consent; `chrome-cdp` never suppresses it).
+2. **Let Chrome accept a debugger.**
+   Launch it with the flag — this never prompts:
 
-3. **Check the connection** — `chrome-cdp doctor` confirms it's ready, or prints the exact fix.
+   ```sh
+   open -a "Google Chrome" --args --remote-debugging-port=9222   # macOS
+   google-chrome --remote-debugging-port=9222                    # Linux
+   ```
+
+   Or, to attach to a Chrome that is already running on the default profile, toggle `chrome://inspect/#remote-debugging` on.
+   That path raises a consent prompt on **every fresh attach**, and the prompt is modal to the whole browser — until it is answered Chrome accepts no other input, and it can sit behind the window, so an unanswered one looks like a crash.
+   `chrome-cdp` waits for it (see `--consent-timeout`) and never suppresses it.
+
+3. **Check the connection** — `chrome-cdp doctor` actually connects and reports `ready`, `consent_pending`, or `no_endpoint`, with the exact fix.
 
 4. **Drive it:**
 
@@ -113,7 +123,7 @@ Shell completion is built in: `chrome-cdp completion bash|zsh|fish|powershell`.
 
 ## Security
 
-A live debug endpoint is **full control** of whatever your Chrome is signed into — treat enabling `chrome://inspect` like opening a local root shell into your browser's sessions, and only do it when you intend to automate.
+A live debug endpoint is **full control** of whatever your Chrome is signed into — treat enabling remote debugging (by flag or by toggle) like opening a local root shell into your browser's sessions, and only do it when you intend to automate.
 
 - **Loopback only.**
   It connects to `127.0.0.1` and never binds the debug port to a non-loopback interface.

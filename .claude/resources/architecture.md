@@ -20,7 +20,7 @@ Data flows outermost → innermost: `cli` parses → resolves a `target` → get
 - `result` — the envelope, `Err`, and the exit-code table. No dependencies; the root of the contract.
 - `target` — the target grammar (`idprefix | url:<s> | title:<s> | @N`) and `Resolve` against a tab list.
 - `config` — layered defaults: built-in < config file (`~/.config/chrome-cdp/config.toml`) < `CHROME_CDP_*` env < flag. `Builtin()`, `Resolve()`, `FromEnv()`.
-- `browser` — endpoint discovery: finds Chrome's `DevToolsActivePort` file and computes the per-endpoint key (see connection model below).
+- `browser` — endpoint discovery and classification: finds Chrome's `DevToolsActivePort` file, computes the per-endpoint key, and probes the debug endpoint's WebSocket upgrade (`WSState`, `AwaitUpgrade`) — see connection model below.
 - `chrome` — the `Browser` interface and its chromedp-backed implementation: snapshot, click/type/fill/select, grid, wait, raw CDP. The real driver logic lives here.
 - `chrometest` — `StubBrowser`, a permissive `chrome.Browser` double embedded by the `cli` and `daemon` tests.
 - `state` — the sticky current-target store, keyed per endpoint so distinct `--port`s don't share a "current tab".
@@ -46,6 +46,10 @@ When adding a command that needs a new capability, add the method to the `chrome
 - The **daemon** (`chrome-cdp __daemon <socket>`, a hidden mode) holds one CDP connection for ~30 min and serves commands over a Unix socket, so the "Allow debugging?" consent fires once.
   `--no-daemon` bypasses it and connects directly (used by tests and one-shot scripts).
 - Chrome M136+ dropped the classic `--remote-debugging-port` for the default profile; `browser` reads `DevToolsActivePort` and connects directly, which is why it keeps working where older tools broke.
+- The **consent prompt** is a third connection state, not a failure (RFC-0013).
+  While Chrome holds "Allow remote debugging?" it accepts the TCP connect and then stalls the WebSocket upgrade forever — no error, only silence — so `browser.WSState` is three-way (`WSRefused` / `WSPending` / `WSReady`) and `DecideConnection` maps an open-but-hanging endpoint to its own `ConsentPending` action.
+  The daemon holds that upgrade open for `consent_timeout` (default 120s) and publishes a `<socket>.pending` marker so `Ensure` extends its own deadline instead of declaring a live daemon dead; a refused endpoint still fails in milliseconds, which is what makes the long wait safe.
+  Never lead a failure message with the `chrome://inspect` toggle: `browser.EnableAdvice` is the one authored answer, and it recommends `--remote-debugging-port` first because that path never prompts.
 
 ## Human vs. JSON rendering
 
