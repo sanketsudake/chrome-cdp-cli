@@ -1,6 +1,7 @@
 package chrome
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -330,23 +331,64 @@ func TestRedactHeadersReplacesValuesNotNames(t *testing.T) {
 	}
 }
 
+// A header whose VALUE is a URL leaks through both rules: its name says nothing
+// about credentials, so the name-based redaction never fires, and RedactURL is
+// applied to the record's own URL and not to header values. The 302 that ends
+// every OAuth flow carries the authorization code in exactly that position.
+func TestRedactHeadersRedactsURLValuedHeaders(t *testing.T) {
+	t.Parallel()
+	in := map[string]string{
+		"Location":     "https://app.example/callback?code=SECRETCODE&state=s",
+		"Referer":      "https://app.example/#/cb?access_token=SECRETTOKEN",
+		"Content-Type": "text/html",
+	}
+	got := RedactHeaders(in, false)
+	for name, v := range got {
+		if strings.Contains(v, "SECRET") {
+			t.Errorf("%s = %q — a credential rode along in a URL-valued header", name, v)
+		}
+	}
+	// The redirect must stay diagnosable: only the value is withheld, not the
+	// destination.
+	if !strings.HasPrefix(got["Location"], "https://app.example/callback?code=") {
+		t.Errorf("Location = %q, want the destination preserved", got["Location"])
+	}
+	if !strings.HasSuffix(got["Location"], "&state=s") {
+		t.Errorf("Location = %q, want the non-credential parameters preserved", got["Location"])
+	}
+	if got["Content-Type"] != "text/html" {
+		t.Errorf("an ordinary header was rewritten: %q", got["Content-Type"])
+	}
+	if raw := RedactHeaders(in, true); raw["Location"] != in["Location"] {
+		t.Errorf("--no-redact did not return the real value: %q", raw["Location"])
+	}
+}
+
 // RFC-0003 open question 2: a token in a query string leaks exactly as badly as
 // one in a header, and an OAuth implicit flow puts it in the fragment.
 func TestRedactURL(t *testing.T) {
 	t.Parallel()
 	cases := map[string]struct{ in, want string }{
-		"no query":            {"https://app.example/api/save", "https://app.example/api/save"},
-		"ordinary params":     {"https://app.example/s?q=hours&page=2", "https://app.example/s?q=hours&page=2"},
-		"access_token":        {"https://app.example/cb?access_token=abc123", "https://app.example/cb?access_token=" + NetRedacted},
-		"api_key":             {"https://maps.example/v1?api_key=k1&z=3", "https://maps.example/v1?api_key=" + NetRedacted + "&z=3"},
-		"bare key":            {"https://maps.example/v1?key=AIzaSy&x=1", "https://maps.example/v1?key=" + NetRedacted + "&x=1"},
-		"signature":           {"https://cdn.example/f?sig=deadbeef", "https://cdn.example/f?sig=" + NetRedacted},
-		"oauth code":          {"https://app.example/cb?code=xyz&state=s", "https://app.example/cb?code=" + NetRedacted + "&state=s"},
-		"fragment token":      {"https://app.example/cb#access_token=abc&token_type=bearer", "https://app.example/cb#access_token=" + NetRedacted + "&token_type=bearer"},
-		"plain fragment":      {"https://app.example/doc#section-3", "https://app.example/doc#section-3"},
-		"percent-encoded key": {"https://app.example/x?api%5Fkey=zzz", "https://app.example/x?api%5Fkey=" + NetRedacted},
-		"case insensitive":    {"https://app.example/x?Access_Token=zzz", "https://app.example/x?Access_Token=" + NetRedacted},
-		"empty":               {"", ""},
+		"no query":        {"https://app.example/api/save", "https://app.example/api/save"},
+		"ordinary params": {"https://app.example/s?q=hours&page=2", "https://app.example/s?q=hours&page=2"},
+		"access_token":    {"https://app.example/cb?access_token=abc123", "https://app.example/cb?access_token=" + NetRedacted},
+		"api_key":         {"https://maps.example/v1?api_key=k1&z=3", "https://maps.example/v1?api_key=" + NetRedacted + "&z=3"},
+		"bare key":        {"https://maps.example/v1?key=AIzaSy&x=1", "https://maps.example/v1?key=" + NetRedacted + "&x=1"},
+		"signature":       {"https://cdn.example/f?sig=deadbeef", "https://cdn.example/f?sig=" + NetRedacted},
+		"oauth code":      {"https://app.example/cb?code=xyz&state=s", "https://app.example/cb?code=" + NetRedacted + "&state=s"},
+		"fragment token":  {"https://app.example/cb#access_token=abc&token_type=bearer", "https://app.example/cb#access_token=" + NetRedacted + "&token_type=bearer"},
+		"plain fragment":  {"https://app.example/doc#section-3", "https://app.example/doc#section-3"},
+		// A hash ROUTER puts a whole URL in the fragment, so the fragment needs
+		// the same path/query split the main URL gets. Parsed as one parameter
+		// list, the name reads "/callback?access_token" and the token sails
+		// through — in exactly the OAuth implicit flow this handling exists for.
+		"hash router query":    {"https://app.example/#/callback?access_token=abc123", "https://app.example/#/callback?access_token=" + NetRedacted},
+		"hash router mixed":    {"https://app.example/#/cb?state=s&id_token=abc", "https://app.example/#/cb?state=s&id_token=" + NetRedacted},
+		"hash router no query": {"https://app.example/#/settings/profile", "https://app.example/#/settings/profile"},
+		"hash router harmless": {"https://app.example/#/list?page=2", "https://app.example/#/list?page=2"},
+		"percent-encoded key":  {"https://app.example/x?api%5Fkey=zzz", "https://app.example/x?api%5Fkey=" + NetRedacted},
+		"case insensitive":     {"https://app.example/x?Access_Token=zzz", "https://app.example/x?Access_Token=" + NetRedacted},
+		"empty":                {"", ""},
 	}
 	for name, c := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -364,6 +406,91 @@ func TestRedactURL(t *testing.T) {
 	}
 }
 
+// Bodies are redacted on the same terms as headers and URLs. RFC-0003 does not
+// specify it; the tool drives the user's real logged-in browser, and a password
+// is no less a secret for having travelled in a POST body than in a query
+// string — which is already withheld.
+func TestRedactBody(t *testing.T) {
+	t.Parallel()
+	cases := map[string]struct{ in, want string }{
+		"form login": {
+			"username=alice&password=hunter2&remember=1",
+			"username=alice&password=" + NetRedacted + "&remember=1",
+		},
+		"form ordinary": {"hours=8&project=apollo", "hours=8&project=apollo"},
+		"form token":    {"grant_type=refresh_token&refresh_token=abc", "grant_type=refresh_token&refresh_token=" + NetRedacted},
+		"json login": {
+			`{"username":"alice","password":"hunter2"}`,
+			`{"username":"alice","password":"` + NetRedacted + `"}`,
+		},
+		"json spacing preserved": {
+			`{ "api_key" : "k1", "n" : 3 }`,
+			`{ "api_key" : "` + NetRedacted + `", "n" : 3 }`,
+		},
+		"json nested": {
+			`{"auth":{"client_secret":"s3cr3t"},"ok":true}`,
+			`{"auth":{"client_secret":"` + NetRedacted + `"},"ok":true}`,
+		},
+		"json ordinary":    {`{"hours":8,"note":"password reset requested"}`, `{"hours":8,"note":"password reset requested"}`},
+		"json array value": {`{"scopes":["token","read"]}`, `{"scopes":["token","read"]}`},
+		// A body cut at the cap is no longer parseable JSON; the rewrite still
+		// has to redact whatever members survived it, which is why this is a
+		// rewrite and not a decode/re-encode.
+		"truncated json": {
+			`{"password":"hunter2","next":"x`,
+			`{"password":"` + NetRedacted + `","next":"x`,
+		},
+		// Nothing to key on: no field structure, so it passes through. `--body`
+		// is an explicit opt-in either way.
+		"opaque body": {"--boundary\r\nContent-Disposition: form-data\r\n", "--boundary\r\nContent-Disposition: form-data\r\n"},
+		"empty":       {"", ""},
+	}
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			if got := RedactBody(c.in, false); got != c.want {
+				t.Errorf("RedactBody(%q) = %q, want %q", c.in, got, c.want)
+			}
+			// --no-redact is the explicit opt-out, and it must be exact.
+			if got := RedactBody(c.in, true); got != c.in {
+				t.Errorf("--no-redact rewrote the body: %q", got)
+			}
+		})
+	}
+}
+
+// A request body that is not text must be reported as unavailable, not smuggled
+// into the envelope: json.Marshal replaces invalid bytes with U+FFFD, so a
+// multipart image upload under the cap arrived as mojibake — exactly what the
+// response path already refuses to do.
+func TestNetRequestBodyRejectsBinary(t *testing.T) {
+	t.Parallel()
+	binary := "\x89PNG\r\n\x1a\n" + strings.Repeat("\xff", 512)
+	b := netFeed(t, 10, willBeSent("r1", "POST", "https://app.example/upload", 0, network.ResourceTypeXHR, nil, binary))
+	rec := only(t, b)
+	if rec.RequestBody != "" {
+		t.Errorf("RequestBody = %q, want it withheld: it is not text", rec.RequestBody)
+	}
+	if !rec.RequestBodyBinary {
+		t.Fatal("a binary request body was not marked; it would reach the envelope as U+FFFD mojibake")
+	}
+	if rec.RequestSize != int64(len(binary)) {
+		t.Errorf("request_size = %d, want the real %d — the size is knowable even when the bytes are not shown", rec.RequestSize, len(binary))
+	}
+	got := rec.render(NetOpts{Body: true}, netBody{})
+	if got["request_body"] != nil {
+		t.Errorf("request_body = %v, want null", got["request_body"])
+	}
+	if got["request_body_unavailable"] != true {
+		t.Error("request_body_unavailable is not set; a caller cannot tell a withheld body from an absent one")
+	}
+	// And a TEXT body still arrives intact.
+	b = netFeed(t, 10, willBeSent("r2", "POST", "https://app.example/api", 0, network.ResourceTypeXHR, nil, `{"hours":8}`))
+	if rec := only(t, b); rec.RequestBody != `{"hours":8}` || rec.RequestBodyBinary {
+		t.Errorf("a text body was withheld: %q binary=%v", rec.RequestBody, rec.RequestBodyBinary)
+	}
+}
+
 // THE security regression test.
 //
 // It asserts on the MARSHALLED ENVELOPE BYTES, not on a struct field, because
@@ -377,7 +504,9 @@ func TestRedactionKeepsCredentialsOutOfTheMarshalledEnvelope(t *testing.T) {
 	const cookie = "sid=deadbeefcafe"
 	r := netRecord{
 		ID: "req-1", Method: "POST", Type: "xhr",
-		URL:       "https://app.example/api/save?access_token=" + secret,
+		// A hash-router callback: the token is in the fragment's QUERY string,
+		// which is where an OAuth implicit flow behind a hash router puts it.
+		URL:       "https://app.example/#/callback?access_token=" + secret,
 		HasStatus: true, Status: 200, StatusText: "OK", Finished: true,
 		ReqHeaders: map[string]string{
 			"Authorization": "Bearer " + secret,
@@ -388,14 +517,20 @@ func TestRedactionKeepsCredentialsOutOfTheMarshalledEnvelope(t *testing.T) {
 		RespHeaders: map[string]string{
 			"Set-Cookie":   cookie + "; HttpOnly",
 			"Content-Type": "application/json",
+			// The redirect that ends an OAuth flow: no credential-shaped name,
+			// a live credential in the value.
+			"Location": "https://app.example/done?code=" + secret,
 		},
+		// A login POST: the credential is in the body, which `--body` prints.
+		RequestBody: "username=alice&password=" + secret,
 	}
 	env := result.Envelope{
 		OK: true, Command: "net",
 		Target: &result.TargetInfo{ID: "aa11", Title: "App", URL: "https://app.example/"},
 		Result: map[string]any{
-			"requests": []any{r.render(NetOpts{Headers: true}, netBody{})},
-			"count":    1, "buffered": 1, "dropped": 0, "truncated": false, "pending": 0,
+			"requests": []any{r.render(NetOpts{Headers: true, Body: true},
+				netBody{Text: `{"access_token":"` + secret + `"}`, Available: true})},
+			"count": 1, "buffered": 1, "dropped": 0, "truncated": false, "pending": 0,
 		},
 	}
 	raw, err := env.JSON()
@@ -418,6 +553,8 @@ func TestRedactionKeepsCredentialsOutOfTheMarshalledEnvelope(t *testing.T) {
 				RequestHeaders  map[string]string `json:"request_headers"`
 				ResponseHeaders map[string]string `json:"response_headers"`
 				URL             string            `json:"url"`
+				RequestBody     string            `json:"request_body"`
+				ResponseBody    string            `json:"response_body"`
 			} `json:"requests"`
 		} `json:"result"`
 	}
@@ -438,6 +575,12 @@ func TestRedactionKeepsCredentialsOutOfTheMarshalledEnvelope(t *testing.T) {
 	}
 	if !strings.HasSuffix(got.URL, "access_token="+NetRedacted) {
 		t.Errorf("url = %q, want the access_token value withheld", got.URL)
+	}
+	if got.RequestBody != "username=alice&password="+NetRedacted {
+		t.Errorf("request_body = %q, want the password withheld and the rest intact", got.RequestBody)
+	}
+	if got.ResponseBody != `{"access_token":"`+NetRedacted+`"}` {
+		t.Errorf("response_body = %q, want the token withheld and the shape intact", got.ResponseBody)
 	}
 
 	// --no-redact is the ONLY path that emits the real value, and it must
@@ -788,6 +931,31 @@ func netFixtures(t *testing.T) (*httptest.Server, string) {
 		w.Header().Set("Content-Type", "text/plain")
 		_, _ = io_WriteString(w, strings.Repeat("A", 8<<10))
 	})
+	// A request that never completes, standing in for the SSE stream or long
+	// poll every real app has. Released before the server is closed (cleanups
+	// run last-registered-first), or Close would block on it forever.
+	hang := make(chan struct{})
+	mux.HandleFunc("/api/hang", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+		select {
+		case <-hang:
+		case <-r.Context().Done():
+		}
+	})
+	// The same binary payload at two sizes, for the size-independence of the
+	// "this is not text" answer. 100 KB is over the 64 KB body cap; 1 KB is not.
+	mux.HandleFunc("/api/blob", func(w http.ResponseWriter, r *http.Request) {
+		n := 100 << 10
+		if r.URL.Query().Get("small") != "" {
+			n = 1 << 10
+		}
+		w.Header().Set("Content-Type", "application/octet-stream")
+		_, _ = w.Write(bytes.Repeat([]byte{0xff}, n))
+	})
 	mux.HandleFunc("/style.css", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/css")
 		_, _ = io_WriteString(w, "body{color:#333}")
@@ -798,6 +966,7 @@ func netFixtures(t *testing.T) (*httptest.Server, string) {
 	})
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
+	t.Cleanup(func() { close(hang) })
 
 	// A page that loads a stylesheet and an image at parse time and exposes the
 	// API calls behind buttons, so a test can scope a read to one action.
@@ -809,8 +978,11 @@ func netFixtures(t *testing.T) (*httptest.Server, string) {
 <button id="boom" onclick="fetch('%s/api/boom')">boom</button>
 <button id="slow" onclick="fetch('%s/api/slow')">slow</button>
 <button id="big" onclick="fetch('%s/api/big')">big</button>
+<button id="blobbig" onclick="fetch('%s/api/blob')">blob big</button>
+<button id="blobsmall" onclick="fetch('%s/api/blob?small=1')">blob small</button>
+<button id="hang" onclick="fetch('%s/api/hang').catch(()=>{})">hang</button>
 <button id="dead" onclick="fetch('%s/gone').catch(()=>{})">dead</button>`,
-		srv.URL, srv.URL, srv.URL, srv.URL, srv.URL, srv.URL, srv.URL, deadAddr(t))
+		srv.URL, srv.URL, srv.URL, srv.URL, srv.URL, srv.URL, srv.URL, srv.URL, srv.URL, srv.URL, deadAddr(t))
 	mux.HandleFunc("/page", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/html")
 		_, _ = io_WriteString(w, page)
@@ -1221,6 +1393,46 @@ func TestNetTruncatesAnOversizedBody(t *testing.T) {
 	}
 }
 
+// Regression: whether a body is text must not depend on its SIZE.
+//
+// The check used to run on the TRUNCATED text, so a binary payload under the cap
+// was correctly reported unavailable while the same payload over the cap was cut
+// (to "", before the truncation fix) and emitted as an empty-but-present body
+// with body_truncated set. Identical content, opposite answers, decided by
+// nothing the caller can see.
+func TestNetReportsABinaryBodyAsUnavailableAtEverySize(t *testing.T) {
+	b := liveChrome(t)
+	_, page := netFixtures(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+
+	id := netLiveTab(ctx, t, b, page)
+	for _, c := range []struct {
+		name, button, url string
+	}{
+		{"over the body cap", "#blobbig", "/api/blob"},
+		{"under the body cap", "#blobsmall", "/api/blob?small=1"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			if _, err := b.Pointer(ctx, id, c.button, PointerOpts{Action: PointerClick}); err != nil {
+				t.Fatalf("Click: %v", err)
+			}
+			awaitNetDone(ctx, t, b, id, NetCond{URL: c.url})
+			_, reqs := awaitNet(ctx, t, b, id, NetOpts{URL: c.url, Body: true, Limit: 10}, netDone(c.url))
+			got := findURL(reqs, c.url)
+			if got == nil {
+				t.Fatalf("the binary response was not captured: %v", reqs)
+			}
+			if got["body_unavailable"] != true {
+				t.Errorf("a binary body was not marked body_unavailable: %v", got)
+			}
+			if got["response_body"] != nil {
+				t.Errorf("response_body = %q, want null — a binary payload is not text", got["response_body"])
+			}
+		})
+	}
+}
+
 // VS-9: a wait returns as soon as the request lands, not when --timeout expires.
 func TestNetWaitReturnsWhenTheRequestCompletes(t *testing.T) {
 	b := liveChrome(t)
@@ -1377,6 +1589,70 @@ func TestNetPendingCountsInFlightRequests(t *testing.T) {
 	}
 }
 
+// `pending` must answer about what the caller ASKED about. Counted over the
+// whole buffer, one permanently open SSE stream or long poll — which every real
+// app has — made `net --url /api/save` report `pending >= 1` forever, so the
+// signal never went quiet and stopped meaning anything.
+func TestNetPendingIsScopedToTheFilter(t *testing.T) {
+	b := liveChrome(t)
+	_, page := netFixtures(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+
+	id := netLiveTab(ctx, t, b, page)
+	// A request that never finishes, standing in for an SSE stream.
+	if _, err := b.Pointer(ctx, id, "#hang", PointerOpts{Action: PointerClick}); err != nil {
+		t.Fatalf("Click: %v", err)
+	}
+	// An unrelated request that DOES finish.
+	if _, err := b.Pointer(ctx, id, "#ok", PointerOpts{Action: PointerClick}); err != nil {
+		t.Fatalf("Click: %v", err)
+	}
+	awaitNetDone(ctx, t, b, id, NetCond{URL: "/api/ok"})
+
+	// The unfiltered read still sees the hung request — that is VS-13.
+	res, err := b.Net(ctx, id, NetOpts{Limit: 100})
+	if err != nil {
+		t.Fatalf("Net: %v", err)
+	}
+	if n, _ := res.(map[string]any)["pending"].(int); n < 1 {
+		t.Fatalf("an unfiltered read reported pending %d while a request was hung; VS-13 is broken", n)
+	}
+
+	// A read scoped to a DIFFERENT endpoint must not inherit it.
+	res, err = b.Net(ctx, id, NetOpts{URL: "/api/ok", Limit: 100})
+	if err != nil {
+		t.Fatalf("Net: %v", err)
+	}
+	if n, _ := res.(map[string]any)["pending"].(int); n != 0 {
+		t.Errorf("pending = %d for --url /api/ok while only /api/hang was in flight; "+
+			"an always-open stream would make every scoped read look unfinished forever", n)
+	}
+}
+
+// `pending` drops the OUTCOME terms of the filter: a request still in flight has
+// no status, so keeping --status or --failed would make pending a constant 0 for
+// exactly the reads that ask about an outcome.
+func TestNetPendingIgnoresOutcomeFilters(t *testing.T) {
+	t.Parallel()
+	inFlight := netRecord{ID: "r1", Method: "POST", URL: "https://app.example/api/save", Type: "xhr"}
+	other := netRecord{ID: "r2", Method: "GET", URL: "https://app.example/events", Type: "eventsource"}
+
+	keep, err := netPendingKeep(NetOpts{URL: "/api/save", Status: "2xx", Failed: true}, time.Now())
+	if err != nil {
+		t.Fatalf("netPendingKeep: %v", err)
+	}
+	if keep == nil {
+		t.Fatal("a --url filter produced no pending predicate")
+	}
+	if !keep(inFlight) {
+		t.Error("an in-flight request matching --url was excluded from pending by a --status it cannot yet satisfy")
+	}
+	if keep(other) {
+		t.Error("a request the caller did not ask about was counted as pending")
+	}
+}
+
 // VS-14: a body that is gone after a navigation is reported as null WITH the
 // marker, and the read still succeeds. The invariant is checkable without
 // forcing Chrome to evict: a null body must never appear unmarked.
@@ -1420,10 +1696,11 @@ func TestNetBodyUnavailableIsMarkedNotErrored(t *testing.T) {
 	}
 }
 
-// With nothing alive to have received them, earlier requests are absent,
-// buffered is 0, and the envelope SAYS so — it must not pass an empty list off
-// as a page that made no requests. This is the --no-daemon situation.
-func TestNetWithoutRetainedHistoryDoesNotFabricateIt(t *testing.T) {
+// With nothing alive when the page loaded, the history is whatever Chrome still
+// held when the domain was enabled — a couple of cached resources, never the
+// session. The envelope SAYS so rather than passing a short list off as the
+// whole story. This is the --no-daemon situation.
+func TestNetWithoutRetainedHistorySaysSo(t *testing.T) {
 	b := liveChrome(t)
 	_, page := netFixtures(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
@@ -1449,15 +1726,14 @@ func TestNetWithoutRetainedHistoryDoesNotFabricateIt(t *testing.T) {
 		t.Fatalf("Net: %v", err)
 	}
 	m := res.(map[string]any)
-	if got := m["buffered"]; got != 0 {
-		t.Errorf("buffered = %v, want 0 — there was no retained history to report", got)
-	}
 	if note, _ := m["note"].(string); note == "" {
-		t.Error("no note: an empty request list with no explanation reads as 'the page made no requests', " +
+		t.Error("no note: a request list with no explanation reads as the whole story, " +
 			"which is a lie the caller cannot detect")
 	}
-	if hasURL(netRequests(t, res), "style.css") {
-		t.Error("a request made before anything was listening was reported anyway")
+	// `buffered` must describe what is really held: reporting 0 alongside a
+	// non-empty list would make both numbers useless.
+	if got, want := m["buffered"].(int), len(netRequests(t, res)); got < want {
+		t.Errorf("buffered = %d but %d requests were returned; the count must describe what is held", got, want)
 	}
 }
 

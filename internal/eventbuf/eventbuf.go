@@ -394,14 +394,25 @@ func (s *Set[T]) enforceTotal() {
 //
 // It is here rather than in a caller because every event-backed verb needs the
 // same bound (console message text, a network body) and the same subtlety: the
-// cut lands on a rune boundary, so a truncated entry is still valid UTF-8 and
-// still marshals into the envelope. max <= 0 means no cap.
+// cut lands on a rune boundary, so a truncated entry that WAS valid UTF-8 stays
+// valid and still marshals into the envelope. max <= 0 means no cap.
+//
+// It backs off at most utf8.UTFMax-1 bytes — the most a single rune can have on
+// the wrong side of the cut — and deliberately no further. Re-validating the
+// whole prefix after every byte, as this used to, is quadratic (a 64 KB body
+// cost ~10 ms of scanning on the daemon's dispatch path) AND wrong: a payload
+// whose invalid bytes start anywhere before the cut never converges, so it was
+// trimmed to "". Truncation must not be able to destroy its input. Deciding
+// whether the input is text at all is the CALLER's job, on the original bytes.
 func TruncateText(s string, max int) (string, bool) {
 	if max <= 0 || len(s) <= max {
 		return s, false
 	}
 	cut := s[:max]
-	for len(cut) > 0 && !utf8.ValidString(cut) {
+	for n := 0; n < utf8.UTFMax-1 && len(cut) > 0; n++ {
+		if r, size := utf8.DecodeLastRuneInString(cut); r != utf8.RuneError || size > 1 {
+			break
+		}
 		cut = cut[:len(cut)-1]
 	}
 	return cut, true

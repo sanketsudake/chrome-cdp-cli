@@ -44,11 +44,15 @@ const (
 	// reader that cannot keep up drops rather than stalls Chrome.
 	netStreamBacklog = 256
 
-	// netNoRetainedHistoryNote is the honest answer when nothing was listening to
-	// this tab before the command started. An empty list without it would read as
-	// "the page made no requests", which is a lie the caller cannot detect.
-	netNoRetainedHistoryNote = "no retained history: nothing was listening to this tab before this command started, " +
-		"so only requests made during it can appear. Use the daemon (drop --no-daemon) to retain history, or --follow to watch from here."
+	// netPartialHistoryNote is the honest answer when nothing was listening to
+	// this tab before the command started. Some history does arrive — enabling
+	// the domain makes Chrome describe what it still holds for the page, which
+	// is a handful of cached resources rather than the session — so a short list
+	// without this note would read as "the page made these requests and no
+	// others", which is a lie the caller cannot detect.
+	netPartialHistoryNote = "partial history: nothing was listening to this tab before this command started, so what appears is " +
+		"whatever Chrome still held when capture was enabled, plus what arrived during this command. " +
+		"Use the daemon (drop --no-daemon) to retain everything from the moment it attached, or --follow to watch from here."
 )
 
 // NetRedacted is the placeholder a redacted header value or URL parameter is
@@ -136,8 +140,14 @@ type netRecord struct {
 	// RequestBody arrives inline with requestWillBeSent, so retaining it costs
 	// nothing extra and makes US-4 ("what did that button POST?") answerable
 	// after the fact. Response bodies are NOT retained — see netFetchBodies.
+	//
+	// RequestBodyBinary marks a payload that is not text (a multipart image
+	// upload). It is retained as empty rather than raw: json.Marshal replaces
+	// invalid bytes with U+FFFD, so keeping it would put mojibake in the
+	// envelope — the exact thing the response path refuses to do.
 	RequestBody          string
 	RequestBodyTruncated bool
+	RequestBodyBinary    bool
 
 	// Finished marks the request as complete (loadingFinished or loadingFailed
 	// arrived). Everything else is `pending`, which is what lets a caller tell
@@ -253,18 +263,16 @@ func (c *CDP) configureNetCapture(buffer, maxBody int) {
 // already holds c.mu.
 func (c *CDP) netBuf() *eventbuf.Set[netRecord] { return c.net }
 
-// startNetCapture retains the tab's HTTP requests, from ATTACH rather than from
-// the first `net` read — the same reason console captures early: the process
-// holding the connection has to already be listening when the page makes the
-// request, or `net` can only ever report what happened after somebody thought to
-// look, which is exactly when it is least useful.
+// listenNet retains the tab's HTTP requests, from ATTACH rather than from the
+// first `net` read — the same reason console captures early: the process holding
+// the connection has to already be listening when the page makes the request, or
+// `net` can only ever report what happened after somebody thought to look, which
+// is exactly when it is least useful.
 //
 // The listener runs on chromedp's event loop and only folds events into an
-// in-memory record; it never issues a CDP command. Enabling the domain is
-// best-effort here (every verb attaches, and a chrome:// page that refuses
-// Network must not break `click`); Net re-enables at read time and DOES report
-// the failure, so the honesty is paid for where it is asked for.
-func (c *CDP) startNetCapture(tctx context.Context, id string) {
+// in-memory record; it never issues a CDP command. Enabling the domain happens
+// after the attach, in enableCapture.
+func (c *CDP) listenNet(tctx context.Context, id string) {
 	set := c.netBuf()
 	maxBody := c.netMaxBody
 	// Per-tab epoch, so `started_ms` is a small number relative to when this
@@ -275,9 +283,6 @@ func (c *CDP) startNetCapture(tctx context.Context, id string) {
 			set.Upsert(id, key, mutate)
 		}
 	})
-	ectx, cancel := context.WithTimeout(tctx, 5*time.Second)
-	defer cancel()
-	_ = chromedp.Run(ectx, netEnable(maxBody)...)
 }
 
 // netEnable turns on the domain network capture listens to. It is idempotent, so
@@ -310,7 +315,7 @@ func netApply(ev any, maxBody int, epoch time.Time) (string, func(netRecord, boo
 		req := e.Request
 		ts := netTime(e.Timestamp)
 		raw := netPostData(req)
-		body, cut := eventbuf.TruncateText(raw, maxBody)
+		body, cut, binary := netRequestBody(raw, maxBody)
 		typ := netType(e.Type)
 		return key, func(r netRecord, _ bool) netRecord {
 			r.ID = key
@@ -320,7 +325,7 @@ func netApply(ev any, maxBody int, epoch time.Time) (string, func(netRecord, boo
 				r.Type = typ
 			}
 			r.ReqHeaders = netHeaders(req.Headers)
-			r.RequestBody, r.RequestBodyTruncated = body, cut
+			r.RequestBody, r.RequestBodyTruncated, r.RequestBodyBinary = body, cut, binary
 			r.RequestSize = int64(len(raw))
 			// A redirect reuses the request id and re-fires this event; keeping
 			// the FIRST start keeps duration_ms the whole chain's cost rather
@@ -486,6 +491,24 @@ func netPostData(req *network.Request) string {
 		b.WriteString(e.Bytes)
 	}
 	return b.String()
+}
+
+// netRequestBody bounds a request body for retention, reporting a payload that
+// is not text separately from one that is simply absent.
+//
+// The retained record feeds json.Marshal, which replaces invalid bytes with
+// U+FFFD — so a multipart image upload under the cap would arrive in the
+// envelope as mojibake, which is precisely what the response path refuses to
+// do. Same rule, same reason, both directions.
+func netRequestBody(raw string, maxBody int) (text string, truncated, binary bool) {
+	if raw == "" {
+		return "", false, false
+	}
+	if !utf8.ValidString(raw) {
+		return "", false, true
+	}
+	text, truncated = eventbuf.TruncateText(raw, maxBody)
+	return text, truncated, false
 }
 
 // NormalizeNetType maps a user-supplied --type onto the documented vocabulary,
@@ -687,11 +710,48 @@ func netKeep(opts NetOpts, now time.Time) (func(netRecord) bool, error) {
 	}, nil
 }
 
+// netPendingKeep is the filter `pending` is counted against: the caller's own
+// filter minus its OUTCOME terms.
+//
+// `pending` exists so a caller can tell "nothing matched" from "not finished
+// yet", which only works if it is scoped to what the caller asked about.
+// Counting every unfinished request regardless of the filter made a permanently
+// open SSE stream or a long poll — which every real app has — report
+// `pending >= 1` forever on `net --url /api/save`, so the signal never went
+// quiet and stopped meaning anything.
+//
+// Status and --failed are dropped rather than applied: a request still in flight
+// has no status, so keeping them would make `pending` a constant 0 for exactly
+// the reads that ask about an outcome.
+func netPendingKeep(opts NetOpts, now time.Time) (func(netRecord) bool, error) {
+	opts.Status, opts.Failed = "", false
+	return netKeep(opts, now)
+}
+
 // netBody is one fetched response body plus why it might be missing.
 type netBody struct {
 	Text      string
 	Available bool
 	Truncated bool
+}
+
+// netTextBody renders a fetched payload as an envelope body, reporting false
+// for anything that is not text.
+//
+// The validity check is on the ORIGINAL payload, before the cap: checking the
+// truncated text instead made the answer depend on SIZE. A 10 KB image was
+// (correctly) reported unavailable, while the same image at 100 KB was cut to
+// 64 KB — and, before the truncation fix, to "" — which passed the text check
+// and was emitted as an empty-but-present body. Identical content, opposite
+// answers, decided by nothing the caller can see.
+func netTextBody(raw string, maxBody int) (netBody, bool) {
+	if !utf8.ValidString(raw) {
+		// A binary payload (an image, a font) is not text and must not be
+		// smuggled into the envelope as mojibake or as a bogus empty string.
+		return netBody{}, false
+	}
+	text, cut := eventbuf.TruncateText(raw, maxBody)
+	return netBody{Text: text, Available: true, Truncated: cut}, true
 }
 
 // render turns a retained record into the envelope object.
@@ -736,11 +796,16 @@ func (r netRecord) render(opts NetOpts, body netBody) map[string]any {
 	if opts.Body {
 		out["request_body"] = nil
 		if r.RequestBody != "" {
-			out["request_body"] = r.RequestBody
+			out["request_body"] = RedactBody(r.RequestBody, opts.NoRedact)
+		}
+		if r.RequestBodyBinary {
+			// Same contract as body_unavailable, for the other direction: the
+			// body existed, and what it held is not something we can show.
+			out["request_body_unavailable"] = true
 		}
 		out["response_body"] = nil
 		if body.Available {
-			out["response_body"] = body.Text
+			out["response_body"] = RedactBody(body.Text, opts.NoRedact)
 		} else {
 			// A body the page has navigated away from is gone, and saying so is
 			// more useful than failing the whole read (VS-14).
@@ -753,6 +818,19 @@ func (r netRecord) render(opts NetOpts, body netBody) map[string]any {
 	return out
 }
 
+// netURLHeaders are the headers whose VALUE is a URL. Their names carry no hint
+// of a credential, so the name-based rules never fire on them — but a 302 to
+// "…/callback?code=SECRET" leaks the authorization code just as thoroughly as an
+// Authorization header would, and that redirect is how every OAuth flow ends.
+// Their values go through RedactURL instead of being withheld wholesale, so a
+// redirect stays diagnosable.
+var netURLHeaders = map[string]bool{
+	"location":         true,
+	"content-location": true,
+	"referer":          true,
+	"referrer":         true,
+}
+
 // RedactHeaders returns a copy of h with credential-shaped values replaced.
 // noRedact returns the map unchanged, which is the ONLY way a live session token
 // reaches the envelope.
@@ -762,8 +840,12 @@ func RedactHeaders(h map[string]string, noRedact bool) map[string]string {
 	}
 	out := make(map[string]string, len(h))
 	for k, v := range h {
-		if !noRedact && RedactedHeaderName(k) {
+		switch {
+		case noRedact:
+		case RedactedHeaderName(k):
 			v = NetRedacted
+		case netURLHeaders[strings.ToLower(strings.TrimSpace(k))]:
+			v = RedactURL(v)
 		}
 		out[k] = v
 	}
@@ -797,7 +879,19 @@ func RedactURL(raw string) string {
 	if hasFrag {
 		// OAuth implicit flows return the token in the fragment, so it gets the
 		// same treatment; a plain "#section" has no "=" and is left alone.
-		out += "#" + redactParams(frag)
+		//
+		// A hash ROUTER puts a whole URL in the fragment
+		// ("#/callback?access_token=…"), so the fragment gets the same
+		// path/query split the main URL does. Without it the single parameter
+		// parsed as the name "/callback?access_token", which the anchored
+		// pattern rejects — and the token was emitted verbatim, in exactly the
+		// OAuth-implicit case fragment handling was added for.
+		fpath, fquery, hasFragQuery := strings.Cut(frag, "?")
+		if hasFragQuery {
+			out += "#" + fpath + "?" + redactParams(fquery)
+		} else {
+			out += "#" + redactParams(frag)
+		}
 	}
 	return out
 }
@@ -814,15 +908,84 @@ func redactParams(q string) string {
 		if !ok {
 			continue
 		}
-		decoded := name
-		if u, err := netUnescape(name); err == nil {
-			decoded = u
-		}
-		if netRedactParamRe.MatchString(strings.TrimSpace(decoded)) {
+		if RedactedParamName(name) {
 			parts[i] = name + "=" + NetRedacted
 		}
 	}
 	return strings.Join(parts, "&")
+}
+
+// RedactedParamName reports whether a URL parameter or request/response body
+// FIELD name is credential-shaped. One predicate for both, because a value is
+// no less a secret for having travelled in a POST body than in a query string.
+func RedactedParamName(name string) bool {
+	n := strings.TrimSpace(name)
+	if u, err := netUnescape(n); err == nil {
+		n = u
+	}
+	return netRedactParamRe.MatchString(n)
+}
+
+// netRedactJSONRe matches one JSON member with a STRING value, capturing the
+// member name and the separator so a replacement can keep the document's own
+// spacing and escaping. Deliberately a rewrite rather than a decode/re-encode:
+// a body that hit the size cap is not parseable JSON any more, and re-encoding
+// would reorder members and rewrite escapes, so the reported payload would stop
+// being the one the page actually sent.
+var netRedactJSONRe = regexp.MustCompile(`"((?:[^"\\]|\\.)*)"(\s*:\s*)"(?:[^"\\]|\\.)*"`)
+
+// RedactBody withholds the values of credential-shaped fields in a request or
+// response body, for the form-encoded and JSON shapes credentials actually
+// travel in. noRedact returns the body unchanged.
+//
+// RFC-0003 specifies redaction for headers and URLs only, so this goes beyond
+// it deliberately. The premise of the whole tool is that it drives the user's
+// real, logged-in browser: `net --body` on a login POST printed `password=…` in
+// clear, while the SAME credential in `?password=…` was withheld — the same
+// secret, opposite answers, decided by nothing but the HTTP method. US-5 asks
+// for bodies that do "not spill tokens or PII into logs by default", and this
+// is what that costs.
+//
+// A body in any other encoding (multipart/form-data, protobuf, a bare token) is
+// passed through: there is no field structure to key on, and guessing would
+// either miss or mangle. `--body` remains an explicit opt-in either way.
+func RedactBody(body string, noRedact bool) string {
+	if noRedact || body == "" {
+		return body
+	}
+	switch {
+	case netLooksJSON(body):
+		return netRedactJSONRe.ReplaceAllStringFunc(body, func(m string) string {
+			g := netRedactJSONRe.FindStringSubmatch(m)
+			if !RedactedParamName(g[1]) {
+				return m
+			}
+			return `"` + g[1] + `"` + g[2] + `"` + NetRedacted + `"`
+		})
+	case netLooksFormEncoded(body):
+		return redactParams(body)
+	}
+	return body
+}
+
+// netLooksJSON reports whether a body is a JSON object or array.
+func netLooksJSON(body string) bool {
+	t := strings.TrimLeft(body, " \t\r\n")
+	return strings.HasPrefix(t, "{") || strings.HasPrefix(t, "[")
+}
+
+// netLooksFormEncoded reports whether a body is an application/x-www-form-
+// urlencoded parameter list, judged on its first field: a name with no
+// whitespace or JSON punctuation, followed by "=". The content-type header
+// would be a stronger signal, but it is not always sent and this has to hold
+// for a truncated body too.
+func netLooksFormEncoded(body string) bool {
+	head, _, _ := strings.Cut(body, "&")
+	name, _, ok := strings.Cut(head, "=")
+	if !ok || name == "" {
+		return false
+	}
+	return !strings.ContainsAny(name, " \t\r\n\"'{}[]<>")
 }
 
 // netUnescape decodes a percent-encoded parameter name, so "api%5Fkey" is
@@ -851,13 +1014,17 @@ func (c *CDP) Net(ctx context.Context, id string, opts NetOpts) (any, error) {
 		// arrives now, and say so.
 		settle(ctx, netFreshGrace)
 	}
+	pendingKeep, err := netPendingKeep(opts, time.Now())
+	if err != nil {
+		return nil, err
+	}
 	// pending is counted in the SAME pass as the filter: Query visits every live
 	// entry exactly once under the buffer's lock, so the count cannot drift from
 	// the matches it is reported alongside.
 	pending := 0
 	q := eventbuf.Query[netRecord]{
 		Keep: func(r netRecord) bool {
-			if !r.Finished {
+			if !r.Finished && (pendingKeep == nil || pendingKeep(r)) {
 				pending++
 			}
 			return keep == nil || keep(r)
@@ -868,8 +1035,10 @@ func (c *CDP) Net(ctx context.Context, id string, opts NetOpts) (any, error) {
 	res := c.netBuf().Query(id, q)
 	out := c.netResult(ctx, id, res, pending, opts)
 	if fresh {
-		out["buffered"] = 0
-		out["note"] = netNoRetainedHistoryNote
+		// `buffered` is a real count of what is held, not a claim about
+		// completeness; the note is what says the history is Chrome's window
+		// rather than ours.
+		out["note"] = netPartialHistoryNote
 	}
 	return out, nil
 }
@@ -917,13 +1086,9 @@ func (c *CDP) netFetchBodies(ctx context.Context, id string, recs []netRecord) m
 			if err != nil {
 				return nil // one gone body must not abort the whole read
 			}
-			text, cut := eventbuf.TruncateText(string(raw), c.netMaxBody)
-			if !utf8.ValidString(text) {
-				// A binary payload (an image, a font) is not text and must not be
-				// smuggled into the envelope as mojibake.
-				return nil
+			if b, ok := netTextBody(string(raw), c.netMaxBody); ok {
+				out[key] = b
 			}
-			out[key] = netBody{Text: text, Available: true, Truncated: cut}
 			return nil
 		}))
 	}

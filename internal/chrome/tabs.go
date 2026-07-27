@@ -285,13 +285,44 @@ func (c *CDP) tabVisible(ctx context.Context, id string) bool {
 	return vs == "visible"
 }
 
-// forget drops the cached attach for a tab that no longer exists, so a later
-// command can't reuse a dead session and the context is released.
+// forget drops everything this connection holds for a tab that no longer
+// exists, so a later command can't reuse a dead session and the memory is
+// released.
+//
+// The event buffers are the load-bearing half. eventbuf.Set.Buffer allocates its
+// ring eagerly — roughly 100 KB of network records plus 150 KB of console lines
+// per tab — and the cross-target total cap bounds ENTRIES, not ring allocations.
+// A daemon that outlives a thousand opened-and-closed tabs would otherwise hold
+// a quarter of a gigabyte of empty rings for tabs that can never be read again.
 func (c *CDP) forget(id string) {
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	if t, ok := c.tabs[id]; ok {
 		t.stop()
 		delete(c.tabs, id)
 	}
+	c.mu.Unlock()
+
+	// A live recording is NOT dropped here: it releases itself on its own
+	// stranded TTL (see the pump's tctx.Done case), which gives `record stop`
+	// a window to collect the frames from a tab that has just closed.
+	c.consoleBuf().Forget(id)
+	c.netBuf().Forget(id)
+}
+
+// watchClosedTabs releases what this connection holds for a tab the BROWSER
+// destroyed — the user closing it in the UI, or the page closing itself.
+//
+// CloseTabs covers the tabs we close; this covers every other way one goes away,
+// which over a long daemon session is most of them.
+//
+// The listener runs on the browser's event loop, so it must never block: forget
+// takes c.mu, which on() holds across an attach that is itself waiting on this
+// loop. Handing off to a goroutine keeps that from being a deadlock.
+func (c *CDP) watchClosedTabs() {
+	chromedp.ListenBrowser(c.base, func(ev any) {
+		if e, ok := ev.(*cdptarget.EventTargetDestroyed); ok {
+			id := e.TargetID.String()
+			go c.forget(id)
+		}
+	})
 }

@@ -216,7 +216,7 @@ func (o RecordOpts) withDefaults(maxFrames int) RecordOpts {
 }
 
 // startRecordCapture registers the screencast listener for a freshly attached
-// tab. It is called from startCapture, under c.mu, exactly once per tab.
+// tab. It is called from listenCapture, under c.mu, exactly once per tab.
 //
 // The listener is registered at ATTACH rather than at `record start` for the
 // same reason the console's is: chromedp listeners cannot be unregistered, so

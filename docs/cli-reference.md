@@ -381,9 +381,13 @@ Raise `console_buffer`, or read closer to the action.
 
 **`--follow`** writes one JSON envelope per line, the same shape `session` streams.
 It cannot combine with `--fail-on-match`, and it is a usage error inside `session` or a recipe step, where it would break the one-envelope-per-line contract a batch promises.
+A page that says nothing produces **no output at all** and exits 0 — there is no closing summary, because a terminating envelope would be a second shape for a caller to parse.
+Treat empty stdout as "nothing was logged in the window", not as a failure.
+A follow does not block other commands: you can drive the page from another terminal while one is running, and a follow longer than the daemon's idle window keeps it alive rather than being cut off mid-stream.
 
-**`--no-daemon` has no retained history.**
-Without the daemon there was no process alive to receive the tab's earlier events, so the read reports `"buffered": 0` and carries a `note` saying so, rather than passing an empty list off as a quiet page.
+**`--no-daemon` has only partial history.**
+Without the daemon there was no process alive to receive the tab's earlier events, so what appears is whatever Chrome replays when capture is enabled (recent console output and uncaught exceptions it still holds) plus what arrives during the command.
+The read carries a `note` saying so, rather than passing a short list off as a full session record.
 
 The buffer is bounded by `console_buffer` (messages per tab, default 1000) and `console_max_entry` (per-message text cap, default 8192 bytes); see [Configuration](#configuration).
 
@@ -421,6 +425,8 @@ Every filter is applied where the buffer lives, before the result is built, so a
 The result carries `requests`, `count` (after filtering), `buffered`, `dropped`, `truncated`, and `pending`.
 
 **`pending` counts requests that started but have not finished**, so you can tell "nothing matched" from "not finished yet" — an empty listing during a slow save is otherwise indistinguishable from a save that never fired.
+It is scoped to the same `--url` / `--method` / `--type` / `--since` filter as the listing, so a permanently open SSE stream or long poll does not make every read look unfinished forever.
+`--status` and `--failed` are deliberately *not* applied to it: a request still in flight has no status, so applying them would make `pending` a constant zero for exactly the reads that ask about an outcome.
 
 Each request carries `id`, `method`, `url`, `type`, `status`, `status_text`, `started_ms` (milliseconds since capture began on this tab), `duration_ms`, `request_size`, `response_size`, `from_cache`, `failed`, and `error`.
 `status`, `duration_ms`, and `error` are `null` when they do not exist yet; `failed` means a non-2xx status **or** a network-level failure, so a delivered 500 and a DNS failure both show up under `--failed`.
@@ -428,7 +434,8 @@ Each request carries `id`, `method`, `url`, `type`, `status`, `status_text`, `st
 **Redaction is on by default.**
 This CLI drives your real, logged-in Chrome, so its buffers hold live session credentials by construction.
 The values of `authorization`, `cookie`, `set-cookie`, `x-api-key`, `proxy-authorization`, and any header whose name contains `token`, `secret`, or `password` are replaced with `<redacted>` — the name stays, so a 401 is still diagnosable.
-Credential-shaped URL query and fragment parameters (`access_token`, `api_key`, `sig`, `code`, `key`, …) are redacted the same way.
+Credential-shaped URL query and fragment parameters (`access_token`, `api_key`, `sig`, `code`, `key`, …) are redacted the same way, including the query string of a hash-router fragment (`#/callback?access_token=…`).
+Headers whose value is itself a URL (`location`, `content-location`, `referer`) go through the same URL redaction rather than being withheld wholesale, so the 302 that ends an OAuth flow stays readable without carrying the code.
 `--no-redact` is the explicit, deliberate opt-out.
 
 **Headers and bodies are absent, not null, unless you ask.**
@@ -438,8 +445,14 @@ Without `--headers` / `--body` those keys do not appear at all, so a routine lis
 They are pulled with `Network.getResponseBody` at read time, only when `--body` is passed — buffering every body would multiply the daemon's memory and retain payloads you never asked to see.
 The consequence: **a body may already be gone** if the page navigated away, or if it is not UTF-8 text.
 That is reported as `"response_body": null` with `"body_unavailable": true`, and the read still succeeds — a partial answer beats no answer.
+Whether a body is text is judged on the payload Chrome delivered, not on what survives the cap, so the same image reports `body_unavailable` at any size.
 Bodies over `net_max_body` (default 65536 bytes) are cut, with `"body_truncated": true`.
-Request bodies arrive inline with the request, so they are retained and available retroactively.
+Request bodies arrive inline with the request, so they are retained and available retroactively; a request body that is not text is withheld the same way, as `"request_body": null` with `"request_body_unavailable": true`.
+
+**Bodies are redacted too.**
+Credential-shaped fields in form-encoded and JSON bodies (`password`, `access_token`, `client_secret`, `api_key`, …) are replaced with `<redacted>`, on requests and responses alike — a password is no less a secret for having travelled in a POST body than in the query string, which is already withheld.
+The rest of the payload is reported exactly as sent, including a body the cap already cut.
+A body in any other encoding (`multipart/form-data`, protobuf, a bare token) has no field structure to key on and is passed through unchanged, so treat `--body` output from those as sensitive.
 
 **`net wait` / `wait --request`** blocks until one specific request completes.
 
@@ -457,8 +470,9 @@ No match before `--timeout` is `target_timeout` / exit 4.
 
 **`--follow`** writes one JSON envelope per **completed** request, the same shape `session` streams.
 It cannot combine with `--fail-on-match`, and it is a usage error inside `session` or a recipe step.
+A window in which nothing completed produces **no output at all** and exits 0, exactly as with `console --follow`, and it does not block other commands against the same daemon.
 
-**`--no-daemon` has no retained history**, exactly as with `console`: the read reports `"buffered": 0` and carries a `note` rather than passing an empty list off as a quiet page.
+**`--no-daemon` has only partial history**, exactly as with `console`: enabling the domain surfaces the handful of resources Chrome still holds for the page, never the session, so the read carries a `note` rather than passing a short list off as the whole story.
 
 Bad `--status` / `--type` / `--url` regex / `--since` values are `usage` / exit 2, validated before anything connects to Chrome.
 
