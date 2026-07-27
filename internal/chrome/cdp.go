@@ -240,7 +240,11 @@ func startBase(managed bool, alloc context.Context, allocCancel context.CancelFu
 		allocCancel()
 		return nil, &ConnectError{Code: "connection_failed", Message: connectFailMsg(managed, what, err)}
 	}
-	return newCDP(managed, alloc, allocCancel, base, baseCancel), nil
+	c := newCDP(managed, alloc, allocCancel, base, baseCancel)
+	// Release a tab's retained events when the BROWSER destroys it, not only
+	// when we close it ourselves. See watchClosedTabs.
+	c.watchClosedTabs()
+	return c, nil
 }
 
 // connectFailMsg turns a raw allocator/dial failure into an actionable message.

@@ -151,6 +151,88 @@ func TestCloseTabsLive(t *testing.T) {
 	}
 }
 
+// hasBuffer reports whether an eventbuf.Set still holds a ring for a target.
+func hasBuffer(targets []string, id string) bool {
+	for _, t := range targets {
+		if t == id {
+			return true
+		}
+	}
+	return false
+}
+
+// A tab that goes away must take its retained events with it.
+//
+// eventbuf.Set.Buffer allocates its ring eagerly — ~100 KB of network records
+// plus ~150 KB of console lines per tab — and the cross-target total cap bounds
+// entries, not ring allocations. Set.Forget existed and was tested but had no
+// non-test caller, so a daemon that outlived a thousand opened-and-closed tabs
+// held a quarter of a gigabyte of empty rings for tabs nobody can read again.
+//
+// Both ways a tab dies are covered: the one we close, and the one the browser
+// closes without asking us.
+func TestClosingATabReleasesItsBuffersLive(t *testing.T) {
+	b := liveCDP(t)
+	srv, _ := tabFixtures(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+
+	// (1) A tab we close ourselves.
+	id := openTab(ctx, t, b, srv.URL+"/p1")
+	if _, err := b.Navigate(ctx, id, srv.URL+"/p2"); err != nil { // attaching is what starts capture
+		t.Fatalf("Navigate: %v", err)
+	}
+	// A read materialises both rings, which is what a real session does the
+	// moment anything is logged or requested.
+	if _, err := b.Console(ctx, id, ConsoleOpts{}); err != nil {
+		t.Fatalf("Console: %v", err)
+	}
+	if _, err := b.Net(ctx, id, NetOpts{}); err != nil {
+		t.Fatalf("Net: %v", err)
+	}
+	if !hasBuffer(b.consoleBuf().Targets(), id) || !hasBuffer(b.netBuf().Targets(), id) {
+		t.Fatalf("no buffers were created for %s; this test would prove nothing", id)
+	}
+	if _, err := b.CloseTabs(ctx, []string{id}); err != nil {
+		t.Fatalf("CloseTabs: %v", err)
+	}
+	if hasBuffer(b.consoleBuf().Targets(), id) {
+		t.Error("the console ring for a closed tab was retained; its entries can never be read again")
+	}
+	if hasBuffer(b.netBuf().Targets(), id) {
+		t.Error("the network ring for a closed tab was retained")
+	}
+
+	// (2) A tab the BROWSER destroys — the page closing itself, or the user
+	// closing it in the UI, which over a long session is most of them.
+	other := openTab(ctx, t, b, srv.URL+"/p1")
+	if _, err := b.Navigate(ctx, other, srv.URL+"/p2"); err != nil {
+		t.Fatalf("Navigate: %v", err)
+	}
+	if _, err := b.Console(ctx, other, ConsoleOpts{}); err != nil {
+		t.Fatalf("Console: %v", err)
+	}
+	if _, err := b.Net(ctx, other, NetOpts{}); err != nil {
+		t.Fatalf("Net: %v", err)
+	}
+	if !hasBuffer(b.consoleBuf().Targets(), other) || !hasBuffer(b.netBuf().Targets(), other) {
+		t.Fatalf("no buffers were created for %s", other)
+	}
+	if err := b.closeTarget(ctx, other); err != nil { // the browser closes it; we never call forget
+		t.Fatalf("closeTarget: %v", err)
+	}
+	deadline := time.Now().Add(15 * time.Second)
+	for hasBuffer(b.consoleBuf().Targets(), other) && time.Now().Before(deadline) {
+		time.Sleep(100 * time.Millisecond)
+	}
+	if hasBuffer(b.consoleBuf().Targets(), other) {
+		t.Error("a tab destroyed by the browser kept its console ring; only the tabs we close ourselves were released")
+	}
+	if hasBuffer(b.netBuf().Targets(), other) {
+		t.Error("a tab destroyed by the browser kept its network ring")
+	}
+}
+
 // A close that half worked reports both halves — and does not then sit waiting
 // for the tab it failed to close, which never leaves the list and would burn the
 // whole awaitGone cap before returning a result already known.
