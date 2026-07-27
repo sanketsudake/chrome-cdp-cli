@@ -215,6 +215,33 @@ func (o RecordOpts) withDefaults(maxFrames int) RecordOpts {
 	return o
 }
 
+// scaleBox turns a viewport and a scale factor into the pixel cap
+// startScreencast takes — it wants a maximum SIZE, not a factor.
+//
+// Split out so the arithmetic half of "--scale halves the capture" is testable
+// without a browser: the live half (Chrome honours the cap) needs a renderer,
+// this half does not, and keeping them together made the whole claim hostage to
+// a viewport that was observed moving mid-test.
+func scaleBox(vw, vh, scale float64) (int64, int64) {
+	return int64(math.Round(vw * scale)), int64(math.Round(vh * scale))
+}
+
+// pageAgreesViewport reports whether the page's own innerWidth/innerHeight
+// matches the box CDP just reported, to within a pixel of rounding.
+//
+// The two are independent measures that settle independently, so a disagreement
+// means the viewport is mid-resize and NEITHER is trustworthy yet. A read error
+// counts as agreement: this is a cross-check, not a gate, and a tab that cannot
+// answer JS is a reason to fall back to the CDP number rather than to refuse to
+// record.
+func pageAgreesViewport(ctx context.Context, v Rect) bool {
+	var wh []float64
+	if err := chromedp.Evaluate(`[innerWidth, innerHeight]`, &wh).Do(ctx); err != nil || len(wh) != 2 {
+		return true
+	}
+	return math.Abs(wh[0]-v.Width) <= 1 && math.Abs(wh[1]-v.Height) <= 1
+}
+
 // startRecordCapture registers the screencast listener for a freshly attached
 // tab. It is called from listenCapture, under c.mu, exactly once per tab.
 //
@@ -288,6 +315,21 @@ func (c *CDP) RecordStart(ctx context.Context, id string, opts RecordOpts) (map[
 				return err
 			}
 			v := m.viewport
+			// Cross-check against the page's OWN view of the box. CDP's visual
+			// viewport and innerWidth/innerHeight settle independently after a
+			// resize, and CI caught them disagreeing — the page reported the new
+			// 800x600 while getLayoutMetrics still said 600x600, so the whole
+			// recording was sized from a square that never existed. Stability in
+			// one measure is not evidence; agreement between two is.
+			if v.Width > 0 && v.Height > 0 && !pageAgreesViewport(actx, v) {
+				agree, prev = 0, Rect{}
+				select {
+				case <-actx.Done():
+					return actx.Err()
+				case <-t.C:
+				}
+				continue
+			}
 			if v.Width > 0 && v.Height > 0 && sameRect(prev, v) {
 				if agree++; agree >= wantAgree-1 {
 					vw, vh = v.Width, v.Height
@@ -312,8 +354,7 @@ func (c *CDP) RecordStart(ctx context.Context, id string, opts RecordOpts) (map[
 	})); err != nil {
 		return nil, err
 	}
-	maxW := int64(math.Round(vw * opts.Scale))
-	maxH := int64(math.Round(vh * opts.Scale))
+	maxW, maxH := scaleBox(vw, vh, opts.Scale)
 
 	r := newRecorder(opts, tctx, c.recMaxBytes)
 	// Set before the recorder is published, so nothing can read it concurrently.
