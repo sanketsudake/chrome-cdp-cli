@@ -17,7 +17,7 @@ import (
 // wsRoot is the ws:// root of an http:// endpoint — where the browser-level
 // endpoint lives when /json/version cannot say.
 func wsRoot(httpURL string) string {
-	return "ws://" + strings.TrimPrefix(httpURL, "http://") + "/"
+	return "ws://" + authority(httpURL) + "/"
 }
 
 // TestAwaitUpgradeRefusedIsFast is the safety property behind the long consent
@@ -184,22 +184,38 @@ func TestProbeWSClassifiesAllThree(t *testing.T) {
 func TestResolveWSURL(t *testing.T) {
 	t.Parallel()
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	// A healthy Chrome: /json/version answers with its OWN host:port.
+	var ok *httptest.Server
+	ok = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/json/version" {
 			http.NotFound(w, r)
 			return
 		}
-		fmt.Fprint(w, `{"Browser":"Chrome/1","webSocketDebuggerUrl":"ws://127.0.0.1:9222/devtools/browser/abc"}`)
+		fmt.Fprintf(w, `{"Browser":"Chrome/1","webSocketDebuggerUrl":"ws://%s/devtools/browser/abc"}`, authority(ok.URL))
 	}))
 	// t.Cleanup, not defer: the parallel subtests below run after this function
 	// returns, so a deferred Close would shut the server before they use it.
-	t.Cleanup(srv.Close)
+	t.Cleanup(ok.Close)
 
 	// A 404 on /json/version is exactly what the chrome://inspect path returns,
-	// consent or no consent. It locates nothing, so it resolves to nothing — and
-	// it is never treated as a consent signal.
+	// consent or no consent.
 	notFound := httptest.NewServer(http.HandlerFunc(http.NotFound))
 	t.Cleanup(notFound.Close)
+
+	// Not Chrome: it answers the question with somewhere else entirely. That
+	// URL used to be returned verbatim, and it is what the probe dials and what
+	// chromedp attaches to.
+	elsewhere := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		fmt.Fprint(w, `{"webSocketDebuggerUrl":"ws://10.1.2.3:4444/pwned"}`)
+	}))
+	t.Cleanup(elsewhere.Close)
+
+	// Also not Chrome: it redirects, and http.Client follows up to ten of those
+	// by default — off this machine, from a question about 127.0.0.1.
+	redirector := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, elsewhere.URL+"/json/version", http.StatusFound)
+	}))
+	t.Cleanup(redirector.Close)
 
 	for _, c := range []struct {
 		name     string
@@ -208,7 +224,7 @@ func TestResolveWSURL(t *testing.T) {
 		wantOK   bool
 	}{
 		{"a ws url passes through", "ws://127.0.0.1:9222/devtools/browser/x", "ws://127.0.0.1:9222/devtools/browser/x", true},
-		{"an http endpoint resolves via /json/version", srv.URL, "ws://127.0.0.1:9222/devtools/browser/abc", true},
+		{"an http endpoint resolves via /json/version", ok.URL, "ws://" + authority(ok.URL) + "/devtools/browser/abc", true},
 		// The chrome://inspect toggle path 404s /json/version whether or not
 		// consent has been granted, so a 404 must NOT end the resolution: it
 		// leaves the browser endpoint at the root of the same host:port, and
@@ -216,42 +232,56 @@ func TestResolveWSURL(t *testing.T) {
 		// path that actually prompts.
 		{"a 404 falls back to the ws root", notFound.URL, wsRoot(notFound.URL), true},
 		{"nothing listening still falls back", "http://127.0.0.1:1", "ws://127.0.0.1:1/", true},
+		// Both of these fall back to the local root rather than being believed:
+		// the only endpoint this resolution is allowed to name is the one it
+		// asked.
+		{"a foreign ws url is not believed", elsewhere.URL, wsRoot(elsewhere.URL), true},
+		{"a redirect is not followed", redirector.URL, wsRoot(redirector.URL), true},
 		{"empty", "", "", false},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			t.Parallel()
-			got, ok := ResolveWSURL(c.endpoint)
-			if ok != c.wantOK || got != c.want {
-				t.Errorf("ResolveWSURL(%q) = %q,%v; want %q,%v", c.endpoint, got, ok, c.want, c.wantOK)
+			got, gotOK := ResolveWSURL(c.endpoint)
+			if gotOK != c.wantOK || got != c.want {
+				t.Errorf("ResolveWSURL(%q) = %q,%v; want %q,%v", c.endpoint, got, gotOK, c.want, c.wantOK)
 			}
 		})
 	}
 }
 
-// TestAwaitUpgradeAnswerDuringOnPendingIsNotDiscarded.
-//
-// With PendingAfter >= Total — which is every doctor probe, since ProbeWS
-// passes the same value for both — the old code computed a remainder of <= 0
-// and returned browser.WSPending WITHOUT ever selecting on the answer channel again.
-// Anything delivered while onPending was running was therefore thrown away and
-// its socket closed, and onPending is not instantaneous: the daemon's writes a
-// file. So an endpoint that had completed the handshake was reported as
-// holding a consent prompt.
-func TestAwaitUpgradeAnswerDuringOnPendingIsNotDiscarded(t *testing.T) {
+// authority is the host:port of an http:// test-server URL.
+func authority(httpURL string) string { return strings.TrimPrefix(httpURL, "http://") }
+
+// TestAwaitUpgradeVerifiesTheHandshake. The Sec-WebSocket-Key was generated
+// with crypto/rand and then never looked at again, so "ready" meant nothing
+// more than "the status line said 101". Chrome's debug port is a loopback port
+// any local process can bind, and being told ready by something that is not a
+// WebSocket server is how the probe hands chromedp a socket that will never
+// speak CDP.
+func TestAwaitUpgradeVerifiesTheHandshake(t *testing.T) {
 	t.Parallel()
-	const budget = 100 * time.Millisecond
-	// The answer lands after the budget is up but WHILE onPending is still
-	// running, so it is sitting in the channel when the wait ends. The margins
-	// are generous in both directions because the property is an ordering, not
-	// a duration.
-	ep := probetest.Answer(t, budget+20*time.Millisecond, "HTTP/1.1 101 Switching Protocols")
-
-	u := AwaitUpgrade(ep.WS(), UpgradeTimings{PendingAfter: budget, Total: budget}, func() {
-		time.Sleep(200 * time.Millisecond)
-	})
-	defer u.Close()
-
-	if u.State != browser.WSReady {
-		t.Errorf("a completed handshake classified %v: the answer arrived while onPending ran and was discarded unread", u.State)
+	for _, c := range []struct {
+		name  string
+		reply func(req string) string
+	}{
+		{"a bare 101 with no headers at all", func(string) string {
+			return "HTTP/9.9 101 whatever\r\n\r\n"
+		}},
+		{"101 with the wrong accept key", func(string) string {
+			return "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nSec-WebSocket-Accept: AAAAAAAAAAAAAAAAAAAAAAAAAAA=\r\n\r\n"
+		}},
+		{"101 that never says it upgraded", func(req string) string {
+			return "HTTP/1.1 101 Switching Protocols\r\nSec-WebSocket-Accept: " + probetest.AcceptFor(probetest.RequestKey(req)) + "\r\n\r\n"
+		}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			ep := probetest.AnswerRaw(t, 0, c.reply)
+			u := AwaitUpgrade(ep.WS(), UpgradeTimings{PendingAfter: time.Second, Total: time.Second}, nil)
+			defer u.Close()
+			if u.State != browser.WSRefused {
+				t.Errorf("classified %v: a 101 that does not complete OUR handshake is not a Chrome we can attach to", u.State)
+			}
+		})
 	}
 }

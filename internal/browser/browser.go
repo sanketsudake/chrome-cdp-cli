@@ -227,17 +227,44 @@ func (s WSState) String() string {
 type Action int
 
 const (
-	Attach           Action = iota // attach to Probe.PortFileWS (Path B)
+	Attach           Action = iota // attach to Probe.Endpoint (Path B)
 	Launch                         // launch a managed Chrome (Path A fallback)
 	InstructToggle                 // Chrome is running but not debug-enabled — guide the launch flag / chrome://inspect
 	InstructNoLaunch               // nothing debug-enabled and --no-launch — print the launch command
 	ConsentPending                 // open port, hanging upgrade — Chrome is holding its consent prompt
 )
 
+// String names an Action. Its only callers are %v in test failure messages,
+// which is reason enough: the alternative is a diff that says "= 4, want 2".
+func (a Action) String() string {
+	switch a {
+	case Attach:
+		return "attach"
+	case Launch:
+		return "launch"
+	case InstructToggle:
+		return "instruct-toggle"
+	case InstructNoLaunch:
+		return "instruct-no-launch"
+	case ConsentPending:
+		return "consent-pending"
+	default:
+		return "unknown"
+	}
+}
+
 // Probe captures the observable connection state the ladder decides on.
 type Probe struct {
-	PortFileWS    string  // ws:// from DevToolsActivePort, or "" if unavailable
-	WS            WSState // what one WebSocket upgrade against PortFileWS did
+	// Endpoint is where Chrome was looked for: a ws:// URL from
+	// DevToolsActivePort, an http:// one from --port, or "" if neither
+	// resolved. It was called PortFileWS, which was untrue of half the values
+	// it holds.
+	//
+	// The ladder does not read it: WS already implies it, since an upgrade can
+	// only be attempted against an endpoint. It is here because a Probe is a
+	// record of what was observed, and "where" is part of that.
+	Endpoint      string
+	WS            WSState // what one WebSocket upgrade against Endpoint did
 	ChromeRunning bool    // is a Chrome process running (possibly without debug)?
 	NoLaunch      bool    // the --no-launch flag
 }
@@ -249,18 +276,16 @@ type Probe struct {
 //  4. no reachable endpoint, no Chrome    -> Launch (Path A) unless --no-launch
 //  5. ...with --no-launch                 -> InstructNoLaunch
 //
-// Rungs 1 and 2 are separate only because WS is three-way. While it was a bool,
-// "the port refused us" and "the port accepted and then said nothing" were the
-// same observation — which is exactly why a pending consent prompt could only
-// ever surface as an undifferentiated timeout.
+// Rungs 1 and 2 are separate only because WS is three-way: see WSState.
 func DecideConnection(p Probe) Action {
-	if p.PortFileWS != "" {
-		switch p.WS {
-		case WSReady:
-			return Attach
-		case WSPending:
-			return ConsentPending
-		}
+	// No guard on Endpoint being set: WS is WSRefused unless an upgrade was
+	// actually attempted, and an upgrade is only attempted against an endpoint,
+	// so the check was restating its own precondition.
+	switch p.WS {
+	case WSReady:
+		return Attach
+	case WSPending:
+		return ConsentPending
 	}
 	if p.ChromeRunning {
 		return InstructToggle

@@ -19,10 +19,13 @@
 package probetest
 
 import (
+	"crypto/sha1"
+	"encoding/base64"
 	"fmt"
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -48,21 +51,94 @@ func Stall(t *testing.T) *Endpoint {
 	return e
 }
 
-// Answer accepts and completes the WebSocket upgrade with status after delay —
-// the user finding the dialog behind the window and clicking Allow. Pass a
-// non-101 status for a live server that is not a CDP browser (a stale port file
-// whose port another process has taken).
+// Answer accepts and, after delay, completes the WebSocket upgrade with status
+// — the user finding the dialog behind the window and clicking Allow. A 101
+// status gets a full, VALID RFC 6455 response, with Sec-WebSocket-Accept
+// computed from the key the client actually sent; the probe verifies it, so a
+// stub that skipped it would be testing nothing.
+//
+// Pass a non-101 status for a live server that is not a CDP browser (a stale
+// port file whose port another process has taken).
 func Answer(t *testing.T, delay time.Duration, status string) *Endpoint {
+	t.Helper()
+	return answering(t, delay, func(req string) string { return handshakeReply(status, req) })
+}
+
+// handshakeReply is a server's response to an upgrade request: a full, valid
+// RFC 6455 completion for a 101, or the bare status line for anything else.
+func handshakeReply(status, req string) string {
+	if !strings.Contains(status, " 101 ") {
+		return status + "\r\n\r\n"
+	}
+	return status + "\r\n" +
+		"Upgrade: websocket\r\n" +
+		"Connection: Upgrade\r\n" +
+		"Sec-WebSocket-Accept: " + AcceptFor(RequestKey(req)) + "\r\n\r\n"
+}
+
+// Chrome is an endpoint with the HTTP JSON API present, i.e. a Chrome launched
+// with --remote-debugging-port rather than toggled on in chrome://inspect. It
+// answers /json/version with a WebSocket URL on its OWN host:port — which is
+// the only authority the resolver will believe — and treats every other
+// request as the upgrade: stalling forever when status is empty, replying with
+// status after delay otherwise.
+//
+// One listener, because a real Chrome is one listener. Splitting the JSON API
+// and the WebSocket across two ports would be testing a shape that cannot
+// occur, and the resolver rejects it on purpose.
+func Chrome(t *testing.T, delay time.Duration, status string) *Endpoint {
 	t.Helper()
 	e := listen(t)
 	go e.accept(func(c net.Conn) {
+		buf := make([]byte, 2048)
+		n, _ := c.Read(buf)
+		req := string(buf[:n])
+		if strings.Contains(req, "/json/version") {
+			body := fmt.Sprintf(`{"Browser":"Chrome/1","webSocketDebuggerUrl":%q}`, e.WS())
+			fmt.Fprintf(c, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s", len(body), body)
+			_ = c.Close()
+			return
+		}
+		if status == "" {
+			<-t.Context().Done() // the upgrade: accepted, and then silence
+			_ = c.Close()
+			return
+		}
 		defer c.Close()
 		select {
 		case <-time.After(delay):
 		case <-t.Context().Done():
 			return
 		}
-		if _, err := c.Write([]byte(status + "\r\n\r\n")); err == nil {
+		if _, err := c.Write([]byte(handshakeReply(status, req))); err == nil {
+			e.answered.Store(true)
+		}
+		time.Sleep(50 * time.Millisecond)
+	})
+	return e
+}
+
+// AnswerRaw accepts and, after delay, writes exactly what reply returns for the
+// request it received — for the handshakes that are meant to be wrong.
+func AnswerRaw(t *testing.T, delay time.Duration, reply func(req string) string) *Endpoint {
+	t.Helper()
+	return answering(t, delay, reply)
+}
+
+func answering(t *testing.T, delay time.Duration, reply func(req string) string) *Endpoint {
+	t.Helper()
+	e := listen(t)
+	go e.accept(func(c net.Conn) {
+		defer c.Close()
+		buf := make([]byte, 2048)
+		n, _ := c.Read(buf)
+		req := string(buf[:n])
+		select {
+		case <-time.After(delay):
+		case <-t.Context().Done():
+			return
+		}
+		if _, err := c.Write([]byte(reply(req))); err == nil {
 			// The write LANDED, so the socket was still open when the answer
 			// arrived. That is precisely what "the prompt was not orphaned"
 			// means in the failure this all exists to prevent.
@@ -71,6 +147,22 @@ func Answer(t *testing.T, delay time.Duration, status string) *Endpoint {
 		time.Sleep(50 * time.Millisecond)
 	})
 	return e
+}
+
+// RequestKey pulls the Sec-WebSocket-Key out of a handshake request.
+func RequestKey(req string) string {
+	for line := range strings.SplitSeq(req, "\r\n") {
+		if name, value, ok := strings.Cut(line, ":"); ok && strings.EqualFold(strings.TrimSpace(name), "Sec-WebSocket-Key") {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
+}
+
+// AcceptFor is RFC 6455's Sec-WebSocket-Accept for a given key.
+func AcceptFor(key string) string {
+	sum := sha1.Sum([]byte(key + "258EAFA5-E914-47DA-95CA-5AB0DC85B11A"))
+	return base64.StdEncoding.EncodeToString(sum[:])
 }
 
 // Closed returns an endpoint with nothing listening on it: a stale port file,

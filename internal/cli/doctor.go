@@ -26,19 +26,14 @@ var doctorProbeWait = 5 * time.Second
 // of a probe rather than the result of one.
 const stateUnverified = "unverified"
 
-// cmdDoctor answers "can I connect?" by actually connecting.
-//
-// It used to read the DevToolsActivePort file, find one, and report "debug
-// endpoint reachable — Path B attach ready" with a ws:// URL, having never
-// spoken to Chrome. During the RFC-0013 reproduction it said ready while every
-// connection was hanging on an unanswered consent prompt, which sent the
-// investigation everywhere except the dialog on screen. A diagnostic that
-// reports readiness it did not verify is worse than no diagnostic.
+// cmdDoctor answers "can I connect?" by actually connecting. A diagnostic that
+// reports readiness it did not verify is worse than no diagnostic, because it
+// sends the user looking somewhere else.
 //
 // The awkwardness is that verifying costs a connection, and a connection is a
 // consent request — so doctor prefers evidence that costs nothing: a live daemon
-// is already holding an established CDP connection, which is a STRONGER proof
-// than any probe, and asking it touches Chrome not at all.
+// that has just proved its CDP connection is a stronger answer than any probe,
+// and asking it touches Chrome not at all.
 func (a *App) cmdDoctor() *cobra.Command {
 	var noProbe bool
 	c := &cobra.Command{

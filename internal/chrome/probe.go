@@ -14,6 +14,7 @@ package chrome
 import (
 	"bufio"
 	"crypto/rand"
+	"crypto/sha1"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -42,9 +43,11 @@ type Upgrade struct {
 	conn  net.Conn
 }
 
-// Close releases the probe socket (safe on a nil/refused Upgrade).
+// Close releases the probe socket. Safe on a refused or pending Upgrade, which
+// have no socket to release — AwaitUpgrade never returns nil, so that is the
+// only case there is.
 func (u *Upgrade) Close() {
-	if u == nil || u.conn == nil {
+	if u.conn == nil {
 		return
 	}
 	_ = u.conn.Close()
@@ -86,7 +89,7 @@ func ResolveWSURL(endpoint string) (string, bool) {
 	if !ok {
 		return "", false
 	}
-	if ws, ok := wsFromJSONVersion(endpoint); ok {
+	if ws, ok := wsFromJSONVersion(endpoint, hostport); ok {
 		return ws, true
 	}
 	return "ws://" + hostport + "/", true
@@ -95,8 +98,19 @@ func ResolveWSURL(endpoint string) (string, bool) {
 // wsFromJSONVersion asks Chrome's HTTP JSON API where the browser-level
 // WebSocket is. It reports false for every way that can fail to answer, all of
 // which mean the same thing here: ask the socket instead.
-func wsFromJSONVersion(endpoint string) (string, bool) {
-	client := &http.Client{Timeout: dialTimeout}
+//
+// The answer is only accepted if it points back at the endpoint we asked. This
+// is a question about ONE loopback port, and both the redirect chain and the
+// returned URL used to be taken on trust: http.Client follows up to ten
+// redirects, and the webSocketDebuggerUrl was returned verbatim, so a request
+// about 127.0.0.1 was verified to come back with ws://10.1.2.3:4444/pwned —
+// and that URL is what the probe dials and what chromedp attaches to.
+func wsFromJSONVersion(endpoint, hostport string) (string, bool) {
+	client := &http.Client{
+		Timeout: dialTimeout,
+		// A redirect is not an answer to "where is YOUR WebSocket".
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+	}
 	resp, err := client.Get(strings.TrimSuffix(endpoint, "/") + "/json/version")
 	if err != nil {
 		return "", false
@@ -111,13 +125,44 @@ func wsFromJSONVersion(endpoint string) (string, bool) {
 	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&v); err != nil || v.WS == "" {
 		return "", false
 	}
+	u, err := url.Parse(v.WS)
+	if err != nil || (u.Scheme != "ws" && u.Scheme != "wss") || u.User != nil || !sameEndpoint(u.Host, hostport) {
+		return "", false
+	}
 	return v.WS, true
 }
 
-// maxStatusLine caps what the probe will read looking for the handshake's
-// status line. An HTTP status line is tens of bytes; 8 KiB is generous for one
-// and still nothing at all to hold.
-const maxStatusLine = 8 << 10
+// sameEndpoint reports whether a returned authority names the endpoint we
+// asked. The port must match exactly; the host must match too, except that two
+// spellings of loopback are accepted for each other because Chrome answers with
+// whichever one it was asked on and the caller may have used the other.
+func sameEndpoint(got, want string) bool {
+	if got == want {
+		return true
+	}
+	gh, gp, err := net.SplitHostPort(got)
+	if err != nil {
+		return false
+	}
+	wh, wp, err := net.SplitHostPort(want)
+	if err != nil || gp != wp {
+		return false
+	}
+	return isLoopback(gh) && isLoopback(wh)
+}
+
+func isLoopback(host string) bool {
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(strings.Trim(host, "[]"))
+	return ip != nil && ip.IsLoopback()
+}
+
+// maxHandshakeResponse caps what the probe will read looking for the
+// handshake's status line and headers. Those are a few hundred bytes; 8 KiB is
+// generous and still nothing at all to hold.
+const maxHandshakeResponse = 8 << 10
 
 // UpgradeTimings bounds one probe. It is a struct rather than two positional
 // durations because the two are easy to swap and the consequences are not
@@ -151,11 +196,12 @@ func AwaitUpgrade(wsURL string, t UpgradeTimings, onPending func()) *Upgrade {
 	if !ok {
 		return &Upgrade{State: browser.WSRefused}
 	}
-	conn, err := net.DialTimeout("tcp", hostport, dialTimeout)
-	if err != nil {
+	conn, dialErr := net.DialTimeout("tcp", hostport, dialTimeout)
+	if dialErr != nil {
 		return &Upgrade{State: browser.WSRefused}
 	}
-	if err := writeUpgradeRequest(conn, wsURL, hostport, dialTimeout); err != nil {
+	key, err := writeUpgradeRequest(conn, wsURL, hostport)
+	if err != nil {
 		_ = conn.Close()
 		return &Upgrade{State: browser.WSRefused}
 	}
@@ -183,7 +229,7 @@ func AwaitUpgrade(wsURL string, t UpgradeTimings, onPending func()) *Upgrade {
 	_ = conn.SetReadDeadline(time.Now().Add(wait + dialTimeout))
 	answered := make(chan bool, 1)
 	go func() {
-		line, err := bufio.NewReader(io.LimitReader(conn, maxStatusLine)).ReadString('\n')
+		ok, err := readHandshakeResponse(conn, key)
 		if errors.Is(err, os.ErrDeadlineExceeded) {
 			// Hitting the deadline is the endpoint's SILENCE, not its answer:
 			// reporting it as a failed handshake would classify a Chrome that
@@ -191,7 +237,7 @@ func AwaitUpgrade(wsURL string, t UpgradeTimings, onPending func()) *Upgrade {
 			// timers below say what silence means.
 			return
 		}
-		answered <- err == nil && isSwitchingProtocols(line)
+		answered <- ok
 	}()
 
 	// Two independent timers on one loop. They were once two sequential selects
@@ -263,26 +309,87 @@ func ProbeWS(wsURL string, wait time.Duration) browser.WSState {
 	return u.State
 }
 
-// writeUpgradeRequest sends a minimal RFC 6455 handshake. The response is what
-// classifies the endpoint; nothing is ever sent over the resulting connection,
-// so no CDP session is started and no target is created.
-func writeUpgradeRequest(conn net.Conn, wsURL, hostport string, timeout time.Duration) error {
+// The handshake is written and verified by hand rather than with a WebSocket
+// library, and that IS the right call here even though it looks like the wrong
+// one. What this code has to observe is "accepted, then silent for two
+// minutes", and a dialer's API cannot express that: it returns a connection or
+// an error, and the state we care about is neither. Owning the socket is the
+// only way to hold a pending upgrade open across the consent wait, which is the
+// whole point. (It also keeps a WebSocket library out of the direct
+// dependencies for one handshake.)
+
+// writeUpgradeRequest sends a minimal RFC 6455 handshake and returns the
+// Sec-WebSocket-Key it used, which the response has to be checked against.
+// Nothing is ever sent over the resulting connection, so no CDP session is
+// started and no target is created.
+func writeUpgradeRequest(conn net.Conn, wsURL, hostport string) (key string, err error) {
 	path := "/"
-	if u, err := url.Parse(wsURL); err == nil && u.Path != "" {
+	if u, perr := url.Parse(wsURL); perr == nil && u.Path != "" {
 		path = u.RequestURI()
 	}
 	var nonce [16]byte
-	_, _ = rand.Read(nonce[:])
+	if _, err := rand.Read(nonce[:]); err != nil {
+		return "", err
+	}
+	key = base64.StdEncoding.EncodeToString(nonce[:])
 	req := "GET " + path + " HTTP/1.1\r\n" +
 		"Host: " + hostport + "\r\n" +
 		"Upgrade: websocket\r\n" +
 		"Connection: Upgrade\r\n" +
-		"Sec-WebSocket-Key: " + base64.StdEncoding.EncodeToString(nonce[:]) + "\r\n" +
+		"Sec-WebSocket-Key: " + key + "\r\n" +
 		"Sec-WebSocket-Version: 13\r\n\r\n"
-	_ = conn.SetWriteDeadline(time.Now().Add(timeout))
-	_, err := conn.Write([]byte(req))
+	_ = conn.SetWriteDeadline(time.Now().Add(dialTimeout))
+	_, err = conn.Write([]byte(req))
 	_ = conn.SetWriteDeadline(time.Time{})
-	return err
+	return key, err
+}
+
+// wsGUID is RFC 6455's fixed accept-key salt.
+const wsGUID = "258EAFA5-E914-47DA-95CA-5AB0DC85B11A"
+
+// acceptFor is the Sec-WebSocket-Accept a correct server must return for key.
+func acceptFor(key string) string {
+	sum := sha1.Sum([]byte(key + wsGUID))
+	return base64.StdEncoding.EncodeToString(sum[:])
+}
+
+// readHandshakeResponse reads the status line and headers and reports whether
+// this is really a WebSocket server completing OUR handshake.
+//
+// The key was generated with crypto/rand and then never checked, so the whole
+// test was "did the status line contain 101" — which anything replying
+// "HTTP/9.9 101 whatever" passes. Chrome's debug port is a loopback port any
+// local process can bind, and being told "ready" by something that is not
+// Chrome is how a probe ends up handing chromedp a socket that will never speak
+// CDP. Verifying the accept key is what makes the 101 mean this server saw this
+// request.
+func readHandshakeResponse(conn net.Conn, key string) (bool, error) {
+	r := bufio.NewReader(io.LimitReader(conn, maxHandshakeResponse))
+	line, err := r.ReadString('\n')
+	if err != nil || !isSwitchingProtocols(line) {
+		return false, err
+	}
+	var upgraded, accepted bool
+	for {
+		h, err := r.ReadString('\n')
+		if err != nil {
+			return false, err
+		}
+		if strings.TrimSpace(h) == "" { // end of headers
+			break
+		}
+		name, value, ok := strings.Cut(h, ":")
+		if !ok {
+			continue
+		}
+		switch strings.ToLower(strings.TrimSpace(name)) {
+		case "upgrade":
+			upgraded = strings.EqualFold(strings.TrimSpace(value), "websocket")
+		case "sec-websocket-accept":
+			accepted = strings.TrimSpace(value) == acceptFor(key)
+		}
+	}
+	return upgraded && accepted, nil
 }
 
 // isSwitchingProtocols reports whether an HTTP status line accepted the upgrade.

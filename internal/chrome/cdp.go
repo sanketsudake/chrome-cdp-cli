@@ -239,13 +239,15 @@ func Connect(_ context.Context, opts Options) (*CDP, error) {
 	// The socket is then held (up.Close is deferred past the attach) so the
 	// consent the user just granted is still live when chromedp arrives.
 	ws := browser.WSRefused
+	attachTo := endpoint
 	if wsURL, ok := ResolveWSURL(endpoint); ok {
+		attachTo = wsURL
 		up := AwaitUpgrade(wsURL, UpgradeTimings{PendingAfter: pendingAfter, Total: consent}, opts.OnConsentPending)
 		defer up.Close()
 		ws = up.State
 	}
 	probe := browser.Probe{
-		PortFileWS:    endpoint,
+		Endpoint:      endpoint,
 		WS:            ws,
 		ChromeRunning: chromeRunning(),
 		NoLaunch:      opts.NoLaunch,
@@ -254,7 +256,11 @@ func Connect(_ context.Context, opts Options) (*CDP, error) {
 	var err error
 	switch browser.DecideConnection(probe) {
 	case browser.Attach:
-		c, err = attach(endpoint)
+		// The RESOLVED ws:// URL, not the endpoint: ResolveWSURL already did
+		// this lookup, and handing chromedp the http:// form made it repeat the
+		// request — against the claim, three lines up, that the probe and the
+		// attach agree on what they are talking to.
+		c, err = attach(attachTo)
 	case browser.ConsentPending:
 		return nil, &ConnectError{Code: result.CodeConsentPending, Message: consentPendingMsg(consent)}
 	case browser.InstructToggle:

@@ -391,6 +391,9 @@ func RunDaemon(sockPath string, opts chrome.Options, idle time.Duration) error {
 	// user while the dialog is still on screen.
 	pending := sockPath + pendingSuffix
 	_ = os.Remove(pending)
+	// Only the file's EXISTENCE is a signal; Ensure never reads it. The text is
+	// for whoever ends up cat-ing a stray sidecar out of the runtime dir and
+	// wondering what left it there.
 	opts.OnConsentPending = func() {
 		_ = os.WriteFile(pending, []byte("waiting for Chrome's remote-debugging consent prompt\n"), 0o600)
 	}

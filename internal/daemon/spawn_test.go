@@ -11,19 +11,9 @@ import (
 	"time"
 )
 
-// TestEnsureSpawnsOneDaemonUnderConcurrency is the guard for a failure that took
-// down a user's whole browser.
-//
-// Ensure used to check for a running daemon, find none, and spawn one — with no
-// exclusion. Several chrome-cdp processes starting at once therefore each found
-// nothing and each spawned a daemon, and every spawned daemon attaches to Chrome,
-// raising its own browser-modal "Allow remote debugging?" prompt. Stacked prompts
-// are not a slower version of one prompt: the visible dialog need not be the one
-// holding input, so Chrome looks frozen with no button that responds.
-//
-// The unlink was the other half of it. Outside a lock, a late caller's
-// os.Remove(sockPath) can delete a socket a sibling daemon has just bound,
-// orphaning a live daemon nothing can reach.
+// TestEnsureSpawnsOneDaemonUnderConcurrency: N callers, one daemon, one consent
+// prompt. Why that matters, and why the unlinks have to be inside the lock too,
+// is documented on Ensure.
 func TestEnsureSpawnsOneDaemonUnderConcurrency(t *testing.T) {
 	sock := filepath.Join(shortTempDir(t), "d.sock")
 	// Seven of the eight callers lose the lock race and say so; capture that
@@ -61,11 +51,9 @@ func TestEnsureSpawnsOneDaemonUnderConcurrency(t *testing.T) {
 	errs := make([]error, callers)
 	clients := make([]*Client, callers)
 	for i := range callers {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			clients[i], errs[i] = Ensure(context.Background(), sock, "unused", nil, 2*time.Second)
-		}()
+		})
 	}
 	wg.Wait()
 

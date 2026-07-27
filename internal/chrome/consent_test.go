@@ -3,10 +3,6 @@ package chrome
 import (
 	"context"
 	"errors"
-	"fmt"
-	"net"
-	"net/http"
-	"net/http/httptest"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -176,18 +172,8 @@ func TestConnectNoEndpointLeadsWithTheLaunchFlag(t *testing.T) {
 // healthy Chrome as unreachable. Resolving through /json/version first is what
 // keeps the recommended route working.
 func TestConnectExplicitPortStillProbes(t *testing.T) {
-	stalled := probetest.Stall(t)
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/json/version" {
-			http.NotFound(w, r)
-			return
-		}
-		fmt.Fprintf(w, `{"webSocketDebuggerUrl":%q}`, stalled.WS())
-	}))
-	defer srv.Close()
-
-	_, port, _ := net.SplitHostPort(strings.TrimPrefix(srv.URL, "http://"))
-	p, _ := strconv.Atoi(port)
+	ep := probetest.Chrome(t, 0, "") // JSON API present; the upgrade stalls
+	p, _ := strconv.Atoi(ep.Port())
 	pinChromeRunning(t, false)
 
 	_, err := Connect(context.Background(), Options{
@@ -209,35 +195,11 @@ func TestConnectExplicitPortStillProbes(t *testing.T) {
 // not debug-enabled" about a Chrome that IS debug-enabled and is at that moment
 // showing them the dialog. It sent them to re-enable a setting already on.
 func TestConnectExplicitPortDetectsConsentWithoutJSONVersion(t *testing.T) {
-	// One listener that both 404s every HTTP request and stalls the upgrade:
-	// exactly the toggle path with consent pending.
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("listen: %v", err)
-	}
-	t.Cleanup(func() { _ = ln.Close() })
-	go func() {
-		for {
-			c, err := ln.Accept()
-			if err != nil {
-				return
-			}
-			go func(c net.Conn) {
-				buf := make([]byte, 1024)
-				n, _ := c.Read(buf)
-				if strings.Contains(string(buf[:n]), "/json/version") {
-					_, _ = c.Write([]byte("HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n"))
-					_ = c.Close()
-					return
-				}
-				<-t.Context().Done() // the upgrade: accepted, and then silence
-				_ = c.Close()
-			}(c)
-		}
-	}()
-
-	_, port, _ := net.SplitHostPort(ln.Addr().String())
-	p, _ := strconv.Atoi(port)
+	// Stall(): it 404s nothing and answers nothing — every request, including
+	// /json/version, is accepted and then met with silence, which is what the
+	// toggle path looks like with a prompt on screen.
+	ep := probetest.Stall(t)
+	p, _ := strconv.Atoi(ep.Port())
 	pinChromeRunning(t, true) // and yet: a hanging upgrade is not "enable the toggle"
 
 	_, cerr := Connect(context.Background(), Options{
@@ -245,7 +207,7 @@ func TestConnectExplicitPortDetectsConsentWithoutJSONVersion(t *testing.T) {
 		ConsentPendingAfter: 100 * time.Millisecond,
 	})
 	if got := connectErrCode(t, cerr); got != result.CodeConsentPending {
-		t.Errorf("error.code = %q, want %q — with /json/version 404ing, the pending prompt is invisible and the user is told to re-enable a setting that is already on:\n%v",
+		t.Errorf("error.code = %q, want %q — with /json/version not answering, the pending prompt is invisible and the user is told to re-enable a setting that is already on:\n%v",
 			got, result.CodeConsentPending, cerr)
 	}
 }
