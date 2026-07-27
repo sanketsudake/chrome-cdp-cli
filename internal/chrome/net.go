@@ -694,6 +694,25 @@ type netBody struct {
 	Truncated bool
 }
 
+// netTextBody renders a fetched payload as an envelope body, reporting false
+// for anything that is not text.
+//
+// The validity check is on the ORIGINAL payload, before the cap: checking the
+// truncated text instead made the answer depend on SIZE. A 10 KB image was
+// (correctly) reported unavailable, while the same image at 100 KB was cut to
+// 64 KB — and, before the truncation fix, to "" — which passed the text check
+// and was emitted as an empty-but-present body. Identical content, opposite
+// answers, decided by nothing the caller can see.
+func netTextBody(raw string, maxBody int) (netBody, bool) {
+	if !utf8.ValidString(raw) {
+		// A binary payload (an image, a font) is not text and must not be
+		// smuggled into the envelope as mojibake or as a bogus empty string.
+		return netBody{}, false
+	}
+	text, cut := eventbuf.TruncateText(raw, maxBody)
+	return netBody{Text: text, Available: true, Truncated: cut}, true
+}
+
 // render turns a retained record into the envelope object.
 //
 // Header and body keys are ABSENT (not null) unless requested, so the default
@@ -917,13 +936,9 @@ func (c *CDP) netFetchBodies(ctx context.Context, id string, recs []netRecord) m
 			if err != nil {
 				return nil // one gone body must not abort the whole read
 			}
-			text, cut := eventbuf.TruncateText(string(raw), c.netMaxBody)
-			if !utf8.ValidString(text) {
-				// A binary payload (an image, a font) is not text and must not be
-				// smuggled into the envelope as mojibake.
-				return nil
+			if b, ok := netTextBody(string(raw), c.netMaxBody); ok {
+				out[key] = b
 			}
-			out[key] = netBody{Text: text, Available: true, Truncated: cut}
 			return nil
 		}))
 	}

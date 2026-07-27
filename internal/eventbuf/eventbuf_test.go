@@ -7,6 +7,7 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
 // line is a synthetic console-shaped entry: enough structure to exercise level,
@@ -395,6 +396,58 @@ func TestTruncateText(t *testing.T) {
 				t.Errorf("TruncateText(%q, %d) = %q,%v; want %q,%v", c.in, c.max, got, cut, c.want, c.truncated)
 			}
 		})
+	}
+}
+
+// Regression: truncation must never DESTROY its input.
+//
+// Re-validating the whole prefix after dropping a byte only converges when the
+// invalid byte is at the cut boundary; a payload whose invalid bytes start
+// earlier was trimmed all the way to "" — and a caller that then checked the
+// TRUNCATED text for validity saw a perfectly valid empty string and reported a
+// 100 KB binary body as an empty-but-present one. Deciding whether the input is
+// text belongs to the caller, on the ORIGINAL bytes; truncation only bounds it.
+func TestTruncateTextKeepsNonUTF8Payloads(t *testing.T) {
+	t.Parallel()
+	const max = 64 << 10
+	cases := map[string]string{
+		"all invalid":            strings.Repeat("\xff", 100<<10),
+		"valid then invalid":     strings.Repeat("a", 60<<10) + strings.Repeat("\xff", 40<<10),
+		"invalid then valid":     strings.Repeat("\xff", 4<<10) + strings.Repeat("a", 100<<10),
+		"invalid at the cut end": strings.Repeat("a", max-1) + strings.Repeat("\xff", 10<<10),
+	}
+	for name, in := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			got, cut := TruncateText(in, max)
+			if !cut {
+				t.Fatalf("a %d-byte payload was not reported as truncated at max %d", len(in), max)
+			}
+			// At most one rune's worth of bytes may be given up to land on a
+			// boundary. Anything more means the scan ate the payload.
+			if len(got) < max-(utf8.UTFMax-1) {
+				t.Errorf("truncation kept %d of %d bytes; it must bound the payload, not destroy it", len(got), max)
+			}
+			if !strings.HasPrefix(in, got) {
+				t.Error("the kept text is not a prefix of the input")
+			}
+		})
+	}
+}
+
+// A payload that IS valid UTF-8 must still be valid after the cut — that is the
+// property the rune-boundary backoff exists for.
+func TestTruncateTextKeepsValidTextValid(t *testing.T) {
+	t.Parallel()
+	in := strings.Repeat("héllo wörld ", 1000) // multi-byte runes at many offsets
+	for max := 1; max < 64; max++ {
+		got, _ := TruncateText(in, max)
+		if !utf8.ValidString(got) {
+			t.Fatalf("TruncateText(valid, %d) produced invalid UTF-8: %q", max, got)
+		}
+		if len(got) < max-(utf8.UTFMax-1) {
+			t.Fatalf("TruncateText(valid, %d) kept only %d bytes", max, len(got))
+		}
 	}
 }
 

@@ -1,6 +1,7 @@
 package chrome
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -788,6 +789,16 @@ func netFixtures(t *testing.T) (*httptest.Server, string) {
 		w.Header().Set("Content-Type", "text/plain")
 		_, _ = io_WriteString(w, strings.Repeat("A", 8<<10))
 	})
+	// The same binary payload at two sizes, for the size-independence of the
+	// "this is not text" answer. 100 KB is over the 64 KB body cap; 1 KB is not.
+	mux.HandleFunc("/api/blob", func(w http.ResponseWriter, r *http.Request) {
+		n := 100 << 10
+		if r.URL.Query().Get("small") != "" {
+			n = 1 << 10
+		}
+		w.Header().Set("Content-Type", "application/octet-stream")
+		_, _ = w.Write(bytes.Repeat([]byte{0xff}, n))
+	})
 	mux.HandleFunc("/style.css", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/css")
 		_, _ = io_WriteString(w, "body{color:#333}")
@@ -809,8 +820,10 @@ func netFixtures(t *testing.T) (*httptest.Server, string) {
 <button id="boom" onclick="fetch('%s/api/boom')">boom</button>
 <button id="slow" onclick="fetch('%s/api/slow')">slow</button>
 <button id="big" onclick="fetch('%s/api/big')">big</button>
+<button id="blobbig" onclick="fetch('%s/api/blob')">blob big</button>
+<button id="blobsmall" onclick="fetch('%s/api/blob?small=1')">blob small</button>
 <button id="dead" onclick="fetch('%s/gone').catch(()=>{})">dead</button>`,
-		srv.URL, srv.URL, srv.URL, srv.URL, srv.URL, srv.URL, srv.URL, deadAddr(t))
+		srv.URL, srv.URL, srv.URL, srv.URL, srv.URL, srv.URL, srv.URL, srv.URL, srv.URL, deadAddr(t))
 	mux.HandleFunc("/page", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/html")
 		_, _ = io_WriteString(w, page)
@@ -1218,6 +1231,46 @@ func TestNetTruncatesAnOversizedBody(t *testing.T) {
 	}
 	if got["body_truncated"] != true {
 		t.Error("body_truncated is not set; a caller would take the cut payload for the whole thing")
+	}
+}
+
+// Regression: whether a body is text must not depend on its SIZE.
+//
+// The check used to run on the TRUNCATED text, so a binary payload under the cap
+// was correctly reported unavailable while the same payload over the cap was cut
+// (to "", before the truncation fix) and emitted as an empty-but-present body
+// with body_truncated set. Identical content, opposite answers, decided by
+// nothing the caller can see.
+func TestNetReportsABinaryBodyAsUnavailableAtEverySize(t *testing.T) {
+	b := liveChrome(t)
+	_, page := netFixtures(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+
+	id := netLiveTab(ctx, t, b, page)
+	for _, c := range []struct {
+		name, button, url string
+	}{
+		{"over the body cap", "#blobbig", "/api/blob"},
+		{"under the body cap", "#blobsmall", "/api/blob?small=1"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			if _, err := b.Pointer(ctx, id, c.button, PointerOpts{Action: PointerClick}); err != nil {
+				t.Fatalf("Click: %v", err)
+			}
+			awaitNetDone(ctx, t, b, id, NetCond{URL: c.url})
+			_, reqs := awaitNet(ctx, t, b, id, NetOpts{URL: c.url, Body: true, Limit: 10}, netDone(c.url))
+			got := findURL(reqs, c.url)
+			if got == nil {
+				t.Fatalf("the binary response was not captured: %v", reqs)
+			}
+			if got["body_unavailable"] != true {
+				t.Errorf("a binary body was not marked body_unavailable: %v", got)
+			}
+			if got["response_body"] != nil {
+				t.Errorf("response_body = %q, want null — a binary payload is not text", got["response_body"])
+			}
+		})
 	}
 }
 
