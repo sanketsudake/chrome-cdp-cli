@@ -27,10 +27,14 @@ func main() {
 		// way the CLI does (config.FromEnv), not with a second ad-hoc contract.
 		env := config.FromEnv()
 		opts := chrome.Options{
-			PortFile:   os.Getenv("CHROME_CDP_PORT_FILE"),
-			ProfileDir: env.ProfileDir,
-			Port:       env.Port,
-			NoLaunch:   env.NoLaunch,
+			PortFile:        os.Getenv("CHROME_CDP_PORT_FILE"),
+			ProfileDir:      env.ProfileDir,
+			Port:            env.Port,
+			NoLaunch:        env.NoLaunch,
+			ConsoleBuffer:   env.ConsoleBuffer,
+			ConsoleMaxEntry: env.ConsoleMaxEntry,
+			NetBuffer:       env.NetBuffer,
+			NetMaxBody:      env.NetMaxBody,
 		}
 		if err := daemon.RunDaemon(os.Args[2], opts, 30*time.Minute); err != nil {
 			fmt.Fprintln(os.Stderr, "chrome-cdp daemon:", err)
@@ -97,12 +101,25 @@ func main() {
 		if o.NoLaunch {
 			env = append(env, "CHROME_CDP_NO_LAUNCH=1")
 		}
+		// The daemon parses only the environment, so config-file values for the
+		// event-capture bounds have to be forwarded explicitly or the buffers it
+		// holds would silently fall back to the built-in sizes.
+		env = append(env,
+			"CHROME_CDP_CONSOLE_BUFFER="+strconv.Itoa(defs.ConsoleBuffer),
+			"CHROME_CDP_CONSOLE_MAX_ENTRY="+strconv.Itoa(defs.ConsoleMaxEntry),
+			"CHROME_CDP_NET_BUFFER="+strconv.Itoa(defs.NetBuffer),
+			"CHROME_CDP_NET_MAX_BODY="+strconv.Itoa(defs.NetMaxBody),
+		)
 		return env
 	}
 
 	app.WithConnector(func(ctx context.Context, o cli.ConnOpts) (chrome.Browser, error) {
 		if o.NoDaemon {
-			return chrome.Connect(ctx, chrome.Options{PortFile: portFile, NoLaunch: o.NoLaunch, ProfileDir: o.ProfileDir, Port: o.Port})
+			return chrome.Connect(ctx, chrome.Options{
+				PortFile: portFile, NoLaunch: o.NoLaunch, ProfileDir: o.ProfileDir, Port: o.Port,
+				ConsoleBuffer: defs.ConsoleBuffer, ConsoleMaxEntry: defs.ConsoleMaxEntry,
+				NetBuffer: defs.NetBuffer, NetMaxBody: defs.NetMaxBody,
+			})
 		}
 		client, err := daemon.Ensure(socketFor(o), exe, daemonEnv(o))
 		if err != nil {

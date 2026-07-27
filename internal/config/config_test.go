@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sanketsudake/chrome-cdp-cli/internal/chrome"
 )
 
 // noEnv is a getenv that reports every variable as unset.
@@ -403,4 +405,112 @@ func TestNoteWarnsWhenXDGPointsSomewhereWithNoConfig(t *testing.T) {
 	if n := noteFrom(filepath.Join(t.TempDir(), "absent.toml"), noEnv); n != "" {
 		t.Errorf("note = %q, want silence when XDG_CONFIG_HOME is unset", n)
 	}
+}
+
+// The event-capture bounds are config keys, not flags: they size the buffers
+// the connection holder (normally the daemon) retains per tab, which no
+// per-command flag can change after the fact.
+func TestConsoleBufferPrecedence(t *testing.T) {
+	t.Parallel()
+
+	t.Run("built-in when unset", func(t *testing.T) {
+		t.Parallel()
+		d, err := ResolveFrom(filepath.Join(t.TempDir(), "absent.toml"), noEnv)
+		if err != nil {
+			t.Fatalf("resolve: %v", err)
+		}
+		if d.ConsoleBuffer != chrome.DefaultConsoleBuffer || d.ConsoleMaxEntry != chrome.DefaultConsoleMaxEntry {
+			t.Errorf("defaults = %d/%d, want %d/%d",
+				d.ConsoleBuffer, d.ConsoleMaxEntry, chrome.DefaultConsoleBuffer, chrome.DefaultConsoleMaxEntry)
+		}
+	})
+
+	t.Run("config file overrides the built-in", func(t *testing.T) {
+		t.Parallel()
+		p := writeConfig(t, "console_buffer = 25\nconsole_max_entry = 512\n")
+		d, err := ResolveFrom(p, noEnv)
+		if err != nil {
+			t.Fatalf("resolve: %v", err)
+		}
+		if d.ConsoleBuffer != 25 || d.ConsoleMaxEntry != 512 {
+			t.Errorf("config = %d/%d, want 25/512", d.ConsoleBuffer, d.ConsoleMaxEntry)
+		}
+	})
+
+	t.Run("env overrides the config file", func(t *testing.T) {
+		t.Parallel()
+		p := writeConfig(t, "console_buffer = 25\nconsole_max_entry = 512\n")
+		env := envFrom(map[string]string{
+			"CHROME_CDP_CONSOLE_BUFFER":    "70",
+			"CHROME_CDP_CONSOLE_MAX_ENTRY": "4096",
+		})
+		d, err := ResolveFrom(p, env)
+		if err != nil {
+			t.Fatalf("resolve: %v", err)
+		}
+		if d.ConsoleBuffer != 70 || d.ConsoleMaxEntry != 4096 {
+			t.Errorf("env = %d/%d, want 70/4096", d.ConsoleBuffer, d.ConsoleMaxEntry)
+		}
+	})
+
+	// Network records get their OWN bounds, not the console's: a request record
+	// is an order of magnitude larger than a console line, so one shared size
+	// would either starve the request history or blow up the daemon's memory.
+	t.Run("net bounds are separate from the console's", func(t *testing.T) {
+		t.Parallel()
+		d, err := ResolveFrom(filepath.Join(t.TempDir(), "absent.toml"), noEnv)
+		if err != nil {
+			t.Fatalf("resolve: %v", err)
+		}
+		if d.NetBuffer != chrome.DefaultNetBuffer || d.NetMaxBody != chrome.DefaultNetMaxBody {
+			t.Errorf("net defaults = %d/%d, want %d/%d",
+				d.NetBuffer, d.NetMaxBody, chrome.DefaultNetBuffer, chrome.DefaultNetMaxBody)
+		}
+
+		p := writeConfig(t, "console_buffer = 25\nnet_buffer = 40\nnet_max_body = 2048\n")
+		d, err = ResolveFrom(p, noEnv)
+		if err != nil {
+			t.Fatalf("resolve: %v", err)
+		}
+		if d.NetBuffer != 40 || d.NetMaxBody != 2048 {
+			t.Errorf("net config = %d/%d, want 40/2048", d.NetBuffer, d.NetMaxBody)
+		}
+		if d.ConsoleBuffer != 25 {
+			t.Errorf("net_buffer overwrote console_buffer: %d", d.ConsoleBuffer)
+		}
+
+		env := envFrom(map[string]string{
+			"CHROME_CDP_NET_BUFFER":   "90",
+			"CHROME_CDP_NET_MAX_BODY": "4096",
+		})
+		d, err = ResolveFrom(p, env)
+		if err != nil {
+			t.Fatalf("resolve: %v", err)
+		}
+		if d.NetBuffer != 90 || d.NetMaxBody != 4096 {
+			t.Errorf("net env = %d/%d, want 90/4096", d.NetBuffer, d.NetMaxBody)
+		}
+		// A typo must not brick the CLI here either.
+		d, err = ResolveFrom(p, envFrom(map[string]string{"CHROME_CDP_NET_MAX_BODY": "huge"}))
+		if err != nil {
+			t.Fatalf("a malformed bound must not be fatal: %v", err)
+		}
+		if d.NetMaxBody != 2048 {
+			t.Errorf("NetMaxBody = %d, want the config value 2048 to survive a malformed env var", d.NetMaxBody)
+		}
+	})
+
+	// A typo in a bound must not brick the CLI, matching how every other
+	// malformed value here behaves: keep the value below it and carry on.
+	t.Run("malformed env keeps the config value", func(t *testing.T) {
+		t.Parallel()
+		p := writeConfig(t, "console_buffer = 25\n")
+		d, err := ResolveFrom(p, envFrom(map[string]string{"CHROME_CDP_CONSOLE_BUFFER": "lots"}))
+		if err != nil {
+			t.Fatalf("a malformed bound must not be fatal: %v", err)
+		}
+		if d.ConsoleBuffer != 25 {
+			t.Errorf("ConsoleBuffer = %d, want the config value 25 to survive a malformed env var", d.ConsoleBuffer)
+		}
+	})
 }

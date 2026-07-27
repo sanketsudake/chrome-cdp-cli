@@ -331,6 +331,27 @@ type Browser interface {
 	// decoding the image itself.
 	Screenshot(ctx context.Context, targetID string, opts ShotOpts) ([]byte, map[string]any, error)
 	PDF(ctx context.Context, targetID string, opts PDFOpts) ([]byte, map[string]any, error)
+	// Console returns the console messages and uncaught exceptions retained for
+	// a tab since the connection attached to it, filtered by opts BEFORE the
+	// result is built (see ConsoleOpts in console.go).
+	Console(ctx context.Context, targetID string, opts ConsoleOpts) (any, error)
+	// ConsoleStream calls emit once per message as it arrives, until ctx ends.
+	// It is the one Browser method that is not a single request/response, so
+	// the daemon serves it over the streaming RPC path rather than dispatch.
+	ConsoleStream(ctx context.Context, targetID string, opts ConsoleOpts, emit func(any) error) error
+	// Net returns the HTTP requests retained for a tab since the connection
+	// attached to it, filtered by opts BEFORE the result is built (see NetOpts
+	// in net.go). Response bodies are fetched here, at read time, only when
+	// opts.Body asks for them.
+	Net(ctx context.Context, targetID string, opts NetOpts) (any, error)
+	// NetStream calls emit once per COMPLETED request as it finishes, until ctx
+	// ends. Like ConsoleStream it is served over the daemon's streaming RPC path
+	// rather than dispatch.
+	NetStream(ctx context.Context, targetID string, opts NetOpts, emit func(any) error) error
+	// NetWait blocks until a request matching cond completes, answering from the
+	// already-buffered records first so a request that landed between the action
+	// and the wait is not missed.
+	NetWait(ctx context.Context, targetID string, cond NetCond) (map[string]any, error)
 	CookieList(ctx context.Context, targetID string) (any, error)
 	CookieSet(ctx context.Context, targetID, name, value, domain, path string) (map[string]any, error)
 	CookieDelete(ctx context.Context, targetID, name string) (map[string]any, error)

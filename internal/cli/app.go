@@ -70,6 +70,12 @@ type App struct {
 	// WithDefaults); read once when the flags are registered.
 	defaults config.Defaults
 
+	// inSession is set while `session` is draining stdin and re-entering the
+	// command tree per line. It is NOT a flag: it is how a streaming verb
+	// (console --follow, and RFC-0003's net --follow) knows it would break
+	// session's one-envelope-per-line contract and must fail as usage instead.
+	inSession bool
+
 	// injected sticky-target store, keyed lazily by the connection so distinct
 	// endpoints (--port) don't share a current target (nil in tests).
 	stickyGet func(ConnOpts) string

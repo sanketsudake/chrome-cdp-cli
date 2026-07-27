@@ -53,3 +53,9 @@
 # audit_log = "~/.local/state/chrome-cdp/audit.log"  # NDJSON; never records values
 # audit_all = false                         # also log permitted actions
 # on_violation = "error"                    # error | prompt (prompt refuses when there is no TTY)
+# Event-capture bounds (read by the connection holder, so they take effect on
+# the next `daemon start`; there is no per-command flag for them)
+# console_buffer = 1000    # console messages retained per tab (`console` reports evictions as `dropped`)
+# console_max_entry = 8192 # per-message text cap, in bytes
+# net_buffer = 500         # network records retained per tab (`net` reports evictions as `dropped`)
+# net_max_body = 65536     # per-body cap in bytes, for `net --body`

@@ -81,8 +81,10 @@ func (a *App) newRoot() *cobra.Command {
 		a.cmdList(), a.cmdOpen(), a.cmdUse(), a.cmdNav(), a.cmdActivate(), a.cmdClose(), a.cmdEval(), a.cmdSnap(),
 		a.cmdHTML(), a.cmdText(), a.cmdValue(),
 		a.cmdClick(), a.cmdHover(), a.cmdDblClick(), a.cmdRClick(), a.cmdDrag(), a.cmdKey(),
-		a.cmdType(), a.cmdFill(), a.cmdSelect(), a.cmdUpload(), a.cmdGrid(), a.cmdScroll(), a.cmdAttr(), a.cmdScreenshot(), a.cmdPDF(),
-		a.cmdCookie(), a.cmdHeaders(), a.cmdEmulate(), a.cmdFrame(), a.cmdWait(), a.cmdRaw(),
+		a.cmdType(), a.cmdFill(), a.cmdSelect(), a.cmdUpload(), a.cmdGrid(), a.cmdScroll(), a.cmdAttr(),
+		a.cmdScreenshot(), a.cmdPDF(),
+		a.cmdCookie(), a.cmdHeaders(), a.cmdEmulate(), a.cmdFrame(), a.cmdWait(),
+		a.cmdConsole(), a.cmdNet(), a.cmdRaw(),
 		a.cmdSession(), a.cmdDoctor(), a.cmdDaemon(), a.cmdPolicy(), a.cmdExitCodes(), a.cmdVersion(),
 	)
 	return root
@@ -466,9 +468,13 @@ func (a *App) cmdWait() *cobra.Command {
 	var url, visible, gone, text string
 	var stable, idle bool
 	var forDur time.Duration
+	// --request blocks on one HTTP request rather than on the page as a whole.
+	// It lives here, not only under `net`, because this is where people look for
+	// blocking (RFC-0003 open question 3); `net wait` is the alias.
+	var req netMatchFlags
 	c := &cobra.Command{
-		Use: "wait", Short: "Wait for a condition: --url/--visible/--gone/--text/--stable/--idle, or a fixed --for",
-		RunE: func(*cobra.Command, []string) error {
+		Use: "wait", Short: "Wait for a condition: --url/--visible/--gone/--text/--stable/--idle/--request, or a fixed --for",
+		RunE: func(cmd *cobra.Command, _ []string) error {
 			// --for is a fixed sleep — no tab needed (e.g. settle after a redirect
 			// when no condition is cleaner).
 			if forDur > 0 {
@@ -476,8 +482,15 @@ func (a *App) cmdWait() *cobra.Command {
 				a.emitOK("wait", nil, map[string]any{"waited": "for:" + forDur.String()})
 				return nil
 			}
+			// --request answers a different question from every other condition
+			// ("this call finished with this outcome", not "the page settled"), so
+			// it routes to NetWait rather than to Wait.
+			if req.url != "" || netRequestQualified(cmd) {
+				a.runNetWait(cmd, "wait", &req)
+				return nil
+			}
 			if url == "" && visible == "" && gone == "" && text == "" && !stable && !idle {
-				a.emitErr("wait", result.CodeUsage, "wait needs one of --url, --visible, --gone, --text, --stable, --idle, --for", nil)
+				a.emitErr("wait", result.CodeUsage, "wait needs one of --url, --visible, --gone, --text, --stable, --idle, --request, --for", nil)
 				return nil
 			}
 			cond := chrome.WaitCond{URL: url, Visible: visible, Gone: gone, Text: text, Stable: stable, Idle: idle, Query: a.queryOpts()}
@@ -494,7 +507,22 @@ func (a *App) cmdWait() *cobra.Command {
 	c.Flags().BoolVar(&stable, "stable", false, "wait until the accessibility tree stops changing (the page settled)")
 	c.Flags().BoolVar(&idle, "idle", false, "wait until network activity settles (no in-flight requests) — for SPA loads")
 	c.Flags().DurationVar(&forDur, "for", 0, "wait a fixed duration (e.g. 3s) — a fallback; prefer a condition")
+	req.register(c)
+	c.Flags().StringVar(&req.url, "request", "", "wait until an HTTP request whose URL contains this substring completes (re:<pattern> for a regex); qualify it with --method/--status/--failed")
 	return c
+}
+
+// netRequestQualified reports whether the user gave a request qualifier without
+// --request itself. Those flags are meaningless on the page-level conditions, so
+// routing to the request wait lets runNetWait explain what is missing rather
+// than silently waiting for the wrong thing.
+func netRequestQualified(cmd *cobra.Command) bool {
+	for _, name := range []string{"method", "status", "failed", "xhr", "type"} {
+		if cmd.Flags().Changed(name) {
+			return true
+		}
+	}
+	return false
 }
 
 func (a *App) cmdFrame() *cobra.Command {
@@ -821,8 +849,11 @@ func (a *App) cmdSession() *cobra.Command {
 		Args: cobra.NoArgs,
 		RunE: func(*cobra.Command, []string) error {
 			// Each result line is a JSON envelope (NDJSON) regardless of the global
-			// --json default.
+			// --json default. inSession marks the re-entrant runs below, so a
+			// streaming verb rejects itself rather than interleaving many lines
+			// into a batch that promises one envelope per command.
 			a.defaults.JSON = true
+			a.inSession = true
 			r := a.in
 			if r == nil {
 				r = os.Stdin

@@ -126,6 +126,21 @@ func (StubBrowser) Frames(context.Context, string) (any, error) {
 func (StubBrowser) Wait(context.Context, string, chrome.WaitCond) (map[string]any, error) {
 	return map[string]any{"waited": "ok"}, nil
 }
+func (StubBrowser) Console(context.Context, string, chrome.ConsoleOpts) (any, error) {
+	return map[string]any{"messages": []any{}, "count": 0, "buffered": 0, "dropped": 0, "truncated": false}, nil
+}
+func (StubBrowser) ConsoleStream(context.Context, string, chrome.ConsoleOpts, func(any) error) error {
+	return nil
+}
+func (StubBrowser) Net(context.Context, string, chrome.NetOpts) (any, error) {
+	return map[string]any{"requests": []any{}, "count": 0, "buffered": 0, "dropped": 0, "truncated": false, "pending": 0}, nil
+}
+func (StubBrowser) NetStream(context.Context, string, chrome.NetOpts, func(any) error) error {
+	return nil
+}
+func (StubBrowser) NetWait(context.Context, string, chrome.NetCond) (map[string]any, error) {
+	return map[string]any{"matched": false}, nil
+}
 func (StubBrowser) Raw(context.Context, string, string, json.RawMessage) (any, error) {
 	return map[string]any{}, nil
 }

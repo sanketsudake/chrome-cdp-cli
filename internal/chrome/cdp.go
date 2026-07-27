@@ -28,6 +28,7 @@ import (
 	easyjson "github.com/mailru/easyjson"
 
 	"github.com/sanketsudake/chrome-cdp-cli/internal/browser"
+	"github.com/sanketsudake/chrome-cdp-cli/internal/eventbuf"
 	"github.com/sanketsudake/chrome-cdp-cli/internal/target"
 )
 
@@ -38,6 +39,17 @@ type Options struct {
 	Port       int    // explicit debug port to attach to / launch with (0 = auto)
 	NoLaunch   bool   // don't fall back to launching a managed Chrome
 	Headless   bool   // headless for the managed-launch fallback (tests use this)
+
+	// Event-capture bounds (config keys console_buffer / console_max_entry).
+	// Zero means the built-in default; see configureCapture.
+	ConsoleBuffer   int // retained console messages per target
+	ConsoleMaxEntry int // per-message text cap, in bytes
+
+	// Network-capture bounds (config keys net_buffer / net_max_body). Separate
+	// from the console's because a correlated request record is much larger than
+	// a console line. Zero means the built-in default.
+	NetBuffer  int // retained network records per target
+	NetMaxBody int // per-body cap, in bytes
 }
 
 // ConnectError carries a stable error.code (matching the result contract) so the
@@ -66,6 +78,21 @@ type CDP struct {
 
 	mu   sync.Mutex
 	tabs map[string]tabConn
+
+	// Retained CDP events, per target. The buffers live HERE — on the object
+	// that holds the connection, which in normal use is owned by the daemon —
+	// because a per-command process cannot retain events it was not running to
+	// receive. Capture starts at attach (see startCapture in console.go), not
+	// at the first read. Sized once by configureCapture, before any attach.
+	console         *eventbuf.Set[consoleMessage]
+	consoleMaxEntry int
+
+	// Network records get their OWN buffers and bounds: they are larger per
+	// entry and evicted on a different rhythm than console lines, so sharing one
+	// ring would let a chatty console throw away the request history (and vice
+	// versa). See net.go.
+	net        *eventbuf.Set[netRecord]
+	netMaxBody int
 }
 
 // tabConn is a cached per-tab context and its cancel func.
@@ -75,10 +102,15 @@ type tabConn struct {
 }
 
 func newCDP(managed bool, alloc context.Context, allocCancel context.CancelFunc, base context.Context, baseCancel context.CancelFunc) *CDP {
-	return &CDP{
+	c := &CDP{
 		managed: managed, alloc: alloc, allocCancel: allocCancel, base: base, baseCancel: baseCancel,
 		tabs: map[string]tabConn{},
 	}
+	// Capture is on from the start, at the built-in bounds; Connect resizes it
+	// from the config before the first attach.
+	c.configureCapture(0, 0)
+	c.configureNetCapture(0, 0)
+	return c
 }
 
 // Connect walks the connection ladder (mirroring browser.DecideConnection):
@@ -109,9 +141,11 @@ func Connect(_ context.Context, opts Options) (*CDP, error) {
 		ChromeRunning: chromeRunning(),
 		NoLaunch:      opts.NoLaunch,
 	}
+	var c *CDP
+	var err error
 	switch browser.DecideConnection(probe) {
 	case browser.Attach:
-		return attach(endpoint)
+		c, err = attach(endpoint)
 	case browser.InstructToggle:
 		return nil, &ConnectError{
 			Code:    "not_debug_enabled",
@@ -123,8 +157,16 @@ func Connect(_ context.Context, opts Options) (*CDP, error) {
 			Message: "no debug-enabled Chrome found and --no-launch is set — enable chrome://inspect/#remote-debugging or drop --no-launch",
 		}
 	default: // Launch
-		return launch(opts.Headless, opts.ProfileDir, opts.Port)
+		c, err = launch(opts.Headless, opts.ProfileDir, opts.Port)
 	}
+	if err != nil {
+		return nil, err
+	}
+	// Size the event buffers before any tab is attached, i.e. before capture
+	// can receive anything.
+	c.configureCapture(opts.ConsoleBuffer, opts.ConsoleMaxEntry)
+	c.configureNetCapture(opts.NetBuffer, opts.NetMaxBody)
+	return c, nil
 }
 
 func attach(ws string) (*CDP, error) {
@@ -266,6 +308,11 @@ func (c *CDP) on(id string) (context.Context, error) {
 		return nil, err
 	}
 	c.tabs[id] = tabConn{ctx: tctx, stop: cancel}
+	// Event capture starts at ATTACH, not at the first `console`/`net` read:
+	// the process holding the connection has to already be listening when the
+	// page logs, or an observability verb can only report what happened after
+	// somebody thought to look. See startCapture in console.go.
+	c.startCapture(tctx, id)
 	return tctx, nil
 }
 

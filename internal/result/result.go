@@ -35,11 +35,19 @@ const (
 	// tell "policy forbids this, do not retry, tell the user" from "element not
 	// found, retry differently".
 	CodePermissionDenied = "permission_denied"
+	// CodeAssertFailed is an assertion verdict, not a tool failure: the command
+	// ran fine and the thing it was asked to check was true (console
+	// --fail-on-match found messages). It maps to ExitGeneric so `nonzero means
+	// the assertion tripped` keeps working in a CI `set -e` script, while the
+	// code still lets a caller tell "the page logged an error" apart from "the
+	// tool broke". Shared with RFC-0003's net --fail-on-match.
+	CodeAssertFailed = "assertion_failed"
 )
 
 // codeToExit maps stable error.code strings to their process exit code.
 var codeToExit = map[string]int{
 	CodeGeneric:        ExitGeneric,
+	CodeAssertFailed:   ExitGeneric,
 	CodeUsage:          ExitUsage,
 	CodeConnection:     ExitConnection,
 	CodeNotDebug:       ExitConnection,
@@ -64,7 +72,7 @@ type ExitCodeDoc struct {
 func ExitCodes() []ExitCodeDoc {
 	return []ExitCodeDoc{
 		{ExitOK, "success"},
-		{ExitGeneric, "generic / unclassified"},
+		{ExitGeneric, "generic / unclassified (also: an assertion tripped, e.g. console --fail-on-match)"},
 		{ExitUsage, "usage (bad flags/args)"},
 		{ExitConnection, "connection (attach/launch failed)"},
 		{ExitTarget, "target/timeout (selector not found, timeout, ambiguous/unknown target)"},
