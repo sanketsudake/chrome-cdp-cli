@@ -51,6 +51,10 @@ Flags a verb already takes go in the array, so `--timeout 60s` on the one slow s
 There is no shell in this design and there is no `shell:` step type, so `--set note="; rm -rf /"` reaches the browser as one literal string and nothing in it is interpreted.
 That is not a hardening measure bolted on afterwards; it is why the format has argv arrays instead of command lines.
 
+The same holds for flag parsing, which is the less obvious half.
+Which elements of a step are flags is decided by the recipe as written, never by a value you pass in, so `--set note=--target=@2` arrives as the text `--target=@2` rather than as a second `--target` pointing the step at another tab.
+You can see it in `--dry-run`: a step's data is emitted after a `--` terminator.
+
 `on_error` is `abort` (the default) or `continue`.
 There are no retries, no conditionals, and no loops.
 If your automation needs them, write a program that calls `session` — that is the supported answer, and a bigger recipe format is not.
