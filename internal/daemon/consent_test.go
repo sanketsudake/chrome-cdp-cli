@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -27,14 +28,25 @@ func shrinkStartupWait(t *testing.T, d time.Duration) {
 	t.Cleanup(func() { startupWait = prev })
 }
 
-// captureNotices redirects the advisory Ensure prints while it waits.
-func captureNotices(t *testing.T) *[]string {
+// captureNotices redirects the advisories Ensure prints while it waits. The
+// mutex is not decoration: lockSpawn's contention notice comes from whichever
+// goroutine is blocked on the lock, not from the caller's.
+func captureNotices(t *testing.T) func() []string {
 	t.Helper()
+	var mu sync.Mutex
 	var got []string
-	prev := Notice
-	Notice = func(msg string) { got = append(got, msg) }
-	t.Cleanup(func() { Notice = prev })
-	return &got
+	prev := notice
+	notice = func(msg string) {
+		mu.Lock()
+		defer mu.Unlock()
+		got = append(got, msg)
+	}
+	t.Cleanup(func() { notice = prev })
+	return func() []string {
+		mu.Lock()
+		defer mu.Unlock()
+		return append([]string(nil), got...)
+	}
 }
 
 // bindAfter makes a fake daemon that binds sockPath after delay, so the socket
@@ -68,14 +80,14 @@ func TestEnsureWaitsOutTheConsentPrompt(t *testing.T) {
 	notices := captureNotices(t)
 
 	bind := bindAfter(t, time.Second) // ~3x the plain startup budget
-	restore := swapSpawn(func(_, sockPath string, _ []string) error {
+	restore := swapSpawn(func(_, sockPath string, _ []string) (*daemonProc, error) {
 		// The real daemon publishes this the moment chrome.Connect classifies the
 		// upgrade as pending — while the dialog is still on screen.
 		if err := os.WriteFile(sockPath+pendingSuffix, []byte("waiting\n"), 0o600); err != nil {
 			t.Errorf("write pending sidecar: %v", err)
 		}
 		bind(sockPath)
-		return nil
+		return liveProc(t), nil
 	})
 	defer restore()
 
@@ -90,10 +102,11 @@ func TestEnsureWaitsOutTheConsentPrompt(t *testing.T) {
 	if el := time.Since(start); el < 900*time.Millisecond {
 		t.Errorf("connected after %v, before the daemon was up — the test is not exercising the wait", el)
 	}
-	if len(*notices) == 0 {
+	said := strings.Join(notices(), "\n")
+	if said == "" {
 		t.Error("nothing was said while waiting; a user staring at a frozen browser has to be told it is a dialog")
-	} else if !strings.Contains((*notices)[0], "Allow remote debugging") || !strings.Contains((*notices)[0], "no other input") {
-		t.Errorf("the wait notice must name the prompt and say Chrome accepts no other input:\n%s", (*notices)[0])
+	} else if !strings.Contains(said, "Allow remote debugging") || !strings.Contains(said, "no other input") {
+		t.Errorf("the wait notice must name the prompt and say Chrome accepts no other input:\n%s", said)
 	}
 }
 
@@ -104,8 +117,8 @@ func TestEnsureBoundsTheConsentWait(t *testing.T) {
 	shrinkStartupWait(t, 200*time.Millisecond)
 	captureNotices(t)
 
-	restore := swapSpawn(func(_, sockPath string, _ []string) error {
-		return os.WriteFile(sockPath+pendingSuffix, []byte("waiting\n"), 0o600)
+	restore := swapSpawn(func(_, sockPath string, _ []string) (*daemonProc, error) {
+		return liveProc(t), os.WriteFile(sockPath+pendingSuffix, []byte("waiting\n"), 0o600)
 	})
 	defer restore()
 
@@ -134,7 +147,7 @@ func TestEnsureFailsFastWithoutAPendingPrompt(t *testing.T) {
 	sock := filepath.Join(shortTempDir(t), "d.sock")
 	shrinkStartupWait(t, 300*time.Millisecond)
 
-	restore := swapSpawn(func(string, string, []string) error { return nil }) // never binds
+	restore := swapSpawn(func(string, string, []string) (*daemonProc, error) { return liveProc(t), nil }) // never binds
 	defer restore()
 
 	start := time.Now()

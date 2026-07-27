@@ -25,9 +25,12 @@ import (
 // orphaning a live daemon nothing can reach.
 func TestEnsureSpawnsOneDaemonUnderConcurrency(t *testing.T) {
 	sock := filepath.Join(shortTempDir(t), "d.sock")
+	// Seven of the eight callers lose the lock race and say so; capture that
+	// rather than printing it eight times.
+	captureNotices(t)
 
 	var spawns atomic.Int32
-	restore := swapSpawn(func(_, sockPath string, _ []string) error {
+	restore := swapSpawn(func(_, sockPath string, _ []string) (*daemonProc, error) {
 		spawns.Add(1)
 		// Behave like the real daemon: bind the socket, a moment later, so the
 		// window between spawning and being connectable is real rather than
@@ -48,7 +51,7 @@ func TestEnsureSpawnsOneDaemonUnderConcurrency(t *testing.T) {
 				_ = c.Close()
 			}
 		}()
-		return nil
+		return liveProc(t), nil
 	})
 	defer restore()
 
@@ -98,9 +101,9 @@ func TestEnsureReusesARunningDaemon(t *testing.T) {
 	}()
 
 	var spawns atomic.Int32
-	restore := swapSpawn(func(string, string, []string) error {
+	restore := swapSpawn(func(string, string, []string) (*daemonProc, error) {
 		spawns.Add(1)
-		return nil
+		return liveProc(t), nil
 	})
 	defer restore()
 
@@ -125,8 +128,17 @@ func shortTempDir(t *testing.T) string {
 	return dir
 }
 
-func swapSpawn(fn func(exePath, sockPath string, env []string) error) func() {
+func swapSpawn(fn func(exePath, sockPath string, env []string) (*daemonProc, error)) func() {
 	prev := spawnDaemon
 	spawnDaemon = fn
 	return func() { spawnDaemon = prev }
+}
+
+// liveProc is a daemon handle whose process is still running: Ensure's liveness
+// check must find nothing wrong, so the sidecars and the deadline decide.
+func liveProc(t *testing.T) *daemonProc {
+	t.Helper()
+	p := &daemonProc{exited: make(chan struct{})}
+	t.Cleanup(func() { close(p.exited) })
+	return p
 }
