@@ -573,6 +573,12 @@ func recordResultPayload(meta map[string]any, res encode.Result, opts exportOpts
 	if res.Reduced {
 		out["reduced"] = true
 		out["export_scale"] = res.Scale
+	}
+	// Whether the ceiling was met is a fact about the CEILING, not about the
+	// reduction: the ladder can refuse at step 0 for a small canvas with few
+	// frames, and gating the report on `reduced` is what let a 16x miss be
+	// reported as a plain byte count with nothing said about it.
+	if opts.maxBytes > 0 {
 		out["within_max_size"] = res.WithinMaxSize
 	}
 	return out

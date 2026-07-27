@@ -549,6 +549,41 @@ func TestRecordReportsDecodeFailures(t *testing.T) {
 	}
 }
 
+// TestRecordReportsAMissedCeiling: `--max-size` that could not be met has to say
+// so even when no reduction step was possible at all.
+//
+// Gating the report on `reduced` hid exactly the worst case: a small canvas with
+// few frames is refused at step 0, so the envelope reported the byte count and
+// nothing about the ceiling it missed by 16x.
+func TestRecordReportsAMissedCeiling(t *testing.T) {
+	t.Parallel()
+	b := newRecordBrowser(t)
+	run(t, b, "record", "start", "--target", "aa11", "--json")
+	env, _, code := run(t, b, "record", "stop", "-o", filepath.Join(t.TempDir(), "x.gif"),
+		"--max-size", "10", "--target", "aa11", "--json")
+	if code != 0 {
+		t.Fatalf("exit = %d: %v", code, env["error"])
+	}
+	res := resultOf(t, env)
+	if res["reduced"] == true {
+		t.Fatalf("this fixture was expected to be unreducible; the test proves nothing: %v", res)
+	}
+	within, ok := res["within_max_size"]
+	if !ok {
+		t.Fatalf("--max-size 10 produced %v bytes and said nothing about the ceiling: %v", res["bytes"], res)
+	}
+	if within != false {
+		t.Errorf("within_max_size = %v, want false", within)
+	}
+
+	// And with no ceiling asked for, the key stays out of the envelope.
+	run(t, b, "record", "start", "--target", "aa11", "--json")
+	env, _, _ = run(t, b, "record", "stop", "-o", filepath.Join(t.TempDir(), "y.gif"), "--target", "aa11", "--json")
+	if _, ok := resultOf(t, env)["within_max_size"]; ok {
+		t.Error("within_max_size is reported for an export that asked for no ceiling")
+	}
+}
+
 // TestRecordReportsTruncation is VS-6 at the CLI boundary: what the driver's
 // bounds discarded reaches the envelope, so a partial recording cannot be
 // mistaken for a complete one.
