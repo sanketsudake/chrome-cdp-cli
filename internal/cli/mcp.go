@@ -212,11 +212,38 @@ type mcpRunner struct {
 	// ever left holding this, never a request-bound wrapper, so a later call
 	// cannot inherit an earlier request's cancellation.
 	real chrome.Browser
-	// extra are flags re-applied to every call. Flag variables live on App and
-	// are re-registered (and so reset) per Execute, so anything that must
-	// survive into each tool call has to travel in the argv — --allow above all,
-	// since losing it would silently widen the boundary.
-	extra []string
+}
+
+// mcpLock freezes the flags an MCP server's boundary is made of.
+//
+// Flag variables live on App and are re-registered (and so reset) per Execute,
+// so the server's --allow has to be re-applied to every tool call or the
+// boundary silently widens. It used to travel in the argv, which was both
+// fragile and forgeable: the argv is assembled from caller-controlled values,
+// --allow is a StringArrayVar (so an injected one UNIONS with the server's
+// rather than replacing it), and --policy-off would have turned the whole layer
+// — including tab redaction — off for that call.
+//
+// So it does not travel in the argv at all. The lock is restored in the root
+// PersistentPreRun, which runs after parsing and therefore wins over anything
+// the argv said, whatever shape it had. internal/mcp's `--` terminator stops
+// the injection at the source; this makes the two flags that matter most
+// non-negotiable even if something else ever gets a value into flag position.
+//
+// Only the POLICY flags are frozen here. The connection-shaped ones (--port,
+// --profile-dir, --no-daemon) are already fixed into a.defaults by
+// newMCPRunner, and widening this to every flag would stop `session`-style
+// re-entry from working.
+type mcpLock struct{ allow []string }
+
+// restore re-imposes the frozen values. It is a method on the pointer so the
+// nil case — every non-MCP invocation — is one branch and no state.
+func (l *mcpLock) restore(a *App) {
+	if l == nil {
+		return
+	}
+	a.policyOff = false
+	a.allowFlag = append([]string(nil), l.allow...)
 }
 
 // newMCPRunner freezes the server's connection-shaped flags into the defaults
@@ -237,11 +264,10 @@ func (a *App) newMCPRunner() *mcpRunner {
 	a.defaults.Port = a.port
 	a.defaults.JSON = true
 
-	r := &mcpRunner{app: a, real: a.browser}
-	for _, p := range a.allowFlag {
-		r.extra = append(r.extra, "--allow", p)
-	}
-	return r
+	// From here on every Execute is a tool call, and the policy flags stop
+	// being per-call arguments.
+	a.mcpLock = &mcpLock{allow: append([]string(nil), a.allowFlag...)}
+	return &mcpRunner{app: a, real: a.browser}
 }
 
 // Run executes one argv and returns the envelope it printed with its exit code.
@@ -273,7 +299,7 @@ func (r *mcpRunner) Run(ctx context.Context, argv []string) ([]byte, int) {
 	var buf bytes.Buffer
 	out := a.out
 	a.out = &buf
-	exit := a.Execute(append(argv, r.extra...)...)
+	exit := a.Execute(argv...)
 	a.out = out
 
 	a.connect = connect

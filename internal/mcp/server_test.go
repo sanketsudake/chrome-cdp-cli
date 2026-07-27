@@ -221,8 +221,9 @@ func TestSuccessMapsToEnvelopeResult(t *testing.T) {
 	if len(out.Content) == 0 {
 		t.Error("no text summary in the content blocks")
 	}
-	// The addressing options must reach the CLI as the flags they mirror.
-	if argv := r.argv(0); !containsSeq(argv, "click", "Save") || !containsSeq(argv, "--by", "name") {
+	// The addressing options must reach the CLI as the flags they mirror, and
+	// the selector as a positional behind the `--` terminator.
+	if argv := r.argv(0); argv[0] != "click" || !containsSeq(argv, "--by", "name") || !containsSeq(argv, "--", "Save") {
 		t.Errorf("argv = %v, want a click on Save with --by name", argv)
 	}
 }
@@ -549,6 +550,20 @@ func TestPinnedTargetIsInjectedAndConflictsRefused(t *testing.T) {
 	}
 }
 
+// splitAtDash returns the verb and the positional values a built argv carries,
+// which is the whole shape the CLI sees: `<verb> <flags…> -- <positionals…>`.
+func splitAtDash(argv []string) (verb string, pos []string) {
+	if len(argv) == 0 {
+		return "", nil
+	}
+	for i, w := range argv {
+		if w == "--" {
+			return argv[0], argv[i+1:]
+		}
+	}
+	return argv[0], nil
+}
+
 func TestArgvMirrorsTheCLISpelling(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
@@ -577,13 +592,10 @@ func TestArgvMirrorsTheCLISpelling(t *testing.T) {
 				t.Fatalf("call failed: %v", structured(t, out))
 			}
 			argv := r.argv(0)
-			if len(argv) < len(c.want) {
-				t.Fatalf("argv = %v, want it to start with %v", argv, c.want)
-			}
-			for i, w := range c.want {
-				if argv[i] != w {
-					t.Fatalf("argv = %v, want it to start with %v", argv, c.want)
-				}
+			verb, pos := splitAtDash(argv)
+			got := append([]string{verb}, pos...)
+			if strings.Join(got, "\x00") != strings.Join(c.want, "\x00") {
+				t.Fatalf("argv = %v, want the verb %q and the positionals %v after `--`", argv, c.want[0], c.want[1:])
 			}
 		})
 	}

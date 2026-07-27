@@ -335,7 +335,7 @@ func (s *Server) callTool(ctx context.Context, t *tool, raw map[string]any) *sdk
 		return usageResult(err)
 	}
 	c := &call{tool: t, args: args}
-	verb, argv, err := t.build(c)
+	verb, flags, pos, err := t.build(c)
 	if err != nil {
 		return usageResult(err)
 	}
@@ -355,10 +355,10 @@ func (s *Server) callTool(ctx context.Context, t *tool, raw map[string]any) *sdk
 			return errorResult(result.CodeGeneric, err.Error(), nil)
 		}
 		defer shot.cleanup()
-		argv = append(argv, shot.flags()...)
+		flags = append(flags, shot.flags()...)
 	}
 
-	env, exit := s.runner.Run(ctx, append(argv, "--json"))
+	env, exit := s.runner.Run(ctx, argvFor(verb, flags, pos))
 	res := mapEnvelope(env, exit)
 	if shot != nil && res.OK {
 		if err := shot.attach(res); err != nil {
@@ -366,6 +366,30 @@ func (s *Server) callTool(ctx context.Context, t *tool, raw map[string]any) *sdk
 		}
 	}
 	return res.toolResult()
+}
+
+// argvFor assembles the command line: the verb, then every generated flag,
+// then a `--` terminator, then the caller's positional values.
+//
+// The terminator is the security-shaped part. Tool arguments are attacker-
+// controlled in the threat model this server has (the caller is an agent
+// reading untrusted page content), and pflag consumes ANY word beginning with
+// "-" as a flag wherever it appears — so a `selector` of "--policy-off" or
+// "--allow=evil.test", spliced in ahead of the flags the way the builders used
+// to, silently turned the boundary off for that call. Everything after `--` is
+// a positional to pflag, whatever it looks like, which also fixes the honest
+// cases: typing the text "-foo", or pressing a key spelled with a minus.
+//
+// --json goes in with the flags for the same reason: it must be parsed as a
+// flag, so it cannot sit after the terminator.
+func argvFor(verb string, flags, pos []string) []string {
+	argv := append(strings.Fields(verb), flags...)
+	argv = append(argv, "--json")
+	if len(pos) > 0 {
+		argv = append(argv, "--")
+		argv = append(argv, pos...)
+	}
+	return argv
 }
 
 // applyTarget folds the pinned --target into a call. A pinned server that

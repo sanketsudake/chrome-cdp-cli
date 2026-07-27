@@ -144,34 +144,34 @@ func tabsTool() *tool {
 			{name: "all", typ: "boolean", flag: "all",
 				desc: "with action=\"close\": close every matching tab (required when more than one matches)."},
 		}, targetArgs()),
-		build: func(c *call) (string, []string, error) {
+		build: func(c *call) (string, []string, []string, error) {
 			action := c.str("action")
 			if err := c.only(action, map[string][]string{
 				"all": {"close"}, "title": {"list", "close"}, "url": {"open", "list", "close"},
 			}); err != nil {
-				return "", nil, err
+				return "", nil, nil, err
 			}
 			switch action {
 			case "list":
-				return "list", append([]string{"list"}, c.flags("action", "target")...), nil
+				return "list", c.flags("action", "target"), nil, nil
 			case "open":
 				if !c.has("url") {
-					return "", nil, usagef("tabs action=\"open\" needs `url`")
+					return "", nil, nil, usagef("tabs action=\"open\" needs `url`")
 				}
-				return "open", append([]string{"open", c.str("url")}, c.flags("action", "url", "target", "title", "all")...), nil
+				return "open", c.flags("action", "url", "target", "title", "all"), []string{c.str("url")}, nil
 			case "use":
 				if !c.has("target") {
-					return "", nil, usagef("tabs action=\"use\" needs `target` (an id prefix, url:<s>, title:<s>, or @N)")
+					return "", nil, nil, usagef("tabs action=\"use\" needs `target` (an id prefix, url:<s>, title:<s>, or @N)")
 				}
-				return "use", append([]string{"use", c.str("target")}, c.flags("action", "target", "url", "title", "all")...), nil
+				return "use", c.flags("action", "target", "url", "title", "all"), []string{c.str("target")}, nil
 			case "close", "activate":
-				argv := []string{action}
+				var pos []string
 				if c.has("target") {
-					argv = append(argv, c.str("target"))
+					pos = append(pos, c.str("target"))
 				}
-				return action, append(argv, c.flags("action", "target")...), nil
+				return action, c.flags("action", "target"), pos, nil
 			}
-			return "", nil, usagef("unknown tabs action %q", action)
+			return "", nil, nil, usagef("unknown tabs action %q", action)
 		},
 	}
 }
@@ -190,12 +190,12 @@ func navigateTool() *tool {
 			{name: "reload", typ: "boolean", flag: "reload", desc: "reload the current page."},
 			{name: "hard", typ: "boolean", flag: "hard", desc: "with reload: bypass the cache."},
 		}, actArgs()[:1], targetArgs()),
-		build: func(c *call) (string, []string, error) {
-			argv := []string{"nav"}
+		build: func(c *call) (string, []string, []string, error) {
+			var pos []string
 			if c.has("url") {
-				argv = append(argv, c.str("url"))
+				pos = append(pos, c.str("url"))
 			}
-			return "nav", append(argv, c.flags("url")...), nil
+			return "nav", c.flags("url"), pos, nil
 		},
 	}
 }
@@ -214,8 +214,8 @@ func snapshotTool() *tool {
 			{name: "region", typ: "string", flag: "region", desc: "only nodes inside a container whose accessible name contains this."},
 			{name: "dedupe", typ: "boolean", flag: "dedupe", desc: "collapse identical role+name (for virtualized grids)."},
 		}, targetArgs()),
-		build: func(c *call) (string, []string, error) {
-			return "snap", append([]string{"snap"}, c.flags()...), nil
+		build: func(c *call) (string, []string, []string, error) {
+			return "snap", c.flags(), nil, nil
 		},
 	}
 }
@@ -240,22 +240,22 @@ func readTool() *tool {
 			{name: "inner", typ: "boolean", flag: "inner", desc: "kind=\"html\": inner HTML instead of outer."},
 			{name: "all", typ: "boolean", flag: "all", desc: "kind=\"value\": the value of every match, as a list."},
 		}, queryArgs(), targetArgs()),
-		build: func(c *call) (string, []string, error) {
+		build: func(c *call) (string, []string, []string, error) {
 			kind := c.str("kind")
 			if err := c.only(kind, map[string][]string{
 				"article": {"text"}, "markdown": {"text"}, "min_chars": {"text"},
 				"inner": {"html"}, "all": {"value"},
 			}); err != nil {
-				return "", nil, err
+				return "", nil, nil, err
 			}
 			if kind == "value" && !c.has("selector") {
-				return "", nil, usagef("read kind=\"value\" needs `selector`")
+				return "", nil, nil, usagef("read kind=\"value\" needs `selector`")
 			}
-			argv := []string{kind}
+			var pos []string
 			if c.has("selector") {
-				argv = append(argv, c.str("selector"))
+				pos = append(pos, c.str("selector"))
 			}
-			return kind, append(argv, c.flags("kind", "selector")...), nil
+			return kind, c.flags("kind", "selector"), pos, nil
 		},
 	}
 }
@@ -271,8 +271,8 @@ func clickTool() *tool {
 			{name: "selector", typ: "string", pos: true, required: true, desc: "the element to click (see Addressing)."},
 			{name: "modifiers", typ: "string", flag: "modifiers", desc: "modifier keys held during the click, +-joined: ctrl+shift+alt+cmd."},
 		}, actArgs(), queryArgs(), targetArgs()),
-		build: func(c *call) (string, []string, error) {
-			return "click", append([]string{"click", c.str("selector")}, c.flags("selector")...), nil
+		build: func(c *call) (string, []string, []string, error) {
+			return "click", c.flags("selector"), []string{c.str("selector")}, nil
 		},
 	}
 }
@@ -289,12 +289,12 @@ func typeTextTool() *tool {
 			{name: "text", typ: "string", pos: true, required: true, desc: "the literal text to type."},
 			{name: "replace", typ: "boolean", desc: "clear the field and set it to `text` (fill) instead of appending."},
 		}, actArgs(), queryArgs(), targetArgs()),
-		build: func(c *call) (string, []string, error) {
+		build: func(c *call) (string, []string, []string, error) {
 			verb := "type"
 			if c.bool("replace") {
 				verb = "fill"
 			}
-			return verb, append([]string{verb, c.str("selector"), c.str("text")}, c.flags("selector", "text", "replace")...), nil
+			return verb, c.flags("selector", "text", "replace"), []string{c.str("selector"), c.str("text")}, nil
 		},
 	}
 }
@@ -313,15 +313,15 @@ func keyTool() *tool {
 			{name: "repeat", typ: "integer", flag: "repeat", desc: "press the sequence this many times (1..100)."},
 			{name: "delay", typ: "string", flag: "delay", desc: "pause between repeats as a Go duration (e.g. \"100ms\"), for apps that debounce input."},
 		}, actArgs()[:1], queryArgs(), targetArgs()),
-		build: func(c *call) (string, []string, error) {
-			// The keyspec is always the LAST argument, with the optional
+		build: func(c *call) (string, []string, []string, error) {
+			// The keyspec is always the LAST positional, with the optional
 			// selector before it — the CLI's own contract.
-			argv := []string{"key"}
+			var pos []string
 			if c.has("selector") {
-				argv = append(argv, c.str("selector"))
+				pos = append(pos, c.str("selector"))
 			}
-			argv = append(argv, c.str("keys"))
-			return "key", append(argv, c.flags("keys", "selector")...), nil
+			pos = append(pos, c.str("keys"))
+			return "key", c.flags("keys", "selector"), pos, nil
 		},
 	}
 }
@@ -347,15 +347,15 @@ func pointerTool() *tool {
 			{name: "dy", typ: "number", flag: "dy", desc: "action=\"drag\": vertical distance in pixels from the source centre."},
 			{name: "steps", typ: "integer", flag: "steps", desc: "action=\"drag\": interpolated move events between press and release."},
 		}, actArgs(), queryArgs(), targetArgs()),
-		build: func(c *call) (string, []string, error) {
+		build: func(c *call) (string, []string, []string, error) {
 			action := c.str("action")
 			if err := c.only(action, map[string][]string{
 				"hold": {"hover", "drag"},
 				"to":   {"drag"}, "to_by": {"drag"}, "dx": {"drag"}, "dy": {"drag"}, "steps": {"drag"},
 			}); err != nil {
-				return "", nil, err
+				return "", nil, nil, err
 			}
-			return action, append([]string{action, c.str("selector")}, c.flags("action", "selector")...), nil
+			return action, c.flags("action", "selector"), []string{c.str("selector")}, nil
 		},
 	}
 }
@@ -374,8 +374,8 @@ func selectOptionTool() *tool {
 			{name: "option_match", typ: "string", flag: "option-match", enum: []string{"contains", "exact", "regex"}, desc: "option match mode; contains by default."},
 			{name: "sep", typ: "string", flag: "sep", desc: "cascade path separator between option levels (default \">\")."},
 		}, actArgs(), queryArgs(), targetArgs()),
-		build: func(c *call) (string, []string, error) {
-			return "select", append([]string{"select", c.str("field"), c.str("option")}, c.flags("field", "option")...), nil
+		build: func(c *call) (string, []string, []string, error) {
+			return "select", c.flags("field", "option"), []string{c.str("field"), c.str("option")}, nil
 		},
 	}
 }
@@ -394,12 +394,12 @@ func scrollTool() *tool {
 			{name: "to", typ: "boolean", flag: "to", desc: "scroll the selector into view instead of by a delta."},
 			{name: "wheel", typ: "boolean", flag: "wheel", desc: "dispatch a real mouse wheel (for grids that render on wheel, not scroll)."},
 		}, queryArgs(), targetArgs()),
-		build: func(c *call) (string, []string, error) {
-			argv := []string{"scroll"}
+		build: func(c *call) (string, []string, []string, error) {
+			var pos []string
 			if c.has("selector") {
-				argv = append(argv, c.str("selector"))
+				pos = append(pos, c.str("selector"))
 			}
-			return "scroll", append(argv, c.flags("selector")...), nil
+			return "scroll", c.flags("selector"), pos, nil
 		},
 	}
 }
@@ -416,16 +416,15 @@ func uploadTool() *tool {
 			{name: "paths", typ: "array", items: "string", pos: true, required: true, desc: "absolute paths of the files to attach."},
 			{name: "append", typ: "boolean", flag: "append", desc: "add to the files this session set on the input instead of replacing them."},
 		}, actArgs()[:1], queryArgs(), targetArgs()),
-		build: func(c *call) (string, []string, error) {
+		build: func(c *call) (string, []string, []string, error) {
 			paths, err := c.stringList("paths")
 			if err != nil {
-				return "", nil, err
+				return "", nil, nil, err
 			}
 			if len(paths) == 0 {
-				return "", nil, usagef("upload needs at least one path in `paths`")
+				return "", nil, nil, usagef("upload needs at least one path in `paths`")
 			}
-			argv := append([]string{"upload", c.str("selector")}, paths...)
-			return "upload", append(argv, c.flags("selector", "paths")...), nil
+			return "upload", c.flags("selector", "paths"), append([]string{c.str("selector")}, paths...), nil
 		},
 	}
 }
@@ -452,8 +451,8 @@ func waitForTool() *tool {
 			{name: "xhr", typ: "boolean", flag: "xhr", desc: "with request: shorthand for type xhr + fetch."},
 			{name: "type", typ: "array", items: "string", flag: "type", desc: "with request: only these resource types (document|xhr|fetch|script|stylesheet|image|font|websocket|other)."},
 		}, queryArgs(), targetArgs()),
-		build: func(c *call) (string, []string, error) {
-			return "wait", append([]string{"wait"}, c.flags()...), nil
+		build: func(c *call) (string, []string, []string, error) {
+			return "wait", c.flags(), nil, nil
 		},
 	}
 }
@@ -476,11 +475,11 @@ func screenshotTool() *tool {
 			{name: "padding", typ: "number", flag: "padding", desc: "expand an element capture by this many pixels."},
 			{name: "output", typ: "string", flag: "output", desc: "also write the image to this path; omit to only return it inline."},
 		}, queryArgs(), targetArgs()),
-		build: func(c *call) (string, []string, error) {
+		build: func(c *call) (string, []string, []string, error) {
 			// `output` is the server's to pass: with none given it captures to a
 			// temporary file, reads the bytes back for the image block, and
 			// removes it, so a client that only wants the picture gets no litter.
-			return "screenshot", append([]string{"screenshot"}, c.flags("output")...), nil
+			return "screenshot", c.flags("output"), nil, nil
 		},
 	}
 }
@@ -501,8 +500,8 @@ func consoleTool() *tool {
 			{name: "clear", typ: "boolean", flag: "clear", desc: "drop the buffered messages after reading."},
 			{name: "fail_on_match", typ: "boolean", flag: "fail-on-match", desc: "report assertion_failed when at least one message matches (the messages are still returned)."},
 		}, targetArgs()),
-		build: func(c *call) (string, []string, error) {
-			return "console", append([]string{"console"}, c.flags()...), nil
+		build: func(c *call) (string, []string, []string, error) {
+			return "console", c.flags(), nil, nil
 		},
 	}
 }
@@ -529,8 +528,8 @@ func networkTool() *tool {
 			{name: "clear", typ: "boolean", flag: "clear", desc: "drop the buffered requests after reading."},
 			{name: "fail_on_match", typ: "boolean", flag: "fail-on-match", desc: "report assertion_failed when at least one request matches."},
 		}, targetArgs()),
-		build: func(c *call) (string, []string, error) {
-			return "net", append([]string{"net"}, c.flags()...), nil
+		build: func(c *call) (string, []string, []string, error) {
+			return "net", c.flags(), nil, nil
 		},
 	}
 }
@@ -547,8 +546,8 @@ func evaluateTool() *tool {
 			{name: "expression", typ: "string", pos: true, required: true, desc: "the JavaScript to evaluate."},
 			{name: "await", typ: "boolean", flag: "await", desc: "REPL semantics: top-level await resolves and the last expression's value is returned."},
 		}, targetArgs()),
-		build: func(c *call) (string, []string, error) {
-			return "eval", append([]string{"eval", c.str("expression")}, c.flags("expression")...), nil
+		build: func(c *call) (string, []string, []string, error) {
+			return "eval", c.flags("expression"), []string{c.str("expression")}, nil
 		},
 	}
 }
@@ -564,11 +563,11 @@ func batchTool() *tool {
 			{name: "steps", typ: "array", items: "object", required: true,
 				desc: "the steps to run, in order: [{\"tool\": \"chrome_cdp_click\", \"arguments\": {\"selector\": \"Save\", \"by\": \"name\"}}, …]. A step may not be another batch."},
 		},
-		build: func(*call) (string, []string, error) {
+		build: func(*call) (string, []string, []string, error) {
 			// batch never becomes one argv; the server runs its steps through
 			// this same registry. Declared for completeness so every tool has a
 			// verb for classification.
-			return "session", nil, nil
+			return "session", nil, nil, nil
 		},
 	}
 }
@@ -587,21 +586,21 @@ func rawCDPTool() *tool {
 			{name: "browser", typ: "boolean", flag: "browser", desc: "run at the browser level (Browser.* / Target.* methods, no tab needed)."},
 			{name: "list", typ: "boolean", flag: "list", desc: "list the connected Chrome's CDP domains (Schema.getDomains)."},
 		}, targetArgs()),
-		build: func(c *call) (string, []string, error) {
-			argv := []string{"raw"}
+		build: func(c *call) (string, []string, []string, error) {
+			var pos []string
 			if c.has("method") {
-				argv = append(argv, c.str("method"))
+				pos = append(pos, c.str("method"))
 				if c.has("params") {
 					b, err := jsonBytes(c.args["params"])
 					if err != nil {
-						return "", nil, usagef("`params` must be a JSON object: %v", err)
+						return "", nil, nil, usagef("`params` must be a JSON object: %v", err)
 					}
-					argv = append(argv, string(b))
+					pos = append(pos, string(b))
 				}
 			} else if !c.bool("list") {
-				return "", nil, usagef("raw_cdp needs `method` (or list: true)")
+				return "", nil, nil, usagef("raw_cdp needs `method` (or list: true)")
 			}
-			return "raw", append(argv, c.flags("method", "params")...), nil
+			return "raw", c.flags("method", "params"), pos, nil
 		},
 	}
 }

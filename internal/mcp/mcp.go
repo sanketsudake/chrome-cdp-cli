@@ -66,9 +66,21 @@ type tool struct {
 	// image marks a tool whose result carries an image content block.
 	image bool
 
-	// build returns the verb the call selects and the full argv to run. It is
-	// called only after the arguments have been validated against args.
-	build func(c *call) (verb string, argv []string, err error)
+	// build returns the verb the call selects, the flag words it generated, and
+	// the POSITIONAL values the caller supplied — the last two kept apart so
+	// the server can emit the positionals after a `--` terminator.
+	//
+	// That separation is load-bearing, not tidiness. pflag parses flags and
+	// positionals interspersed, so a positional whose value begins with "-" is
+	// consumed as a FLAG wherever it sits in argv — and every positional here
+	// is caller-controlled. A selector of "--policy-off" spliced ahead of the
+	// generated flags turned the policy off for that call; the terminator is
+	// what makes it data. It also makes the legitimate cases work: `type` with
+	// the text "-foo", `key` with a keyspec, an `eval` expression starting with
+	// a minus.
+	//
+	// It is called only after the arguments have been validated against args.
+	build func(c *call) (verb string, flags []string, pos []string, err error)
 }
 
 // arg is one tool argument. flag names the CLI flag it mirrors, which is what

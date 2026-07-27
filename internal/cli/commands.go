@@ -44,6 +44,10 @@ func (a *App) newRoot() *cobra.Command {
 			// makes it reset between `session` lines.
 			a.verbPath = strings.TrimPrefix(cmd.CommandPath(), cmd.Root().Name()+" ")
 			a.policyOffNoted = false
+			// An MCP server's policy flags are not per-call arguments. This
+			// runs AFTER parsing, so whatever the argv said about --policy-off
+			// or --allow, the server's own frozen values win. See mcpLock.
+			a.mcpLock.restore(a)
 		},
 	}
 	// d holds the effective flag defaults (built-in, overlaid by the config

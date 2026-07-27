@@ -647,3 +647,184 @@ func mustJSON(v any) []byte {
 	}
 	return b
 }
+
+// Argument injection, end to end: a tool argument must arrive at the command
+// tree as DATA, and the boundary must still be the one the user configured.
+//
+// The hole this closes: the builders spliced caller-controlled positionals into
+// argv ahead of the flags they generated, and pflag parses the two
+// interspersed, so `selector: "--policy-off"` was a root flag rather than a
+// selector. It read a non-allow-listed tab in full, silently — no stderr
+// warning and no audit record, because --policy-off is what writes those — and
+// `--allow=other.test` widened the boundary instead, unioning with the server's
+// own re-injected --allow rather than replacing it.
+//
+// Every row asserts BOTH halves: the refusal is the one the ORIGINAL allow-list
+// produces (naming the origin and the rule), and a recording browser proves
+// nothing was acted on along the way.
+func TestMCPArgumentInjectionCannotWidenThePolicy(t *testing.T) {
+	t.Parallel()
+	rows := []struct {
+		name string
+		tool string
+		// args places the injected value in one positional slot.
+		args func(evil string) map[string]any
+		// want is the code the call must come back with. permission_denied is
+		// the interesting one; the other two are equally conclusive, because
+		// they are what the value being DATA produces: a target spec that
+		// matches no tab, or a keyspec / file path that does not parse.
+		want string
+	}{
+		{"read selector", "read", func(e string) map[string]any {
+			return map[string]any{"kind": "text", "target": "bb22", "selector": e}
+		}, result.CodePermissionDenied},
+		{"click selector", "click", func(e string) map[string]any {
+			return map[string]any{"selector": e, "target": "bb22"}
+		}, result.CodePermissionDenied},
+		{"type_text selector", "type_text", func(e string) map[string]any {
+			return map[string]any{"selector": e, "text": "x", "target": "bb22"}
+		}, result.CodePermissionDenied},
+		{"type_text text", "type_text", func(e string) map[string]any {
+			return map[string]any{"selector": "#a", "text": e, "target": "bb22"}
+		}, result.CodePermissionDenied},
+		{"key selector", "key", func(e string) map[string]any {
+			return map[string]any{"keys": "Enter", "selector": e, "target": "bb22"}
+		}, result.CodePermissionDenied},
+		{"key keys", "key", func(e string) map[string]any {
+			return map[string]any{"keys": e, "target": "bb22"}
+		}, result.CodeUsage},
+		{"pointer selector", "pointer", func(e string) map[string]any {
+			return map[string]any{"action": "hover", "selector": e, "target": "bb22"}
+		}, result.CodePermissionDenied},
+		{"select_option field", "select_option", func(e string) map[string]any {
+			return map[string]any{"field": e, "option": "x", "target": "bb22"}
+		}, result.CodePermissionDenied},
+		{"scroll selector", "scroll", func(e string) map[string]any {
+			return map[string]any{"selector": e, "target": "bb22"}
+		}, result.CodePermissionDenied},
+		{"upload paths", "upload", func(e string) map[string]any {
+			return map[string]any{"selector": "#f", "paths": []any{e}, "target": "bb22"}
+		}, result.CodeUsage},
+		{"evaluate expression", "evaluate", func(e string) map[string]any {
+			return map[string]any{"expression": e, "target": "bb22"}
+		}, result.CodePermissionDenied},
+		{"navigate url", "navigate", func(e string) map[string]any {
+			return map[string]any{"url": e, "target": "bb22"}
+		}, result.CodePermissionDenied},
+		{"tabs open url", "tabs", func(e string) map[string]any {
+			return map[string]any{"action": "open", "url": e}
+		}, result.CodePermissionDenied},
+		{"tabs use target", "tabs", func(e string) map[string]any {
+			return map[string]any{"action": "use", "target": e}
+		}, result.CodeTargetNotFound},
+		{"tabs close target", "tabs", func(e string) map[string]any {
+			return map[string]any{"action": "close", "target": e}
+		}, result.CodeTargetNotFound},
+		{"tabs activate target", "tabs", func(e string) map[string]any {
+			return map[string]any{"action": "activate", "target": e}
+		}, result.CodeTargetNotFound},
+		{"raw_cdp method", "raw_cdp", func(e string) map[string]any {
+			return map[string]any{"method": e, "target": "bb22"}
+		}, result.CodePermissionDenied},
+	}
+	// Both flags dismantle the boundary, and each does it differently:
+	// --policy-off turns the whole layer off (redaction included), --allow
+	// replaces the list with one the caller chose.
+	injections := []string{"--policy-off", "--allow=other.test"}
+
+	for _, row := range rows {
+		for _, evil := range injections {
+			t.Run(row.name+" "+evil, func(t *testing.T) {
+				t.Parallel()
+				b := refusing(t, mcpTabs...)
+				app, _, errb := appWithPolicy(b, allowOnly("*.example.com"))
+				sess := serveMCP(t, app, mcp.Options{Tools: mcp.SetFull})
+				out := mcpCall(t, sess, row.tool, row.args(evil))
+				if !out.IsError {
+					t.Fatalf("the injected %q was parsed as a flag: %v", evil, out.StructuredContent)
+				}
+				got := mcpStructured(t, out)
+				if got["code"] != row.want {
+					t.Fatalf("code = %v, want %s: %v", got["code"], row.want, got)
+				}
+				if row.want == result.CodePermissionDenied {
+					// The checker used the ORIGINAL allow-list: it names the
+					// tab's own origin and the rule that refused it, which an
+					// injected --allow=other.test would have satisfied.
+					if got["origin"] == "other.test" && got["rule"] != "allow: no match" {
+						t.Errorf("the refusal did not come from the configured allow-list: %v", got)
+					}
+				}
+				// --policy-off is loud by contract: a bypass warns on stderr.
+				// Silence here proves it never took effect.
+				if strings.Contains(errb.String(), "--policy-off") {
+					t.Errorf("the injected --policy-off was honoured: %q", errb.String())
+				}
+				if app.policyOff {
+					t.Error("policyOff survived the call")
+				}
+				if len(app.allowFlag) != 0 {
+					t.Errorf("allowFlag = %v, want the server's own (empty) list", app.allowFlag)
+				}
+			})
+		}
+	}
+}
+
+// The other half of the same fix: a value that looks like a flag reaches the
+// verb as the literal string the caller sent.
+func TestMCPFlagShapedArgumentsArriveAsData(t *testing.T) {
+	t.Parallel()
+	for _, evil := range []string{"--policy-off", "--allow=other.test", "--no-daemon"} {
+		t.Run(evil, func(t *testing.T) {
+			t.Parallel()
+			b := &queryCapture{fakeBrowser: fakeBrowser{tabs: mcpTabs}}
+			app, _, _ := appWithPolicy(b, allowOnly("*.example.com"))
+			sess := serveMCP(t, app, mcp.Options{})
+			out := mcpCall(t, sess, "click", map[string]any{"selector": evil, "target": "aa11"})
+			if out.IsError {
+				t.Fatalf("a selector that looks like a flag failed: %v", mcpStructured(t, out))
+			}
+			if got := mcpStructured(t, out)["clicked"]; got != evil {
+				t.Errorf("the driver was asked to click %q, want the literal %q", got, evil)
+			}
+		})
+	}
+}
+
+// Defence in depth for the same class: the MCP runner is authoritative for the
+// policy flags however the argv is shaped.
+//
+// The terminator stops the injection at the source, but the whole root flag
+// surface is reachable the same way, so the server also freezes the two flags
+// its boundary is made of. This drives the runner with an argv that has them in
+// genuine flag position — the shape the builders can no longer produce — and
+// the boundary must still hold.
+func TestMCPRunnerIsAuthoritativeForPolicyFlags(t *testing.T) {
+	t.Parallel()
+	b := refusing(t, mcpTabs...)
+	app, _, errb := appWithPolicy(b, allowOnly("*.example.com"))
+	runner := app.newMCPRunner()
+
+	for _, argv := range [][]string{
+		{"snap", "--policy-off", "--target", "bb22", "--json"},
+		{"snap", "--allow", "other.test", "--target", "bb22", "--json"},
+		{"snap", "--policy-off", "--allow", "other.test", "--target", "bb22", "--json"},
+	} {
+		env, exit := runner.Run(mcpCtx(t), argv)
+		if exit != result.ExitPermission {
+			t.Fatalf("%v: exit = %d, want %d — the policy flags were honoured (%s)", argv, exit, result.ExitPermission, env)
+		}
+		var got map[string]any
+		if err := json.Unmarshal(env, &got); err != nil {
+			t.Fatalf("%v: envelope: %v\n%s", argv, err, env)
+		}
+		e, _ := got["error"].(map[string]any)
+		if e["code"] != result.CodePermissionDenied || e["origin"] != "other.test" {
+			t.Errorf("%v: error = %v, want permission_denied on other.test", argv, e)
+		}
+	}
+	if strings.Contains(errb.String(), "--policy-off") {
+		t.Errorf("--policy-off was honoured on a tool call: %q", errb.String())
+	}
+}
