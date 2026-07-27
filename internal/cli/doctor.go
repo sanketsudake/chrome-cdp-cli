@@ -118,8 +118,22 @@ func (a *App) runDoctor(noProbe bool) {
 }
 
 // doctorViaDaemon returns the daemon-backed answer when a daemon for this
-// endpoint is running. The daemon binds its socket only AFTER chrome.Connect
-// succeeded, so its liveness is direct evidence of a working attach.
+// endpoint holds a connection it has just PROVED.
+//
+// The daemon binds its socket only after chrome.Connect succeeded, so liveness
+// once looked like evidence — but the socket outlives the connection. Quit
+// Chrome and the daemon keeps its listener for the rest of its idle window with
+// a dead chromedp connection behind it, so `running: true` is exactly the same
+// unverified claim as the DevToolsActivePort file this RFC removed one level
+// down. `connected` is the daemon's answer to a round trip it just made to
+// Chrome (see the __status dispatch), and nothing short of that earns `ready`:
+// anything else falls through to the probe, which asks Chrome itself.
+//
+// What crosses into the envelope is an ALLOWLIST, not the daemon's map. That
+// map used to be copied wholesale, and it carried every open tab's title and
+// URL — into `doctor --json`, which the Agent Skill runs as step 1 of every
+// session, before any tab has been chosen. The count answers the question a
+// diagnostic is asking; the URLs only answer a question nobody asked.
 func (a *App) doctorViaDaemon() (map[string]any, bool) {
 	if a.noDaemon || a.daemonStatus == nil {
 		return nil, false
@@ -131,12 +145,15 @@ func (a *App) doctorViaDaemon() (map[string]any, bool) {
 	if running, _ := st["running"].(bool); !running {
 		return nil, false
 	}
-	res := map[string]any{
-		"state": stateReady, "via": "daemon", "probed": false,
-		"status": "debug endpoint ready — the running daemon is holding a live CDP connection (no new connection was opened, so no consent prompt was raised)",
+	if connected, _ := st["connected"].(bool); !connected {
+		return nil, false
 	}
-	for k, v := range st {
-		if _, taken := res[k]; !taken {
+	res := map[string]any{
+		"state": stateReady, "via": "daemon", "probed": false, "running": true, "connected": true,
+		"status": "debug endpoint ready — the running daemon answered a live CDP round trip (no new connection was opened, so no consent prompt was raised)",
+	}
+	for _, k := range []string{"endpoint", "socket", "target_count"} {
+		if v, ok := st[k]; ok {
 			res[k] = v
 		}
 	}

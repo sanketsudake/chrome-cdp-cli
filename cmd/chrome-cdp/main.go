@@ -4,7 +4,6 @@ package main
 import (
 	"context"
 	"fmt"
-	"maps"
 	"os"
 	"strconv"
 	"time"
@@ -160,27 +159,11 @@ func main() {
 			return map[string]any{"stopped": true}, nil
 		},
 		func(o cli.ConnOpts) (map[string]any, error) {
-			return daemonStatus(socketFor(o), browser.EndpointKey(portFile, o.Port))
+			return daemon.Status(socketFor(o), browser.EndpointKey(portFile, o.Port))
 		},
 	)
 
 	code := app.Execute(os.Args[1:]...)
 	app.Close()
 	os.Exit(code)
-}
-
-// daemonStatus reports whether the daemon for this endpoint is running and, when
-// it is, what it's attached to (the live tab list, best-effort).
-func daemonStatus(sock, endpoint string) (map[string]any, error) {
-	res := map[string]any{"socket": sock, "endpoint": endpoint}
-	c := daemon.TryConnect(sock)
-	if c == nil {
-		res["running"] = false
-		return res, nil
-	}
-	res["running"] = true
-	if info, err := c.StatusInfo(); err == nil {
-		maps.Copy(res, info)
-	}
-	return res, nil
 }

@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"maps"
 	"net"
 	"sync"
 	"time"
@@ -273,13 +274,20 @@ func (s *server) dispatch(ctx context.Context, method string, args []json.RawMes
 	b := s.b
 	switch method {
 	case "__status":
-		// Best-effort: report the tabs the daemon can currently see. A List
-		// failure just omits them rather than failing the status call.
-		info := map[string]any{"connected": true}
-		if tabs, err := b.List(ctx); err == nil {
-			info["targets"] = tabs
-		}
-		return info, nil
+		// `connected` is the ANSWER TO the List below, never an assumption. A
+		// daemon whose Chrome has quit still owns its listener for the rest of
+		// the idle window, so being reachable proves only that the process is
+		// alive; the round trip to Chrome is the only thing that proves the CDP
+		// connection is. Hardcoding true here is what let `doctor` report
+		// "ready" for a browser that had been closed.
+		//
+		// Only the COUNT of tabs crosses the socket. The full target list
+		// carries every open tab's title and URL, and this payload is echoed by
+		// `doctor --json`, which the Agent Skill runs as step 1 of every
+		// session — that is a transcript full of OAuth callbacks and reset
+		// tokens for a question that was only ever "can I connect?".
+		tabs, err := b.List(ctx)
+		return map[string]any{"connected": err == nil, "target_count": len(tabs)}, nil
 	case "List":
 		return b.List(ctx)
 	case "Open":
@@ -565,12 +573,36 @@ func (c *Client) Status() error {
 	return c.call(ctx, "__status", nil)
 }
 
-// StatusInfo returns the daemon's status payload: {connected, targets}.
+// StatusInfo returns the daemon's status payload: {connected, target_count}.
 func (c *Client) StatusInfo() (map[string]any, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	var out map[string]any
 	return out, c.call(ctx, "__status", &out)
+}
+
+// Status reports whether the daemon for this endpoint is running and, when it
+// is, what its connection to Chrome actually did.
+//
+// The StatusInfo error is PROPAGATED, not swallowed. A daemon that answers its
+// socket and then fails the status call is precisely the interesting case — it
+// is alive and its CDP connection is not — and discarding the error left
+// `running: true` standing as if nothing had gone wrong, which is one of the
+// three unverified claims that let `doctor` say ready.
+func Status(sock, endpoint string) (map[string]any, error) {
+	res := map[string]any{"socket": sock, "endpoint": endpoint}
+	c := TryConnect(sock)
+	if c == nil {
+		res["running"] = false
+		return res, nil
+	}
+	info, err := c.StatusInfo()
+	if err != nil {
+		return nil, err
+	}
+	res["running"] = true
+	maps.Copy(res, info)
+	return res, nil
 }
 
 // Stop asks the daemon to shut down.

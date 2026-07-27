@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -180,7 +181,7 @@ func TestDoctorAnswersThroughARunningDaemon(t *testing.T) {
 	conns := stubEndpoint(t, "") // would classify as consent_pending IF probed
 
 	env, stderr, code := runDoctorApp(t, func(ConnOpts) (map[string]any, error) {
-		return map[string]any{"running": true, "socket": "/tmp/x.sock", "targets": 3}, nil
+		return map[string]any{"running": true, "connected": true, "socket": "/tmp/x.sock", "target_count": 3}, nil
 	})
 
 	if env["ok"] != true || code != result.ExitOK {
@@ -196,7 +197,7 @@ func TestDoctorAnswersThroughARunningDaemon(t *testing.T) {
 	if res["probed"] != false {
 		t.Errorf("probed = %v, want false", res["probed"])
 	}
-	if res["targets"] != float64(3) {
+	if res["target_count"] != float64(3) {
 		t.Errorf("the daemon's own status fields should survive into the envelope: %v", res)
 	}
 	if n := conns.Load(); n != 0 {
@@ -204,6 +205,71 @@ func TestDoctorAnswersThroughARunningDaemon(t *testing.T) {
 	}
 	if strings.Contains(stderr, "opens one connection") {
 		t.Errorf("doctor announced a probe it did not make:\n%s", stderr)
+	}
+}
+
+// TestDoctorRequiresEvidenceFromTheDaemon is the second-order version of the
+// defect this RFC's item 3 names: doctor stopped trusting the port file and
+// started trusting `running: true` instead, which is just as unverified.
+//
+// The trigger is ordinary: start a daemon, quit Chrome. The chromedp connection
+// is dead, but the daemon holds its listener for the whole idle window, so
+// TryConnect still succeeds. Every state short of a daemon that has proved its
+// connection must fall through to the probe rather than report ready.
+func TestDoctorRequiresEvidenceFromTheDaemon(t *testing.T) {
+	prev := doctorProbeWait
+	doctorProbeWait = 400 * time.Millisecond
+	t.Cleanup(func() { doctorProbeWait = prev })
+
+	for _, c := range []struct {
+		name   string
+		status map[string]any
+		err    error
+	}{
+		{"running but the CDP connection is dead", map[string]any{"running": true, "connected": false}, nil},
+		{"running with no connection evidence at all", map[string]any{"running": true}, nil},
+		{"the status call itself failed", nil, errors.New("dial unix: connection refused")},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			// A stalling endpoint: if doctor falls through and probes, it says
+			// consent_pending. Anything claiming `ready` came from the daemon.
+			stubEndpoint(t, "")
+			env, _, _ := runDoctorApp(t, func(ConnOpts) (map[string]any, error) { return c.status, c.err })
+			if got := doctorState(t, env); got == stateReady {
+				t.Errorf("doctor reported %q from a daemon that never proved a live CDP connection: %v", got, env)
+			}
+		})
+	}
+}
+
+// TestDoctorDoesNotLeakOpenTabURLs. SKILL.md makes `doctor --json` step 1 of
+// every agent session, so anything doctor echoes is pulled into the transcript
+// before a tab has even been selected. Blanket-copying the daemon's status map
+// put every open tab's title and full URL there — OAuth callbacks, reset
+// tokens, internal hostnames.
+func TestDoctorDoesNotLeakOpenTabURLs(t *testing.T) {
+	stubEndpoint(t, "")
+	env, _, _ := runDoctorApp(t, func(ConnOpts) (map[string]any, error) {
+		return map[string]any{
+			"running": true, "connected": true, "socket": "/tmp/x.sock",
+			"targets": []map[string]any{
+				{"id": "1", "title": "Reset your password", "url": "https://intranet.example/reset?token=s3cret"},
+			},
+			"target_count": 1,
+		}, nil
+	})
+	blob, err := json.Marshal(env)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	for _, leak := range []string{"s3cret", "Reset your password", "intranet.example"} {
+		if strings.Contains(string(blob), leak) {
+			t.Errorf("doctor echoed %q into the envelope:\n%s", leak, blob)
+		}
+	}
+	res, _ := env["result"].(map[string]any)
+	if res["target_count"] != float64(1) {
+		t.Errorf("target_count = %v, want 1 — the count is the useful part, the URLs are not", res["target_count"])
 	}
 }
 
