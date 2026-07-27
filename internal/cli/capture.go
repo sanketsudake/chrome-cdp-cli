@@ -70,7 +70,7 @@ func (a *App) cmdScreenshot() *cobra.Command {
 			defer cancel()
 			tgt, b, rerr := a.resolveTarget(ctx)
 			if rerr != nil {
-				a.emitErr("screenshot", rerr.Code, rerr.Message, nil)
+				a.emitErr("screenshot", rerr.Code, rerr.Message, rerr.Details)
 				return nil
 			}
 			data, meta, err := b.Screenshot(ctx, tgt.ID, opts)
@@ -172,7 +172,7 @@ func (a *App) cmdPDF() *cobra.Command {
 			defer cancel()
 			tgt, b, rerr := a.resolveTarget(ctx)
 			if rerr != nil {
-				a.emitErr("pdf", rerr.Code, rerr.Message, nil)
+				a.emitErr("pdf", rerr.Code, rerr.Message, rerr.Details)
 				return nil
 			}
 			data, meta, err := b.PDF(ctx, tgt.ID, opts)

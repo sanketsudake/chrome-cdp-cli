@@ -24,6 +24,9 @@ Branch on the exit code, not on message text.
 | 4 | target/timeout | selector not found, timed out, or ambiguous/unknown target |
 | 5 | cdp | CDP protocol error |
 | 6 | daemon | daemon error |
+| 7 | permission_denied | refused by [policy](#policy) — the origin, the verb, or the upload path is out of bounds |
+
+Exit 7 is deliberately distinct from exit 4: an agent has to be able to tell "policy forbids this, stop and tell the user" from "element not found, retry differently".
 
 Without `--json` the same information renders as a short human line (result to stdout, errors to stderr).
 
@@ -52,6 +55,8 @@ These apply to every command.
 | `--no-color` | off | plain output (also honors `$NO_COLOR`) |
 | `-q, --quiet` | off | suppress non-essential output |
 | `-v, --verbose` | off | verbose diagnostics on stderr |
+| `--allow <pattern>` | — | [policy](#policy): act only on these origins (repeatable) |
+| `--policy-off` | off | [policy](#policy): don't enforce the configured policy for this command |
 
 Precedence, highest first: **command-line flag > `CHROME_CDP_*` env var > config file > built-in default** (see [Configuration](#configuration)).
 
@@ -217,6 +222,7 @@ A never-settling promise is bounded by `--timeout` (exit 4), and the connection 
 | `type <selector> <text>` | type via real keystrokes (**appends**; end with `\n` to press Enter) |
 | `fill <selector> <value>` | set a field, **replacing** its content (clears, then types) |
 | `select <field> <option>` | choose an option in a prompt / combobox / cascade / native `<select>` |
+| `upload <selector> <path> [<path>...]` | attach local files to an `<input type=file>` |
 | `scroll [selector] [--dx <p>] [--dy <p>] [--to] [--wheel]` | scroll by a delta, `--to` a selector into view, or a real `--wheel` |
 | `attr get\|list\|set\|rm <selector> [name] [value]` | read/write element attributes |
 
@@ -264,7 +270,7 @@ chrome-cdp drag --by name "Task A" --to "Done" --to-by name
 chrome-cdp click --by name "Row 2" --modifiers cmd   # add to the selection
 ```
 
-Every acting verb — `nav`, `click`, `type`, `fill`, `select`, `key`, `hover`, `dblclick`, `rclick`, `drag` — also takes **`--wait-text "<substr>"`**: after the action, block until the page contains the text (a `Saved` toast), folding act-and-confirm into one call.
+Every acting verb — `nav`, `click`, `type`, `fill`, `select`, `key`, `hover`, `dblclick`, `rclick`, `drag`, `upload` — also takes **`--wait-text "<substr>"`**: after the action, block until the page contains the text (a `Saved` toast), folding act-and-confirm into one call.
 
 `select` addresses the field by accessible name by default; a cascade path is `>`-separated:
 
@@ -282,6 +288,35 @@ chrome-cdp select --by label "Category" "Direct Revenue"  # native <select> by l
 chrome-cdp select "Time Type" "Projects > Acme: Platform > Project > Time Entry" --role textbox
 chrome-cdp click --by name "Delete" --in-row "row two" --role button
 chrome-cdp click "#delete" --on-dialog accept             # auto-accept a native confirm()
+```
+
+`upload` sets the files on the input directly (`DOM.setFileInputFiles`, which also fires `change`).
+It never clicks the input: a click opens the **native OS file dialog**, which lives outside the page, is invisible to CDP, blocks the browser's main thread, and — unlike a JavaScript dialog, which `--on-dialog` handles — has no CDP method that can dismiss it.
+
+| `upload` flag | Purpose |
+|---------------|---------|
+| `--append` | add to the files **this session** set on the input instead of replacing them |
+| `--wait-text <substr>` | after the upload, block until the page contains the text |
+
+`--wait` defaults to **`ready`** for this verb alone, because the real input behind a styled drop zone is usually `display:none` and waiting for visibility would fail on exactly the targets that need it.
+
+Paths are `~`-expanded, resolved to the absolute path CDP requires, and checked **before** Chrome is contacted, so a missing path, a directory, or an unreadable file is `usage` / exit 2 with no connection and no consent prompt.
+Set `upload_roots` in the config file's `[policy]` table to bound what may be uploaded: a path outside those directories is `permission_denied` / exit 7, compared on the cleaned absolute path with symlinks resolved on both sides, so `../` traversal and symlink escapes are both refused.
+Unset means unrestricted, and it is deliberately not a flag or an environment variable — an allow-list the calling agent could widen would not be one.
+`--policy-off` does not lift it either, for the same reason: it is argv, and argv is what the threat model assumes the caller controls.
+
+The result reports the files **read back from the input** after the call — not the arguments — plus `multiple` and `accept`, because an `accept`/`multiple` mismatch is the usual reason an upload appears to work and then silently does nothing.
+A file outside `accept` adds `accept_mismatch: true` but is not refused: `accept` is advisory in HTML and plenty of apps set it loosely.
+
+Two limitations are deliberate.
+Passing several paths to an input without `multiple` is `usage` / exit 2 and leaves the input untouched, and an element that resolves but is not a file input is also `usage` / exit 2 (naming the tag and type found) rather than a timeout — the selector resolved, so retrying cannot help.
+`--append` only works for files this CLI set earlier in the same session: `setFileInputFiles` replaces the list wholesale and the DOM does not expose existing files' paths, so appending onto anything else is refused instead of silently dropping what was there.
+A drop zone with no underlying `<input type=file>` is out of scope — there is nothing to set.
+
+```sh
+chrome-cdp upload --by label "Receipt" ./receipt.pdf
+chrome-cdp upload "#attachments" a.pdf b.png c.csv         # a `multiple` input
+chrome-cdp upload "input[type=file]" ~/docs/report.pdf --wait-text "Uploaded"
 ```
 
 ### Waiting
@@ -400,6 +435,7 @@ chrome-cdp raw Browser.getVersion --browser                  # browser-level met
 |---------|------|
 | `doctor` | check the connection and print the exact fix if it's not ready |
 | `daemon start\|stop\|status` | manage the background connection |
+| `policy init` | write a starter [`[policy]`](#policy) table allow-listing the current tab's origin (`--wildcard`, `--print`, `-o`) |
 | `exit-codes` | print the exit-code table |
 | `version` | print the version |
 | `completion bash\|zsh\|fish\|powershell` | shell completion script |
@@ -414,6 +450,152 @@ It starts lazily on first use and idles out after 30 minutes; manage it with `da
 
 Run `chrome-cdp doctor` to check the connection and get the exact fix when it isn't ready.
 
+## Policy
+
+`chrome-cdp` drives your real, already-authenticated Chrome, which means anything holding a connection to it can act as you on every site you are logged into — not just the one you meant.
+The optional policy layer bounds that: which origins the CLI may act on, which verbs are permitted there, and which local paths may be uploaded.
+
+**It is off unless you configure it**, and it changes nothing until you do.
+
+### What it is not
+
+This bounds a **cooperative** caller.
+It is not a sandbox.
+Anything that can run `chrome-cdp` can also edit this config, or connect to Chrome directly and skip the CLI entirely.
+It is a guardrail against a confused or misdirected caller — an agent that read "now go to the admin console" off a web page, a shared recipe you did not read line by line — and it is worth having for exactly that.
+Overstating it would be worse than not shipping it.
+
+### Getting started
+
+```sh
+chrome-cdp use url:myapp                 # be on the tab you want to bound
+chrome-cdp policy init                   # writes [policy] allow = ["app.example.com"]
+chrome-cdp policy init --wildcard --print # see the *.example.com version without writing
+```
+
+### Configuration
+
+```toml
+[policy]
+enabled = true
+allow   = ["*.workday.com", "intranet.corp.local", "localhost:*"]
+deny    = ["*.bank.example", "admin.corp.local"]
+read_only = ["*.wikipedia.org"]
+verbs_denied = ["raw"]
+upload_roots = ["~/Documents/receipts"]
+audit_log = "~/.local/state/chrome-cdp/audit.log"
+audit_all = false
+on_violation = "error"     # error | prompt
+```
+
+| Key | Purpose |
+|-----|---------|
+| `enabled` | master switch; a present table is on unless you set this to `false` |
+| `allow` | origins that may be acted on; **empty means "everything except `deny`"** |
+| `deny` | always refused, and it beats `allow` |
+| `read_only` | origins where reading verbs work and acting verbs are refused |
+| `verbs_denied` | verbs refused on every origin (e.g. `raw`, `eval`) |
+| `upload_roots` | directories files may be uploaded from |
+| `audit_log` | append-only NDJSON of refusals (and of every action with `audit_all`) |
+| `on_violation` | `error` (default), or `prompt` to confirm interactively |
+
+### Pattern syntax
+
+Patterns are `[scheme://]host[:port]`, matched against the **parsed** URL's host — never against a substring of the raw URL.
+There is no regex: a policy language that is hard to read is a policy that is wrong without anyone noticing.
+
+| Pattern | Matches | Does not match |
+|---------|---------|----------------|
+| `example.com` | `example.com`, on any scheme or port | `a.example.com` |
+| `*.example.com` | `a.example.com`, `a.b.example.com` | `example.com` (needs its own entry), `notexample.com`, `example.com.evil.io` |
+| `localhost:3000` | `localhost` on port 3000 | `localhost:8080` |
+| `localhost:*` | `localhost` on any port | — |
+| `https://x.test` | `x.test` over https | `http://x.test` |
+
+Host matching is case-insensitive, and ports are compared numerically, so `host:443` and `host:0443` are the same port.
+
+**`*.host` in `deny` covers `host` itself**, which is the one place the wildcard reads differently from the table above.
+In `allow` and `read_only`, excluding the apex is the strict reading a boundary needs — `*.example.com` must not quietly widen to `example.com`.
+In `deny` it would be a hole: `deny = ["*.bank.example"]` means "not my bank", and reading it as "every subdomain of my bank, but the bank itself is fine" would protect you everywhere except the host you were thinking of.
+Over-blocking is the safe direction in a list of what may never be touched.
+
+Matching is on the origin **Chrome** resolves, not on the string as typed.
+`view-source:`, `blob:` and `filesystem:` URLs are unwrapped to the origin whose content they actually serve, and a `\` in the authority is normalised to `/` the way Chrome normalises it.
+So `https://bank.example\@evil.io/` is `bank.example`, and `view-source:https://bank.example/statement` is checked — and refused — as `bank.example`.
+Unwrapping runs in both directions: `view-source:` of an allowed origin stays allowed.
+
+A URL with no identifiable origin at all — `about:blank`, `data:`, `file://`, `javascript:` — is **refused whenever a policy is active**, whatever shape the rules take.
+A policy cannot decide about an origin it cannot identify, and "matches nothing" would be the safe answer under an `allow` list and a free bypass under a `deny` list.
+(`chrome://settings` does parse, to the host `settings`, and is decided about like any other origin: an `allow` list refuses it because nothing named it.)
+
+A pattern the CLI cannot parse is a **fatal** error: unlike the rest of the config, which warns and carries on, a policy that could not be read refuses to run, because a policy that fails open is worse than no policy.
+A config file that exists but cannot be *read* — wrong permissions, a bad mount — is treated exactly the same way, rather than as a policy that was never there.
+Use `--policy-off` to run while you fix it.
+
+### What is checked
+
+| Verb class | Checked against |
+|-----------|-----------------|
+| Acting (`click`, `type`, `fill`, `select`, `scroll`, `key`, pointer verbs, `upload`, `attr set/rm`, `cookie set/rm/clear`, `headers`, `emulate`, `eval`, `raw`) | `allow`/`deny`, `read_only`, `verbs_denied` |
+| Reading (`snap`, `text`, `html`, `value`, `grid`, `screenshot`, `pdf`, `frame`, `wait`, `attr get/list`, `cookie list`) | `allow`/`deny`, `verbs_denied` |
+| Navigating (`nav <url>`, `open`) | the **destination** origin, before navigating |
+| Tabs and meta (`list`, `use`, `close`, `activate`, `version`, …) | not checked; every envelope's `target`, and every tab `list` or an ambiguous `close` enumerates, is reduced to a bare origin with no full URL and no title when the policy does not cover it |
+
+A verb that is not classified is treated as **acting**, so a new verb over-restricts rather than slipping through.
+
+Redirects are the honest limitation: a `nav` to an allowed origin that redirects elsewhere cannot be stopped, so the policy is re-evaluated on the **settled** URL and the *next* command is refused.
+
+### Destination checking needs `verbs_denied`
+
+`eval` and `raw` can navigate the tab themselves.
+`eval "location='https://bank.example/'"` on an allowed tab issues an authenticated GET to an origin the allow-list would have refused, and no check in front of `nav` and `open` can see it coming.
+What the policy still gives you is that the tab is then off-limits: the next command is refused on the settled origin, so nothing is read back.
+But the request happened.
+
+**So an origin allow-list is only meaningful alongside `verbs_denied = ["eval", "raw"]`**, and that is what `chrome-cdp policy init` writes.
+If you need `eval`, understand that you have kept a verb that can walk out of the boundary and come back — the boundary still bounds what you can *read*, not what you can *reach*.
+
+### A refusal
+
+```json
+{ "ok": false, "command": "click",
+  "error": { "code": "permission_denied",
+             "message": "origin admin.corp.local is not permitted by policy",
+             "origin": "admin.corp.local", "verb": "click",
+             "rule": "deny: admin.corp.local",
+             "config": "~/.config/chrome-cdp/config.toml" },
+  "elapsed_ms": 2 }
+```
+
+`rule` names the entry that decided it, so a refusal points at the line to edit.
+The browser is never asked to act on a refused command.
+
+### Overrides
+
+```sh
+chrome-cdp --allow "*.example.com" click "#save"   # one-off allow-list, replacing the configured one
+chrome-cdp --policy-off click "#save"              # run without the policy — explicit, and logged
+```
+
+`--allow` narrows; it never unblocks something `deny` or `verbs_denied` refused.
+`--policy-off` exists because a bad policy that cannot be bypassed is worse than none, but it is never implicit: it warns on stderr and lands in the audit log.
+
+`--policy-off` covers the **origin** policy only.
+`upload_roots` stays in force regardless, because it is a filesystem boundary rather than an origin rule: its threat model is a caller that writes the argv, and `--policy-off` is argv.
+Widen the roots or move the file.
+
+### Audit log
+
+`audit_log` is append-only NDJSON, one record per decision:
+
+```json
+{"ts":"2026-07-26T09:12:03Z","origin":"other.test","verb":"click","decision":"refused","rule":"allow: no match"}
+```
+
+Refusals are always recorded; set `audit_all = true` to record permitted actions too.
+It records the **origin**, never the URL, and never any value — no typed text, no cookie values, no selectors — because a log that captured those would be the most sensitive file this tool produces.
+A URL with no origin to record is written as its scheme plus a placeholder (`file:(unparseable)`, `javascript:(unparseable)`), never as the string itself: a refused URL's query is exactly where a session token lives.
+
 ## Configuration
 
 Persist flags you'd otherwise retype in `$XDG_CONFIG_HOME/chrome-cdp/config.toml` (usually `~/.config/chrome-cdp/config.toml`); see [`config.example.toml`](../config.example.toml) for the full key set.
@@ -426,3 +608,8 @@ target = "url:github"  # default tab when neither --target nor `use` is set
 ```
 
 A malformed config is a warning on stderr, not a fatal error — the CLI still runs on the built-ins.
+The one exception is the [`[policy]`](#policy) table: a policy the CLI cannot read makes it refuse to act rather than act unbounded, and that covers a file that cannot be *read* (wrong permissions, a bad mount) as well as one that does not parse.
+
+`XDG_CONFIG_HOME` chooses **which** file is read, so an environment that points it at a directory without one leaves you with no `[policy]` table at all.
+No `CHROME_CDP_*` variable can set a policy key, but that is a statement about the table's contents, not about which file supplies them.
+When `XDG_CONFIG_HOME` is set and there is no config file there, the CLI says so on stderr rather than letting a boundary disappear quietly.

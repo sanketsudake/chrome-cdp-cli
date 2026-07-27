@@ -8,7 +8,9 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/BurntSushi/toml"
@@ -27,6 +29,57 @@ type Defaults struct {
 	NoDaemon   bool
 	JSON       bool
 	NoColor    bool
+
+	// Policy is the optional [policy] table (RFC-0012). No CHROME_CDP_* variable
+	// sets any of its keys: a safety boundary whose CONTENTS an inherited
+	// environment could rewrite would not be much of a boundary. Override it
+	// explicitly with --allow / --policy-off instead.
+	//
+	// It is not, however, immune to the environment, and pretending otherwise
+	// would be the more dangerous claim: XDG_CONFIG_HOME (and HOME) decide WHICH
+	// file is read, so an environment that points them elsewhere selects a
+	// different policy, or none. Nothing here can prevent that — the config file
+	// has to be found somehow — so the disappearance is made visible instead:
+	// Note() reports a config file that XDG_CONFIG_HOME pointed at and that does
+	// not exist, and an unreadable file becomes a Malformed policy the CLI
+	// refuses to run with rather than a policy silently absent.
+	Policy Policy
+}
+
+// Policy mirrors the [policy] table. It is raw, unvalidated data — parsing the
+// patterns is internal/policy's job — but it does record enough for the CLI to
+// refuse to run rather than run wide open (see Malformed).
+type Policy struct {
+	// Present reports that a [policy] table exists at all. With no table the
+	// whole layer is inert and nothing about the CLI changes.
+	Present bool
+	// Enabled defaults to true for a present table: a user who wrote the table
+	// meant it. Set enabled = false to keep it on file without applying it.
+	Enabled bool
+
+	Allow       []string
+	Deny        []string
+	ReadOnly    []string
+	VerbsDenied []string
+	UploadRoots []string
+
+	AuditLog    string
+	AuditAll    bool
+	OnViolation string
+
+	// Malformed carries the reason a policy table could not be read: either the
+	// file did not parse at all while mentioning [policy], or the table held a
+	// key this build does not know.
+	//
+	// It exists because the repo's usual "warn and continue" is the wrong answer
+	// here. Continuing means running with a policy the user believes is in force
+	// and is not, and a policy that fails open is worse than no policy — so the
+	// CLI turns this into a refusal (RFC-0012 VS-15).
+	Malformed string
+
+	// Source is the config file the table came from, echoed in refusals so the
+	// user knows which file to edit.
+	Source string
 }
 
 // Builtin returns the hard-coded defaults used when neither the config file nor
@@ -48,6 +101,21 @@ type file struct {
 	NoDaemon   *bool   `toml:"no_daemon"`
 	JSON       *bool   `toml:"json"`
 	NoColor    *bool   `toml:"no_color"`
+
+	Policy *policyFile `toml:"policy"`
+}
+
+// policyFile mirrors the [policy] table.
+type policyFile struct {
+	Enabled     *bool    `toml:"enabled"`
+	Allow       []string `toml:"allow"`
+	Deny        []string `toml:"deny"`
+	ReadOnly    []string `toml:"read_only"`
+	VerbsDenied []string `toml:"verbs_denied"`
+	UploadRoots []string `toml:"upload_roots"`
+	AuditLog    *string  `toml:"audit_log"`
+	AuditAll    *bool    `toml:"audit_all"`
+	OnViolation *string  `toml:"on_violation"`
 }
 
 // Path returns the config file location under $XDG_CONFIG_HOME (or ~/.config).
@@ -99,12 +167,43 @@ func applyFile(d *Defaults, path string) error {
 		if os.IsNotExist(err) {
 			return nil
 		}
+		// A file that EXISTS but cannot be read (EACCES, a bad mount, an I/O
+		// error) is the same situation as one that does not parse, and gets the
+		// same answer. Leaving the zero Policy here would mean a config file that
+		// could not be PARSED refuses to run while one that could not be READ runs
+		// wide open — the wrong way round, and a fail-open the user cannot see,
+		// since a chmod is not something they did on purpose today.
+		//
+		// We cannot know whether this file configured a policy, so we assume it
+		// did: over-refusing is recoverable (fix the permissions, or --policy-off),
+		// and under-refusing is the failure this whole layer exists to prevent.
+		d.Policy = Policy{
+			Present:   true,
+			Enabled:   true,
+			Source:    path,
+			Malformed: "config file could not be read: " + err.Error(),
+		}
 		return err
 	}
 	var f file
-	if _, err := toml.Decode(string(data), &f); err != nil {
+	md, err := toml.Decode(string(data), &f)
+	if err != nil {
+		// A file that does not parse normally warns and leaves the built-ins in
+		// place. That is the wrong answer when the file was trying to configure
+		// a policy: the user would get a CLI that silently permits everything.
+		// We cannot know what the table said, so we record that a policy was
+		// intended and let the CLI refuse.
+		if mentionsPolicyTable(string(data)) {
+			d.Policy = Policy{
+				Present:   true,
+				Enabled:   true,
+				Source:    path,
+				Malformed: "the config file has a [policy] table but does not parse: " + err.Error(),
+			}
+		}
 		return err
 	}
+	applyPolicy(d, f.Policy, md, path)
 	if f.Timeout != nil {
 		if t, err := time.ParseDuration(*f.Timeout); err == nil {
 			d.Timeout = t
@@ -138,6 +237,88 @@ func applyFile(d *Defaults, path string) error {
 		d.NoColor = *f.NoColor
 	}
 	return nil
+}
+
+// policyHeader matches a [policy] or [policy.sub] table header.
+//
+// The inner whitespace is not cosmetic: TOML permits `[ policy ]`, and a scan
+// that only knew `[policy]` would skip the fatal-refusal path for a file spelled
+// that way — a fail-open reachable by a space.
+var policyHeader = regexp.MustCompile(`^\[\s*policy\s*[\].]`)
+
+// mentionsPolicyTable reports whether an unparseable config file contains a
+// [policy] header, ignoring comments. It is a text scan precisely because the
+// TOML parse already failed; the only decision it drives is "refuse" rather than
+// "silently run without the policy the user wrote".
+func mentionsPolicyTable(body string) bool {
+	for _, line := range strings.Split(body, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		if policyHeader.MatchString(line) {
+			return true
+		}
+	}
+	return false
+}
+
+// Note returns a one-line advisory about the config file, or "" when there is
+// nothing to say. The CLI prints it to stderr before running.
+//
+// It exists for one case: XDG_CONFIG_HOME is set and names a directory with no
+// config file in it. That is how a policy disappears without anyone noticing —
+// the CLI does not stop working, it simply stops being bounded, and there is no
+// envelope field and no exit code to catch it. It cannot be made an error
+// (running without a config file is the normal case for most users), so it is
+// made visible.
+func Note() string { return noteFrom(Path(), os.Getenv) }
+
+func noteFrom(path string, getenv func(string) string) string {
+	if getenv("XDG_CONFIG_HOME") == "" || path == "" {
+		return ""
+	}
+	if _, err := os.Stat(path); err == nil {
+		return ""
+	}
+	return "chrome-cdp: no config file at " + path +
+		" (XDG_CONFIG_HOME is set) — any [policy] table elsewhere is NOT in effect"
+}
+
+// applyPolicy copies the decoded [policy] table onto d.
+//
+// A key inside [policy] that this build does not recognise is recorded as
+// Malformed rather than ignored: a typo like `allowed = [...]` would otherwise
+// be a rule the user believes is in force and is not.
+func applyPolicy(d *Defaults, pf *policyFile, md toml.MetaData, path string) {
+	if pf == nil {
+		return
+	}
+	p := Policy{Present: true, Enabled: true, Source: path}
+	if pf.Enabled != nil {
+		p.Enabled = *pf.Enabled
+	}
+	p.Allow, p.Deny, p.ReadOnly = pf.Allow, pf.Deny, pf.ReadOnly
+	p.VerbsDenied, p.UploadRoots = pf.VerbsDenied, pf.UploadRoots
+	if pf.AuditLog != nil {
+		p.AuditLog = *pf.AuditLog
+	}
+	if pf.AuditAll != nil {
+		p.AuditAll = *pf.AuditAll
+	}
+	if pf.OnViolation != nil {
+		p.OnViolation = *pf.OnViolation
+	}
+	var unknown []string
+	for _, k := range md.Undecoded() {
+		if len(k) > 1 && k[0] == "policy" {
+			unknown = append(unknown, strings.Join(k[1:], "."))
+		}
+	}
+	if len(unknown) > 0 {
+		p.Malformed = "unknown key(s) in the [policy] table: " + strings.Join(unknown, ", ")
+	}
+	d.Policy = p
 }
 
 // applyEnv overlays CHROME_CDP_* variables onto d; unset variables are skipped.

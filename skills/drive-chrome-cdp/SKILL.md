@@ -212,8 +212,9 @@ Every `--json` command emits one envelope:
   "result": { … }, "elapsed_ms": 12 }
 ```
 
-Failures: same shape with `"ok": false` and `error{code,message,…}`, plus a nonzero exit code — `0` ok · `1` generic · `2` usage · `3` connection · `4` target/timeout · `5` cdp · `6` daemon.
+Failures: same shape with `"ok": false` and `error{code,message,…}`, plus a nonzero exit code — `0` ok · `1` generic · `2` usage · `3` connection · `4` target/timeout · `5` cdp · `6` daemon · `7` permission_denied.
 Branch on these, not on message text (`chrome-cdp exit-codes` prints the table).
+Exit `7` means a policy forbids this — do not retry, tell the user (see the Policy section of the CLI reference).
 
 ## Recipes
 

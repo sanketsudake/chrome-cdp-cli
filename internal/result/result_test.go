@@ -20,6 +20,7 @@ func TestExitCodeFor(t *testing.T) {
 		{"no_current_target", ExitTarget},
 		{"cdp_error", ExitCDP},
 		{"daemon_error", ExitDaemon},
+		{"permission_denied", ExitPermission},
 		{"something_unknown", ExitGeneric},
 		{"", ExitGeneric},
 	}
@@ -34,6 +35,53 @@ func TestExitCodeFor(t *testing.T) {
 				t.Errorf("ExitCodeFor(%q) = %d, want %d", c.code, got, c.want)
 			}
 		})
+	}
+}
+
+// TestPermissionDeniedIsItsOwnExitCode pins the RFC-0012/RFC-0006 addition.
+//
+// A policy refusal has to be distinguishable from every other failure: an agent
+// must be able to tell "policy forbids this, stop and tell the user" from
+// "element not found, retry differently". Without the codeToExit entry the code
+// would degrade to ExitGeneric and silently become indistinguishable from any
+// other error, which is the exact bug this file exists to catch.
+func TestPermissionDeniedIsItsOwnExitCode(t *testing.T) {
+	t.Parallel()
+	if ExitPermission != 7 {
+		t.Errorf("ExitPermission = %d, want 7 (the documented contract)", ExitPermission)
+	}
+	if got := ExitCodeFor(CodePermissionDenied); got != ExitPermission {
+		t.Errorf("ExitCodeFor(%q) = %d, want %d — add the codeToExit entry", CodePermissionDenied, got, ExitPermission)
+	}
+	for _, taken := range []int{ExitOK, ExitGeneric, ExitUsage, ExitConnection, ExitTarget, ExitCDP, ExitDaemon} {
+		if ExitPermission == taken {
+			t.Fatalf("ExitPermission collides with an existing exit code %d", taken)
+		}
+	}
+	env := Envelope{OK: false, Command: "click", Error: &Err{Code: CodePermissionDenied}}
+	if env.ExitCode() != ExitPermission {
+		t.Errorf("envelope exit = %d, want %d", env.ExitCode(), ExitPermission)
+	}
+}
+
+// TestExitCodesDocumentsEveryMappedCode keeps `chrome-cdp exit-codes` from
+// going stale: every exit code a command can actually produce must have a row.
+func TestExitCodesDocumentsEveryMappedCode(t *testing.T) {
+	t.Parallel()
+	documented := map[int]bool{}
+	for _, d := range ExitCodes() {
+		if documented[d.Code] {
+			t.Errorf("exit code %d is documented twice", d.Code)
+		}
+		documented[d.Code] = true
+	}
+	for code, exit := range codeToExit {
+		if !documented[exit] {
+			t.Errorf("error.code %q maps to exit %d, which ExitCodes() does not document", code, exit)
+		}
+	}
+	if !documented[ExitOK] {
+		t.Error("ExitCodes() must document success")
 	}
 }
 

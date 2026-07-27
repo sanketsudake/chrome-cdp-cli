@@ -49,7 +49,7 @@ func (a *App) runEval(expr string, opts chrome.EvalOpts) {
 	defer cancel()
 	tgt, b, rerr := a.resolveTarget(ctx)
 	if rerr != nil {
-		a.emitErr("eval", rerr.Code, rerr.Message, nil)
+		a.emitErr("eval", rerr.Code, rerr.Message, rerr.Details)
 		return
 	}
 	res, err := b.Eval(ctx, tgt.ID, expr, opts)
