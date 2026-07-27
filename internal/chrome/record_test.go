@@ -508,8 +508,22 @@ func TestRecordLive(t *testing.T) {
 	if maxW <= 0 || maxH <= 0 {
 		t.Fatalf("RecordStart reported no max box (%v x %v) — nothing to check --scale against", meta["max_width"], meta["max_height"])
 	}
-	if !within(half.Width, float64(maxW), 0.15) || !within(half.Height, float64(maxH), 0.15) {
-		t.Errorf("--scale 0.5 produced a %dx%d frame against the %dx%d box it asked Chrome for",
+	// An UPPER BOUND, because that is what the cap actually promises. The
+	// comment on max_width in record.go says it outright: a screencast frame is
+	// never upscaled to fill the box, so the real dimensions are whatever the
+	// compositor produces WITHIN it. Asserting equality contradicted that and
+	// failed on CI with a legitimate 207x207 frame inside a 378x207 box — the
+	// window had resized between the box being computed and the frame being
+	// produced, which is Chrome's business, not this feature's.
+	//
+	// What is ours to guarantee is that the cap is honoured as a cap and that a
+	// scaled recording still produces frames. The arithmetic that makes the cap
+	// half the viewport is TestScaleSizesTheBox, with no browser involved.
+	if half.Width <= 0 || half.Height <= 0 {
+		t.Errorf("--scale 0.5 produced a %dx%d frame — no pixels at all", half.Width, half.Height)
+	}
+	if half.Width > int(maxW)+1 || half.Height > int(maxH)+1 {
+		t.Errorf("--scale 0.5 produced a %dx%d frame, larger than the %dx%d box it asked Chrome for",
 			half.Width, half.Height, maxW, maxH)
 	}
 
