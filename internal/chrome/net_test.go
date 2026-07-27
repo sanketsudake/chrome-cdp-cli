@@ -931,6 +931,21 @@ func netFixtures(t *testing.T) (*httptest.Server, string) {
 		w.Header().Set("Content-Type", "text/plain")
 		_, _ = io_WriteString(w, strings.Repeat("A", 8<<10))
 	})
+	// A request that never completes, standing in for the SSE stream or long
+	// poll every real app has. Released before the server is closed (cleanups
+	// run last-registered-first), or Close would block on it forever.
+	hang := make(chan struct{})
+	mux.HandleFunc("/api/hang", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+		select {
+		case <-hang:
+		case <-r.Context().Done():
+		}
+	})
 	// The same binary payload at two sizes, for the size-independence of the
 	// "this is not text" answer. 100 KB is over the 64 KB body cap; 1 KB is not.
 	mux.HandleFunc("/api/blob", func(w http.ResponseWriter, r *http.Request) {
@@ -951,6 +966,7 @@ func netFixtures(t *testing.T) (*httptest.Server, string) {
 	})
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
+	t.Cleanup(func() { close(hang) })
 
 	// A page that loads a stylesheet and an image at parse time and exposes the
 	// API calls behind buttons, so a test can scope a read to one action.
@@ -964,8 +980,9 @@ func netFixtures(t *testing.T) (*httptest.Server, string) {
 <button id="big" onclick="fetch('%s/api/big')">big</button>
 <button id="blobbig" onclick="fetch('%s/api/blob')">blob big</button>
 <button id="blobsmall" onclick="fetch('%s/api/blob?small=1')">blob small</button>
+<button id="hang" onclick="fetch('%s/api/hang').catch(()=>{})">hang</button>
 <button id="dead" onclick="fetch('%s/gone').catch(()=>{})">dead</button>`,
-		srv.URL, srv.URL, srv.URL, srv.URL, srv.URL, srv.URL, srv.URL, srv.URL, srv.URL, deadAddr(t))
+		srv.URL, srv.URL, srv.URL, srv.URL, srv.URL, srv.URL, srv.URL, srv.URL, srv.URL, srv.URL, deadAddr(t))
 	mux.HandleFunc("/page", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/html")
 		_, _ = io_WriteString(w, page)
@@ -1569,6 +1586,70 @@ func TestNetPendingCountsInFlightRequests(t *testing.T) {
 			t.Fatalf("pending never reached 1 while a 1.5s request was in flight: %v", res)
 		}
 		time.Sleep(50 * time.Millisecond)
+	}
+}
+
+// `pending` must answer about what the caller ASKED about. Counted over the
+// whole buffer, one permanently open SSE stream or long poll — which every real
+// app has — made `net --url /api/save` report `pending >= 1` forever, so the
+// signal never went quiet and stopped meaning anything.
+func TestNetPendingIsScopedToTheFilter(t *testing.T) {
+	b := liveChrome(t)
+	_, page := netFixtures(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+
+	id := netLiveTab(ctx, t, b, page)
+	// A request that never finishes, standing in for an SSE stream.
+	if _, err := b.Pointer(ctx, id, "#hang", PointerOpts{Action: PointerClick}); err != nil {
+		t.Fatalf("Click: %v", err)
+	}
+	// An unrelated request that DOES finish.
+	if _, err := b.Pointer(ctx, id, "#ok", PointerOpts{Action: PointerClick}); err != nil {
+		t.Fatalf("Click: %v", err)
+	}
+	awaitNetDone(ctx, t, b, id, NetCond{URL: "/api/ok"})
+
+	// The unfiltered read still sees the hung request — that is VS-13.
+	res, err := b.Net(ctx, id, NetOpts{Limit: 100})
+	if err != nil {
+		t.Fatalf("Net: %v", err)
+	}
+	if n, _ := res.(map[string]any)["pending"].(int); n < 1 {
+		t.Fatalf("an unfiltered read reported pending %d while a request was hung; VS-13 is broken", n)
+	}
+
+	// A read scoped to a DIFFERENT endpoint must not inherit it.
+	res, err = b.Net(ctx, id, NetOpts{URL: "/api/ok", Limit: 100})
+	if err != nil {
+		t.Fatalf("Net: %v", err)
+	}
+	if n, _ := res.(map[string]any)["pending"].(int); n != 0 {
+		t.Errorf("pending = %d for --url /api/ok while only /api/hang was in flight; "+
+			"an always-open stream would make every scoped read look unfinished forever", n)
+	}
+}
+
+// `pending` drops the OUTCOME terms of the filter: a request still in flight has
+// no status, so keeping --status or --failed would make pending a constant 0 for
+// exactly the reads that ask about an outcome.
+func TestNetPendingIgnoresOutcomeFilters(t *testing.T) {
+	t.Parallel()
+	inFlight := netRecord{ID: "r1", Method: "POST", URL: "https://app.example/api/save", Type: "xhr"}
+	other := netRecord{ID: "r2", Method: "GET", URL: "https://app.example/events", Type: "eventsource"}
+
+	keep, err := netPendingKeep(NetOpts{URL: "/api/save", Status: "2xx", Failed: true}, time.Now())
+	if err != nil {
+		t.Fatalf("netPendingKeep: %v", err)
+	}
+	if keep == nil {
+		t.Fatal("a --url filter produced no pending predicate")
+	}
+	if !keep(inFlight) {
+		t.Error("an in-flight request matching --url was excluded from pending by a --status it cannot yet satisfy")
+	}
+	if keep(other) {
+		t.Error("a request the caller did not ask about was counted as pending")
 	}
 }
 

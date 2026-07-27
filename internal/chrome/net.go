@@ -710,6 +710,24 @@ func netKeep(opts NetOpts, now time.Time) (func(netRecord) bool, error) {
 	}, nil
 }
 
+// netPendingKeep is the filter `pending` is counted against: the caller's own
+// filter minus its OUTCOME terms.
+//
+// `pending` exists so a caller can tell "nothing matched" from "not finished
+// yet", which only works if it is scoped to what the caller asked about.
+// Counting every unfinished request regardless of the filter made a permanently
+// open SSE stream or a long poll — which every real app has — report
+// `pending >= 1` forever on `net --url /api/save`, so the signal never went
+// quiet and stopped meaning anything.
+//
+// Status and --failed are dropped rather than applied: a request still in flight
+// has no status, so keeping them would make `pending` a constant 0 for exactly
+// the reads that ask about an outcome.
+func netPendingKeep(opts NetOpts, now time.Time) (func(netRecord) bool, error) {
+	opts.Status, opts.Failed = "", false
+	return netKeep(opts, now)
+}
+
 // netBody is one fetched response body plus why it might be missing.
 type netBody struct {
 	Text      string
@@ -996,13 +1014,17 @@ func (c *CDP) Net(ctx context.Context, id string, opts NetOpts) (any, error) {
 		// arrives now, and say so.
 		settle(ctx, netFreshGrace)
 	}
+	pendingKeep, err := netPendingKeep(opts, time.Now())
+	if err != nil {
+		return nil, err
+	}
 	// pending is counted in the SAME pass as the filter: Query visits every live
 	// entry exactly once under the buffer's lock, so the count cannot drift from
 	// the matches it is reported alongside.
 	pending := 0
 	q := eventbuf.Query[netRecord]{
 		Keep: func(r netRecord) bool {
-			if !r.Finished {
+			if !r.Finished && (pendingKeep == nil || pendingKeep(r)) {
 				pending++
 			}
 			return keep == nil || keep(r)
