@@ -406,6 +406,91 @@ func TestRedactURL(t *testing.T) {
 	}
 }
 
+// Bodies are redacted on the same terms as headers and URLs. RFC-0003 does not
+// specify it; the tool drives the user's real logged-in browser, and a password
+// is no less a secret for having travelled in a POST body than in a query
+// string — which is already withheld.
+func TestRedactBody(t *testing.T) {
+	t.Parallel()
+	cases := map[string]struct{ in, want string }{
+		"form login": {
+			"username=alice&password=hunter2&remember=1",
+			"username=alice&password=" + NetRedacted + "&remember=1",
+		},
+		"form ordinary": {"hours=8&project=apollo", "hours=8&project=apollo"},
+		"form token":    {"grant_type=refresh_token&refresh_token=abc", "grant_type=refresh_token&refresh_token=" + NetRedacted},
+		"json login": {
+			`{"username":"alice","password":"hunter2"}`,
+			`{"username":"alice","password":"` + NetRedacted + `"}`,
+		},
+		"json spacing preserved": {
+			`{ "api_key" : "k1", "n" : 3 }`,
+			`{ "api_key" : "` + NetRedacted + `", "n" : 3 }`,
+		},
+		"json nested": {
+			`{"auth":{"client_secret":"s3cr3t"},"ok":true}`,
+			`{"auth":{"client_secret":"` + NetRedacted + `"},"ok":true}`,
+		},
+		"json ordinary":    {`{"hours":8,"note":"password reset requested"}`, `{"hours":8,"note":"password reset requested"}`},
+		"json array value": {`{"scopes":["token","read"]}`, `{"scopes":["token","read"]}`},
+		// A body cut at the cap is no longer parseable JSON; the rewrite still
+		// has to redact whatever members survived it, which is why this is a
+		// rewrite and not a decode/re-encode.
+		"truncated json": {
+			`{"password":"hunter2","next":"x`,
+			`{"password":"` + NetRedacted + `","next":"x`,
+		},
+		// Nothing to key on: no field structure, so it passes through. `--body`
+		// is an explicit opt-in either way.
+		"opaque body": {"--boundary\r\nContent-Disposition: form-data\r\n", "--boundary\r\nContent-Disposition: form-data\r\n"},
+		"empty":       {"", ""},
+	}
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			if got := RedactBody(c.in, false); got != c.want {
+				t.Errorf("RedactBody(%q) = %q, want %q", c.in, got, c.want)
+			}
+			// --no-redact is the explicit opt-out, and it must be exact.
+			if got := RedactBody(c.in, true); got != c.in {
+				t.Errorf("--no-redact rewrote the body: %q", got)
+			}
+		})
+	}
+}
+
+// A request body that is not text must be reported as unavailable, not smuggled
+// into the envelope: json.Marshal replaces invalid bytes with U+FFFD, so a
+// multipart image upload under the cap arrived as mojibake — exactly what the
+// response path already refuses to do.
+func TestNetRequestBodyRejectsBinary(t *testing.T) {
+	t.Parallel()
+	binary := "\x89PNG\r\n\x1a\n" + strings.Repeat("\xff", 512)
+	b := netFeed(t, 10, willBeSent("r1", "POST", "https://app.example/upload", 0, network.ResourceTypeXHR, nil, binary))
+	rec := only(t, b)
+	if rec.RequestBody != "" {
+		t.Errorf("RequestBody = %q, want it withheld: it is not text", rec.RequestBody)
+	}
+	if !rec.RequestBodyBinary {
+		t.Fatal("a binary request body was not marked; it would reach the envelope as U+FFFD mojibake")
+	}
+	if rec.RequestSize != int64(len(binary)) {
+		t.Errorf("request_size = %d, want the real %d — the size is knowable even when the bytes are not shown", rec.RequestSize, len(binary))
+	}
+	got := rec.render(NetOpts{Body: true}, netBody{})
+	if got["request_body"] != nil {
+		t.Errorf("request_body = %v, want null", got["request_body"])
+	}
+	if got["request_body_unavailable"] != true {
+		t.Error("request_body_unavailable is not set; a caller cannot tell a withheld body from an absent one")
+	}
+	// And a TEXT body still arrives intact.
+	b = netFeed(t, 10, willBeSent("r2", "POST", "https://app.example/api", 0, network.ResourceTypeXHR, nil, `{"hours":8}`))
+	if rec := only(t, b); rec.RequestBody != `{"hours":8}` || rec.RequestBodyBinary {
+		t.Errorf("a text body was withheld: %q binary=%v", rec.RequestBody, rec.RequestBodyBinary)
+	}
+}
+
 // THE security regression test.
 //
 // It asserts on the MARSHALLED ENVELOPE BYTES, not on a struct field, because
@@ -436,13 +521,16 @@ func TestRedactionKeepsCredentialsOutOfTheMarshalledEnvelope(t *testing.T) {
 			// a live credential in the value.
 			"Location": "https://app.example/done?code=" + secret,
 		},
+		// A login POST: the credential is in the body, which `--body` prints.
+		RequestBody: "username=alice&password=" + secret,
 	}
 	env := result.Envelope{
 		OK: true, Command: "net",
 		Target: &result.TargetInfo{ID: "aa11", Title: "App", URL: "https://app.example/"},
 		Result: map[string]any{
-			"requests": []any{r.render(NetOpts{Headers: true}, netBody{})},
-			"count":    1, "buffered": 1, "dropped": 0, "truncated": false, "pending": 0,
+			"requests": []any{r.render(NetOpts{Headers: true, Body: true},
+				netBody{Text: `{"access_token":"` + secret + `"}`, Available: true})},
+			"count": 1, "buffered": 1, "dropped": 0, "truncated": false, "pending": 0,
 		},
 	}
 	raw, err := env.JSON()
@@ -465,6 +553,8 @@ func TestRedactionKeepsCredentialsOutOfTheMarshalledEnvelope(t *testing.T) {
 				RequestHeaders  map[string]string `json:"request_headers"`
 				ResponseHeaders map[string]string `json:"response_headers"`
 				URL             string            `json:"url"`
+				RequestBody     string            `json:"request_body"`
+				ResponseBody    string            `json:"response_body"`
 			} `json:"requests"`
 		} `json:"result"`
 	}
@@ -485,6 +575,12 @@ func TestRedactionKeepsCredentialsOutOfTheMarshalledEnvelope(t *testing.T) {
 	}
 	if !strings.HasSuffix(got.URL, "access_token="+NetRedacted) {
 		t.Errorf("url = %q, want the access_token value withheld", got.URL)
+	}
+	if got.RequestBody != "username=alice&password="+NetRedacted {
+		t.Errorf("request_body = %q, want the password withheld and the rest intact", got.RequestBody)
+	}
+	if got.ResponseBody != `{"access_token":"`+NetRedacted+`"}` {
+		t.Errorf("response_body = %q, want the token withheld and the shape intact", got.ResponseBody)
 	}
 
 	// --no-redact is the ONLY path that emits the real value, and it must

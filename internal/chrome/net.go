@@ -136,8 +136,14 @@ type netRecord struct {
 	// RequestBody arrives inline with requestWillBeSent, so retaining it costs
 	// nothing extra and makes US-4 ("what did that button POST?") answerable
 	// after the fact. Response bodies are NOT retained — see netFetchBodies.
+	//
+	// RequestBodyBinary marks a payload that is not text (a multipart image
+	// upload). It is retained as empty rather than raw: json.Marshal replaces
+	// invalid bytes with U+FFFD, so keeping it would put mojibake in the
+	// envelope — the exact thing the response path refuses to do.
 	RequestBody          string
 	RequestBodyTruncated bool
+	RequestBodyBinary    bool
 
 	// Finished marks the request as complete (loadingFinished or loadingFailed
 	// arrived). Everything else is `pending`, which is what lets a caller tell
@@ -310,7 +316,7 @@ func netApply(ev any, maxBody int, epoch time.Time) (string, func(netRecord, boo
 		req := e.Request
 		ts := netTime(e.Timestamp)
 		raw := netPostData(req)
-		body, cut := eventbuf.TruncateText(raw, maxBody)
+		body, cut, binary := netRequestBody(raw, maxBody)
 		typ := netType(e.Type)
 		return key, func(r netRecord, _ bool) netRecord {
 			r.ID = key
@@ -320,7 +326,7 @@ func netApply(ev any, maxBody int, epoch time.Time) (string, func(netRecord, boo
 				r.Type = typ
 			}
 			r.ReqHeaders = netHeaders(req.Headers)
-			r.RequestBody, r.RequestBodyTruncated = body, cut
+			r.RequestBody, r.RequestBodyTruncated, r.RequestBodyBinary = body, cut, binary
 			r.RequestSize = int64(len(raw))
 			// A redirect reuses the request id and re-fires this event; keeping
 			// the FIRST start keeps duration_ms the whole chain's cost rather
@@ -486,6 +492,24 @@ func netPostData(req *network.Request) string {
 		b.WriteString(e.Bytes)
 	}
 	return b.String()
+}
+
+// netRequestBody bounds a request body for retention, reporting a payload that
+// is not text separately from one that is simply absent.
+//
+// The retained record feeds json.Marshal, which replaces invalid bytes with
+// U+FFFD — so a multipart image upload under the cap would arrive in the
+// envelope as mojibake, which is precisely what the response path refuses to
+// do. Same rule, same reason, both directions.
+func netRequestBody(raw string, maxBody int) (text string, truncated, binary bool) {
+	if raw == "" {
+		return "", false, false
+	}
+	if !utf8.ValidString(raw) {
+		return "", false, true
+	}
+	text, truncated = eventbuf.TruncateText(raw, maxBody)
+	return text, truncated, false
 }
 
 // NormalizeNetType maps a user-supplied --type onto the documented vocabulary,
@@ -755,11 +779,16 @@ func (r netRecord) render(opts NetOpts, body netBody) map[string]any {
 	if opts.Body {
 		out["request_body"] = nil
 		if r.RequestBody != "" {
-			out["request_body"] = r.RequestBody
+			out["request_body"] = RedactBody(r.RequestBody, opts.NoRedact)
+		}
+		if r.RequestBodyBinary {
+			// Same contract as body_unavailable, for the other direction: the
+			// body existed, and what it held is not something we can show.
+			out["request_body_unavailable"] = true
 		}
 		out["response_body"] = nil
 		if body.Available {
-			out["response_body"] = body.Text
+			out["response_body"] = RedactBody(body.Text, opts.NoRedact)
 		} else {
 			// A body the page has navigated away from is gone, and saying so is
 			// more useful than failing the whole read (VS-14).
@@ -862,15 +891,84 @@ func redactParams(q string) string {
 		if !ok {
 			continue
 		}
-		decoded := name
-		if u, err := netUnescape(name); err == nil {
-			decoded = u
-		}
-		if netRedactParamRe.MatchString(strings.TrimSpace(decoded)) {
+		if RedactedParamName(name) {
 			parts[i] = name + "=" + NetRedacted
 		}
 	}
 	return strings.Join(parts, "&")
+}
+
+// RedactedParamName reports whether a URL parameter or request/response body
+// FIELD name is credential-shaped. One predicate for both, because a value is
+// no less a secret for having travelled in a POST body than in a query string.
+func RedactedParamName(name string) bool {
+	n := strings.TrimSpace(name)
+	if u, err := netUnescape(n); err == nil {
+		n = u
+	}
+	return netRedactParamRe.MatchString(n)
+}
+
+// netRedactJSONRe matches one JSON member with a STRING value, capturing the
+// member name and the separator so a replacement can keep the document's own
+// spacing and escaping. Deliberately a rewrite rather than a decode/re-encode:
+// a body that hit the size cap is not parseable JSON any more, and re-encoding
+// would reorder members and rewrite escapes, so the reported payload would stop
+// being the one the page actually sent.
+var netRedactJSONRe = regexp.MustCompile(`"((?:[^"\\]|\\.)*)"(\s*:\s*)"(?:[^"\\]|\\.)*"`)
+
+// RedactBody withholds the values of credential-shaped fields in a request or
+// response body, for the form-encoded and JSON shapes credentials actually
+// travel in. noRedact returns the body unchanged.
+//
+// RFC-0003 specifies redaction for headers and URLs only, so this goes beyond
+// it deliberately. The premise of the whole tool is that it drives the user's
+// real, logged-in browser: `net --body` on a login POST printed `password=…` in
+// clear, while the SAME credential in `?password=…` was withheld — the same
+// secret, opposite answers, decided by nothing but the HTTP method. US-5 asks
+// for bodies that do "not spill tokens or PII into logs by default", and this
+// is what that costs.
+//
+// A body in any other encoding (multipart/form-data, protobuf, a bare token) is
+// passed through: there is no field structure to key on, and guessing would
+// either miss or mangle. `--body` remains an explicit opt-in either way.
+func RedactBody(body string, noRedact bool) string {
+	if noRedact || body == "" {
+		return body
+	}
+	switch {
+	case netLooksJSON(body):
+		return netRedactJSONRe.ReplaceAllStringFunc(body, func(m string) string {
+			g := netRedactJSONRe.FindStringSubmatch(m)
+			if !RedactedParamName(g[1]) {
+				return m
+			}
+			return `"` + g[1] + `"` + g[2] + `"` + NetRedacted + `"`
+		})
+	case netLooksFormEncoded(body):
+		return redactParams(body)
+	}
+	return body
+}
+
+// netLooksJSON reports whether a body is a JSON object or array.
+func netLooksJSON(body string) bool {
+	t := strings.TrimLeft(body, " \t\r\n")
+	return strings.HasPrefix(t, "{") || strings.HasPrefix(t, "[")
+}
+
+// netLooksFormEncoded reports whether a body is an application/x-www-form-
+// urlencoded parameter list, judged on its first field: a name with no
+// whitespace or JSON punctuation, followed by "=". The content-type header
+// would be a stronger signal, but it is not always sent and this has to hold
+// for a truncated body too.
+func netLooksFormEncoded(body string) bool {
+	head, _, _ := strings.Cut(body, "&")
+	name, _, ok := strings.Cut(head, "=")
+	if !ok || name == "" {
+		return false
+	}
+	return !strings.ContainsAny(name, " \t\r\n\"'{}[]<>")
 }
 
 // netUnescape decodes a percent-encoded parameter name, so "api%5Fkey" is
