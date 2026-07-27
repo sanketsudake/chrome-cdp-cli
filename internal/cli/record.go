@@ -501,9 +501,16 @@ func (a *App) exportRecording(ctx context.Context, b chrome.Browser, command str
 	}
 
 	payload := recordResultPayload(meta, res, opts)
-	path, werr := a.writeExport(res, opts)
+	path, toStdout, werr := a.writeExport(res, opts)
 	if werr != nil {
 		a.emitErr(command, result.CodeGeneric, a.restoreRecording(ctx, b, tgt, frames, meta, werr), nil)
+		return
+	}
+	if toStdout {
+		// `-o -` means the artifact IS the stream, so nothing else may go on it —
+		// `chrome-cdp --json record stop -o - > demo.gif` must be a GIF and not a
+		// GIF with a JSON line stuck on the end. capture.go's emitArtifact answers
+		// this the same way for screenshot/pdf, and the two have to agree.
 		return
 	}
 	if path != "" {
@@ -571,41 +578,41 @@ func recordResultPayload(meta map[string]any, res encode.Result, opts exportOpts
 	return out
 }
 
-// writeExport writes the artifact and returns the path it landed at ("" for
-// stdout).
-func (a *App) writeExport(res encode.Result, opts exportOpts) (string, error) {
+// writeExport writes the artifact, returning the path it landed at and whether
+// it went to stdout instead (in which case the caller must emit no envelope).
+func (a *App) writeExport(res encode.Result, opts exportOpts) (string, bool, error) {
 	if opts.format == encode.FormatFrames {
 		dir := opts.out
 		if dir == "" {
 			dir = uniquePath(fmt.Sprintf("./record-%s-frames", time.Now().Format("20060102-150405")))
 		}
 		if err := os.MkdirAll(dir, 0o755); err != nil {
-			return "", err
+			return "", false, err
 		}
 		for _, f := range res.Files {
 			if err := os.WriteFile(filepath.Join(dir, f.Name), f.Data, 0o644); err != nil {
-				return "", err
+				return "", false, err
 			}
 		}
-		return dir, nil
+		return dir, false, nil
 	}
 	if opts.out == "-" {
 		if _, err := a.out.Write(res.Data); err != nil {
-			return "", err
+			return "", false, err
 		}
 		if !a.quiet {
 			fmt.Fprintf(a.err, "wrote %d frames (%s) to stdout\n", res.Frames, humanBytes(res.Bytes))
 		}
-		return "", nil
+		return "", true, nil
 	}
 	path := opts.out
 	if path == "" {
 		path = uniquePath(fmt.Sprintf("./record-%s.%s", time.Now().Format("20060102-150405"), res.Format))
 	}
 	if err := os.WriteFile(path, res.Data, 0o644); err != nil {
-		return "", err
+		return "", false, err
 	}
-	return path, nil
+	return path, false, nil
 }
 
 // toEncodeFrames converts the driver's frames into the encoder's. The two types

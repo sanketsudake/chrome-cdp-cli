@@ -333,6 +333,40 @@ func TestRecordFramesFormat(t *testing.T) {
 	}
 }
 
+// TestRecordStopToStdoutEmitsOnlyTheArtifact: `-o -` means the GIF IS the
+// stream, so appending an envelope to it corrupts the file.
+//
+// `chrome-cdp --json record stop -o - > demo.gif` used to produce a GIF with a
+// JSON line stuck on the end. screenshot/pdf already answer this by emitting no
+// envelope for `-o -` (capture.go's emitArtifact returns early), and the two
+// have to agree.
+func TestRecordStopToStdoutEmitsOnlyTheArtifact(t *testing.T) {
+	t.Parallel()
+	b := newRecordBrowser(t)
+	var stdout, stderr bytes.Buffer
+	app := New(b, &stdout, &stderr)
+	if code := app.Execute("record", "start", "--target", "aa11", "--json"); code != 0 {
+		t.Fatal("record start failed")
+	}
+	stdout.Reset()
+	if code := app.Execute("record", "stop", "-o", "-", "--target", "aa11", "--json"); code != 0 {
+		t.Fatalf("exit = %d: %s", code, stderr.String())
+	}
+	data := stdout.Bytes()
+	if _, err := gif.DecodeAll(bytes.NewReader(data)); err != nil {
+		t.Fatalf("stdout does not decode as a GIF: %v", err)
+	}
+	if bytes.Contains(data, []byte(`"ok":`)) || bytes.Contains(data, []byte(`"command":"record"`)) {
+		t.Errorf("an envelope was appended to the artifact on stdout (%d bytes end with %q)",
+			len(data), data[max(0, len(data)-60):])
+	}
+	// The human line still goes to stderr, so it is never ambiguous what was
+	// written.
+	if !strings.Contains(stderr.String(), "stdout") {
+		t.Errorf("stderr %q does not say what was written", stderr.String())
+	}
+}
+
 // TestRecordFormatConflicts is VS-9, plus the cases the RFC's table implies:
 // the extension decides, --format may say so explicitly, and the two
 // disagreeing is an error rather than a guess.

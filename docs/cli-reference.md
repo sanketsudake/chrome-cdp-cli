@@ -696,7 +696,7 @@ chrome-cdp record stop -o demo.gif
 
 | Flag | Default | Purpose |
 |------|---------|---------|
-| `-o, --output <path>` | `./record-<timestamp>.<ext>` | output path, or `-` for stdout |
+| `-o, --output <path>` | `./record-<timestamp>.<ext>` | output path, or `-` for stdout (no envelope, as with `screenshot`/`pdf`) |
 | `--format` | from the extension, else `gif` | `gif` \| `mp4` \| `webm` \| `frames` |
 | `--max-size <size>` | — | best-effort ceiling, e.g. `2MB` or `1500000` |
 | `--loop <n>` | `0` (forever) | how many times the GIF plays; `--loop 3` plays three times |
