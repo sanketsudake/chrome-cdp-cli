@@ -12,7 +12,6 @@ package chrome
 
 import (
 	"context"
-	"encoding/json"
 	"math"
 	"strconv"
 
@@ -46,6 +45,11 @@ type FindOpts struct {
 type findGeometry struct {
 	X, Y float64 // centre
 	W, H float64
+
+	// Occluded records that the centre pixel resolves to something else — an
+	// overlay, a cookie banner, a modal. Reported, never fatal: knowing a
+	// coordinate would miss is the point of reporting it.
+	Occluded bool
 }
 
 // findMatchNode is one ranked match. `backend` is the CDP backend node id; the
@@ -184,6 +188,9 @@ func shapeFindResult(query string, matches []findMatchNode, truncated, fallback,
 		if g := m.geometry; g != nil {
 			entry["center"] = map[string]any{"x": math.Round(g.X), "y": math.Round(g.Y)}
 			visible = visible && g.W > 0 && g.H > 0
+			if g.Occluded {
+				entry["occluded"] = true
+			}
 		}
 		entry["visible"] = visible
 		arr = append(arr, entry)
@@ -207,24 +214,18 @@ func shapeFindResult(query string, matches []findMatchNode, truncated, fallback,
 	return res
 }
 
-// enrichFindCenters fills each RETURNED match's box from the live DOM — two
-// CDP calls per match, bounded by --limit (10 by default, 50 at most), never
-// per candidate.
+// enrichFindCenters measures each RETURNED match — two CDP calls per match,
+// bounded by --limit (10 by default, 50 at most), never per candidate.
+//
+// It uses the SAME primitive the pointer verbs measure with (geometry.go), in
+// its non-scrolling variant: a read verb must not scroll the page under a
+// running automation, but it must agree with the pointer verbs about where an
+// element is, or a centre reported by `find` would not be a point a click
+// lands on.
 //
 // Best-effort by design: a node that no longer resolves (the document moved
 // on) simply keeps no geometry rather than failing the read.
-//
-// It deliberately does NOT use select.go's nodeCoord, despite that being the
-// canonical pointer-geometry path: nodeCoordJS calls scrollIntoView, and a
-// read verb must not scroll the page under a running automation. The tradeoff
-// is that these centres are not occlusion-checked — `visible` here means "has
-// a box", not "is hit-testable" — which is why an acting verb still does its
-// own resolution rather than trusting a coordinate from a search result.
 func enrichFindCenters(actx context.Context, matches []findMatchNode) {
-	const centerJS = `function() {
-	  const r = this.getBoundingClientRect();
-	  return {x: r.x + r.width / 2, y: r.y + r.height / 2, w: r.width, h: r.height};
-	}`
 	for i := range matches {
 		if matches[i].backend == 0 {
 			continue
@@ -233,14 +234,12 @@ func enrichFindCenters(actx context.Context, matches []findMatchNode) {
 		if err != nil || obj == nil || obj.ObjectID == "" {
 			continue
 		}
-		raw, err := callOnObject(actx, obj.ObjectID, centerJS)
-		if err != nil || len(raw) == 0 {
+		box, err := measureNode(actx, obj.ObjectID, nodeBoxJS)
+		if err != nil {
 			continue
 		}
-		var box findGeometry
-		if json.Unmarshal(raw, &box) != nil {
-			continue
+		matches[i].geometry = &findGeometry{
+			X: box.CX, Y: box.CY, W: box.W, H: box.H, Occluded: box.Occluded,
 		}
-		matches[i].geometry = &box
 	}
 }

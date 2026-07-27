@@ -318,35 +318,12 @@ var ErrOccluded = errors.New("element has no settled, unoccluded clickable centr
 // nodeCoord returns the element's clamped centre and whether that point is
 // hit-testable on the element (or a descendant) — i.e. not occluded.
 func nodeCoord(ctx context.Context, objID runtime.RemoteObjectID) (float64, float64, bool, error) {
-	res, err := callOnObject(ctx, objID, nodeCoordJS)
+	b, err := measureNode(ctx, objID, nodeCoordJS)
 	if err != nil {
 		return 0, 0, false, err
 	}
-	var v struct {
-		OK bool    `json:"ok"`
-		X  float64 `json:"x"`
-		Y  float64 `json:"y"`
-	}
-	if err := json.Unmarshal(res, &v); err != nil {
-		return 0, 0, false, err
-	}
-	return v.X, v.Y, v.OK, nil
+	return b.X, b.Y, b.OK, nil
 }
-
-// nodeCoordJS scrolls the element into view and returns its viewport centre
-// (clamped so elementFromPoint is valid) plus whether that pixel resolves to the
-// element or a descendant — the occlusion check.
-const nodeCoordJS = `function() {
-  try { this.scrollIntoView({block:"center", inline:"nearest"}); } catch (e) {}
-  const r = this.getBoundingClientRect();
-  if (r.width < 1 || r.height < 1) return { ok: false, x: 0, y: 0 };
-  let cx = Math.round(r.left + r.width / 2), cy = Math.round(r.top + r.height / 2);
-  cx = Math.max(0, Math.min(cx, window.innerWidth - 1));
-  cy = Math.max(0, Math.min(cy, window.innerHeight - 1));
-  const at = document.elementFromPoint(cx, cy);
-  const ok = !!at && (at === this || this.contains(at));
-  return { ok, x: cx, y: cy };
-}`
 
 // locateResult is the coordinate + occlusion verdict returned by the JS option
 // locator.

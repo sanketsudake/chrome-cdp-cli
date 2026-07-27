@@ -152,7 +152,7 @@ chrome-cdp snap --by name … || { chrome-cdp activate && chrome-cdp snap --by n
 | `snap [--role <r>] [--grep <re>] [--region <name>] [--dedupe]` | accessibility snapshot: roles + names of actionable nodes, plus `alerts`, `focused`, per-node `states`/`value`/`ref` |
 | `find <query> [--role <r>] [--limit <n>] [--region <name>] [--all] [--dedupe] [--min-score <s>]` | ranked element matches for a plain-language query, each with `ref`, exact name, `states`, `score`, and `center` |
 | `grid [selector]` | a table/grid as `{headers, rows, count}` |
-| `value <selector> [--all]` | a form field's value (`--all`: every match, as a list) |
+| `value <selector> [--all]` | a form field's value (`--all`: every match, as a list); password fields come back masked |
 | `text <selector>` | visible text of a selector |
 | `text --article [--markdown] [--min-chars <n>]` | the page's main readable content, boilerplate dropped |
 | `html <selector> [--inner]` | outer (or inner) HTML |
@@ -165,6 +165,15 @@ chrome-cdp snap --role button --grep "[AP]M"    # calendar-event buttons only
 chrome-cdp grid                                 # read a table without parsing snap
 chrome-cdp value --all "input.hours"            # every hour cell in one call
 ```
+
+#### Password fields are masked on every read
+
+`value`, `value --all`, `snap`, and `find` all report a `password` input's contents as bullets, and omit a hidden input's value entirely.
+Chrome already masks passwords in the accessibility tree; the DOM-reading paths mask them to match, so no read verb quietly becomes the door that hands a typed password to a script or an agent transcript.
+A masked single read says so with `"masked": true`, so a caller can tell bullets-because-masked from bullets-the-user-typed.
+
+This is about not leaking by accident, not a security boundary: `eval` still reads whatever the page holds.
+That is deliberate — when you genuinely need the characters, there is one explicit path for it rather than four incidental ones.
 
 #### `find` — describe the element, get its address
 
@@ -204,9 +213,13 @@ Fallback matches carry centres but no refs, and `--region` is not honoured (regi
 A password field's `value` comes back masked on both paths, and a hidden input's is omitted — the fallback reads the DOM, where the value is the literal typed text, so it masks what Chrome's accessibility tree masks for you.
 Other field values are returned as-is, exactly as `snap` and `value` return them.
 
-`center` is the element's box centre in viewport CSS pixels.
-It is not occlusion-checked — `visible` here means "has a box", not "is hit-testable" — so an acting verb still resolves the element itself rather than trusting a coordinate from a search result.
+`center` is the element's box centre in viewport CSS pixels, measured with the same primitive the pointer verbs use — so a centre `find` reports is a point a click lands on.
+When that centre pixel resolves to something else (a cookie banner, a modal, a sticky header), the match carries `occluded: true`: the element is there, but a click at that coordinate would hit the overlay instead.
+That is reported, never fatal — knowing the coordinate would miss is the useful part.
+`visible` remains "has a box"; `occluded` is the separate question of whether the box is reachable.
+
 `find` never scrolls the page to measure, because a read verb must not move the page under a running automation.
+The pointer verbs do scroll their target into view, which is why an off-screen element can be clickable even when `find` reports its centre outside the viewport.
 
 #### `text --article` — the page without the furniture
 

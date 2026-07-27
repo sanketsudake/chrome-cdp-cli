@@ -3,6 +3,7 @@ package chrome
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"hash/fnv"
 	"os"
@@ -1361,11 +1362,37 @@ func (c *CDP) HTML(ctx context.Context, id, selector string, inner bool, q Query
 }
 
 func (c *CDP) Value(ctx context.Context, id, selector string, q QueryOpts) (map[string]any, error) {
-	var val string
-	if err := c.run(ctx, id, chromedp.Value(selector, &val, query(selector, q)...)); err != nil {
+	var out struct {
+		Value  string `json:"value"`
+		Masked bool   `json:"masked"`
+	}
+	err := c.run(ctx, id, chromedp.ActionFunc(func(actx context.Context) error {
+		nid, err := resolveNodeReady(actx, selector, q)
+		if err != nil {
+			return err
+		}
+		obj, err := dom.ResolveNode().WithNodeID(nid).Do(actx)
+		if err != nil {
+			return err
+		}
+		if obj == nil || obj.ObjectID == "" {
+			return errors.New("node has no remote object")
+		}
+		raw, err := callOnObject(actx, obj.ObjectID, axFieldValueJS)
+		if err != nil {
+			return err
+		}
+		return json.Unmarshal(raw, &out)
+	}))
+	if err != nil {
 		return nil, err
 	}
-	return map[string]any{"value": val}, nil
+	res := map[string]any{"value": out.Value}
+	// Say so, rather than letting a masked read look like the field's contents.
+	if out.Masked {
+		res["masked"] = true
+	}
+	return res, nil
 }
 
 // Values reads the value (or text) of EVERY element matching a CSS selector, in
@@ -1374,7 +1401,7 @@ func (c *CDP) Value(ctx context.Context, id, selector string, q QueryOpts) (map[
 // querySelectorAll, so it works even on a background/hidden tab.
 func (c *CDP) Values(ctx context.Context, id, selector string, q QueryOpts) (map[string]any, error) {
 	selJSON, _ := json.Marshal(selector)
-	expr := fmt.Sprintf(`(() => [...document.querySelectorAll(%s)].map(e => ("value" in e && typeof e.value === "string") ? e.value : (e.textContent || "").trim()))()`, string(selJSON))
+	expr := fmt.Sprintf(`(() => [...document.querySelectorAll(%s)].map(e => %s))()`, string(selJSON), axMaskValueJS)
 	var vals []string
 	if err := c.run(ctx, id, chromedp.Evaluate(expr, &vals)); err != nil {
 		return nil, err

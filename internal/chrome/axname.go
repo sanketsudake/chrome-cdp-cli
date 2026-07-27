@@ -72,3 +72,30 @@ const axNameHelpersJS = `
     return v;
   };
 `
+
+// axFieldValueJS reads one element's value with the same masking, as a
+// function body for callOnObject. It is the single element read behind the
+// `value` verb; axMaskValueJS below is the expression form the list read
+// (`value --all`) splices in.
+//
+// A read that must genuinely see a password's characters has one deliberate
+// path — `eval` — rather than every read verb quietly being that path.
+const axFieldValueJS = `function() {
+  const norm = s => (s || "").replace(/\s+/g, " ").trim();
+  const ty = (this.getAttribute("type") || "").toLowerCase();
+  if (!("value" in this) || typeof this.value !== "string") {
+    return { value: (this.textContent || "").trim(), masked: false };
+  }
+  if (ty === "hidden") return { value: "", masked: true };
+  const v = this.value;
+  if (ty === "password") return { value: "•".repeat(norm(v).length), masked: true };
+  return { value: v, masked: false };
+}`
+
+// axMaskValueJS is the same rule as an expression over a variable named e, for
+// the querySelectorAll list read.
+const axMaskValueJS = `(("value" in e && typeof e.value === "string")
+  ? (((e.getAttribute("type") || "").toLowerCase() === "password")
+      ? "•".repeat(e.value.length)
+      : (((e.getAttribute("type") || "").toLowerCase() === "hidden") ? "" : e.value))
+  : (e.textContent || "").trim())`

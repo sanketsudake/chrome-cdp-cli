@@ -110,6 +110,7 @@ chrome-cdp find "time type" --role textbox
 Matches are ordered by descending score; ties break by document order.
 `truncated: true` signals that more candidates cleared `--min-score` than `--limit` allowed.
 `ref`, `role`, `name`, and `states` use exactly the vocabulary `snap` already emits, so a caller parses one schema across both verbs.
+A match also carries `value` when the element has one (masked for password fields, as every read verb masks them), and `occluded: true` when its centre pixel resolves to an overlay rather than the element.
 
 ## Errors and exit codes
 
@@ -158,7 +159,9 @@ The table and weights live in one file with golden tests; tuning them must never
 - **Performance.**
   One tree fetch plus an in-process scoring pass over at most a few thousand nodes — comparable to `snap` itself; no per-candidate round trips.
   Geometry is measured only for the matches actually RETURNED (bounded by `--limit`: 10 by default, 50 at most), which costs a pair of CDP calls each.
-  That measurement deliberately does not reuse the pointer verbs' `nodeCoord`, because that path scrolls the element into view — a side effect a read verb must not have.
+  It goes through the one shared geometry primitive the pointer verbs measure with, in its non-scrolling variant: a read verb must not scroll the page under a running automation, but it must agree with the pointer verbs about where an element is, or a reported centre would not be a point a click lands on.
+  That shared primitive also supplies the occlusion probe, so a match whose centre is covered is reported with `occluded: true` rather than silently handing back a coordinate that would miss.
+  RFC-0014's `--at` addressing consumes the same primitive rather than adding a third definition of "where is this element".
 
 ## Verification scenarios
 
