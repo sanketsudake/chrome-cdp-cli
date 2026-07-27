@@ -116,7 +116,16 @@ func (a *App) runDoctor(noProbe bool) {
 	switch browser.ProbeWS(ws, doctorDialTimeout, doctorProbeWait) {
 	case browser.WSReady:
 		base["state"] = stateReady
-		base["status"] = "debug endpoint ready — the WebSocket upgrade completed, so an attach will connect"
+		// Say what the verdict cost. ProbeWS hangs up on every outcome,
+		// including this one, so on the chrome://inspect path the consent this
+		// probe just used is gone and the next command is a fresh attach that
+		// will prompt again. Handing the live socket on to a connection instead
+		// is the alternative, and doctor is the wrong place for it: it is a
+		// diagnostic, it was not asked to connect, and it has nothing to hand
+		// the socket to. So it is disclosed rather than hidden.
+		base["status"] = "debug endpoint ready — the WebSocket upgrade completed, so an attach will connect. " +
+			"This probe's own connection was then closed, so on the chrome://inspect path the next command is a fresh attach and Chrome may prompt again; " +
+			"start the daemon (chrome-cdp daemon start) to be asked once per session."
 		a.emitOK("doctor", nil, base)
 	case browser.WSPending:
 		base["state"] = stateConsentPending

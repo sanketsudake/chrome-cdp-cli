@@ -279,6 +279,14 @@ func settle(conn net.Conn, ok bool) *Upgrade {
 
 // ProbeWS classifies an endpoint for a caller that wants the answer and not the
 // socket — `doctor`, which must report what it verified and hold nothing.
+//
+// It therefore does the thing Upgrade's doc comment warns about: it connects,
+// learns the answer, and hangs up, spending the user's click on a connection
+// nobody kept. That is the right trade HERE and only here. doctor is a
+// diagnostic with nothing to hand a live socket to, and holding one open past
+// the command that made it would be worse. What it must not do is pretend
+// otherwise, so doctor's ready verdict says the connection was closed and the
+// next command may prompt again — see runDoctor.
 func ProbeWS(wsURL string, dialTimeout, wait time.Duration) WSState {
 	u := AwaitUpgrade(wsURL, dialTimeout, wait, wait, nil)
 	defer u.Close()

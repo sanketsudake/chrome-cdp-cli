@@ -386,3 +386,25 @@ func TestDoctorHonoursExplicitPort(t *testing.T) {
 		t.Error("doctor never contacted the --port endpoint at all")
 	}
 }
+
+// TestDoctorReadyViaProbeSaysTheClickWillBeSpent.
+//
+// browser.Upgrade's doc comment states the governing model: "a probe that
+// connects, learns the answer and hangs up has spent the user's click on a
+// connection nobody kept". ProbeWS closes the socket on every outcome including
+// WSReady, so doctor's `ready` verdict is falsified by the act of producing it
+// — on the chrome://inspect path the next command raises a second prompt. The
+// verdict is still worth having; it just has to say what it cost.
+func TestDoctorReadyViaProbeSaysTheClickWillBeSpent(t *testing.T) {
+	prev := doctorProbeWait
+	doctorProbeWait = 400 * time.Millisecond
+	t.Cleanup(func() { doctorProbeWait = prev })
+
+	stubEndpoint(t, "HTTP/1.1 101 Switching Protocols")
+	env, _, _ := runDoctorApp(t, nil)
+	res, _ := env["result"].(map[string]any)
+	status, _ := res["status"].(string)
+	if !strings.Contains(status, "prompt again") {
+		t.Errorf("doctor reported ready without saying the probe's connection was closed and the next command may prompt again:\n%s", status)
+	}
+}
