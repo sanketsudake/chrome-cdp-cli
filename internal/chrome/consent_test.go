@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sanketsudake/chrome-cdp-cli/internal/browser"
 	"github.com/sanketsudake/chrome-cdp-cli/internal/result"
 )
 
@@ -163,13 +164,17 @@ func TestConnectConsentPendingWaitsAndReports(t *testing.T) {
 		t.Errorf("OnConsentPending fired after %v of a %v wait — it must announce while the dialog is up, not on the way out", pendingAt, elapsed)
 	}
 
-	// VS-4: the message has to name the prompt AND the recovery, because the
-	// symptom the user is looking at is a browser that appears to have crashed.
+	// VS-4: the message has to carry the one authored explanation of the prompt
+	// AND the recovery, because the symptom the user is looking at is a browser
+	// that appears to have crashed. Asserting on the const rather than on a list
+	// of substrings is the point: five hand-written copies of this paragraph had
+	// already drifted, and a substring list cannot tell the difference.
 	msg := err.Error()
-	for _, want := range []string{"Allow remote debugging", "modal", "BEHIND", "no other input", "--remote-debugging-port=9222"} {
-		if !strings.Contains(msg, want) {
-			t.Errorf("the consent-timeout message does not mention %q:\n%s", want, msg)
-		}
+	if !strings.Contains(msg, browser.ConsentPromptAdvice) {
+		t.Errorf("the consent-timeout message does not carry browser.ConsentPromptAdvice:\n%s", msg)
+	}
+	if !strings.Contains(msg, "--remote-debugging-port=9222") {
+		t.Errorf("the consent-timeout message does not name the recovery:\n%s", msg)
 	}
 }
 

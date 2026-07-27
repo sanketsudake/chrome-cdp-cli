@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sanketsudake/chrome-cdp-cli/internal/browser"
 	"github.com/sanketsudake/chrome-cdp-cli/internal/chrome"
 	"github.com/sanketsudake/chrome-cdp-cli/internal/result"
 )
@@ -106,8 +107,8 @@ func TestEnsureWaitsOutTheConsentPrompt(t *testing.T) {
 	said := strings.Join(notices(), "\n")
 	if said == "" {
 		t.Error("nothing was said while waiting; a user staring at a frozen browser has to be told it is a dialog")
-	} else if !strings.Contains(said, "Allow remote debugging") || !strings.Contains(said, "no other input") {
-		t.Errorf("the wait notice must name the prompt and say Chrome accepts no other input:\n%s", said)
+	} else if !strings.Contains(said, browser.ConsentPromptAdvice) {
+		t.Errorf("the wait notice does not carry browser.ConsentPromptAdvice:\n%s", said)
 	}
 }
 

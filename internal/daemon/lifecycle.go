@@ -13,6 +13,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/sanketsudake/chrome-cdp-cli/internal/browser"
 	"github.com/sanketsudake/chrome-cdp-cli/internal/chrome"
 	"github.com/sanketsudake/chrome-cdp-cli/internal/result"
 )
@@ -109,9 +110,7 @@ const lockWaitNotice = "another chrome-cdp is already starting the connection; w
 
 // consentWaitNotice is said WHILE the dialog is on screen, which is the only
 // time it can help. Told afterwards it is a post-mortem.
-const consentWaitNotice = "Chrome is showing an \"Allow remote debugging?\" prompt — click Allow to continue. " +
-	"It is browser-modal, so it can sit BEHIND the Chrome window and Chrome will accept no other input until it is answered " +
-	"(a browser that looks frozen is usually this dialog, not a crash)."
+const consentWaitNotice = browser.ConsentPromptAdvice + " Nothing else is needed; this command is waiting for you."
 
 // TryConnect returns a Client if a daemon is already listening on sockPath.
 func TryConnect(sockPath string) *Client {
@@ -231,9 +230,11 @@ func Ensure(ctx context.Context, sockPath, exePath string, env []string, consent
 		}
 	}
 	if waiting {
-		return nil, &chrome.ConnectError{Code: result.CodeConsentPending, Message: "the daemon is still waiting on Chrome's \"Allow remote debugging?\" prompt after " + consentTimeout.String() + " — " + consentWaitNotice}
+		return nil, &chrome.ConnectError{Code: result.CodeConsentPending,
+			Message: "the daemon is still waiting for consent after " + consentTimeout.String() + ". " + browser.ConsentPromptAdvice}
 	}
-	return nil, &chrome.ConnectError{Code: result.CodeDaemon, Message: "daemon did not start within " + startupWait.String() + " — Chrome may be waiting on its \"Allow remote debugging?\" prompt; it can hide behind the window, and until it is answered Chrome accepts no other input"}
+	return nil, &chrome.ConnectError{Code: result.CodeDaemon,
+		Message: "daemon did not start within " + startupWait.String() + ". " + browser.ConsentPromptAdvice}
 }
 
 // daemonProc is Ensure's handle on the daemon it spawned. All it carries is

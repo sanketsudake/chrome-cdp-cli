@@ -325,16 +325,10 @@ func startBase(managed bool, alloc context.Context, allocCancel context.CancelFu
 }
 
 // consentPendingMsg explains a wait that ran out with the dialog still
-// unanswered. Every clause is here because a user could not deduce it: that the
-// dialog is modal to the BROWSER (so the frozen window is the symptom, not a
-// crash), that it can be behind the window (so they have not seen it), and that
-// nothing else in Chrome will respond until it is answered.
+// unanswered, composed from the one authored description of the prompt.
 func consentPendingMsg(waited time.Duration) string {
-	return fmt.Sprintf("Chrome is holding its \"Allow remote debugging?\" consent prompt and it has not been answered in %s — "+
-		"the prompt is browser-modal and can sit BEHIND the Chrome window, and Chrome accepts no other input until it is answered, "+
-		"so a browser that looks frozen or crashed is usually this dialog. "+
-		"Find it and click Allow, then retry; raise --consent-timeout if you need longer. "+
-		"To avoid the prompt entirely, %s.", waited, browser.EnableAdvice)
+	return fmt.Sprintf("%s It has not been answered in %s — retry once you have, and raise --consent-timeout if you need longer. "+
+		"To avoid the prompt entirely, %s.", browser.ConsentPromptAdvice, waited, browser.EnableAdvice)
 }
 
 // connectFailMsg turns a raw allocator/dial failure into an actionable message.
@@ -344,7 +338,9 @@ func consentPendingMsg(waited time.Duration) string {
 func connectFailMsg(managed bool, what string, err error) string {
 	s := err.Error()
 	if !managed && (strings.Contains(s, "could not dial") || strings.Contains(s, "deadline exceeded")) {
-		return "cannot reach Chrome's debug endpoint — if Chrome is showing an \"Allow remote debugging?\" prompt, click Allow (it is browser-modal, can be behind the window, and blocks all other input until answered), then retry; if it stays unresponsive the endpoint is wedged: quit and reopen Chrome, then " + browser.EnableAdvice + ", and keep the daemon running so the consent is asked once, not per command"
+		return "cannot reach Chrome's debug endpoint. " + browser.ConsentPromptAdvice +
+			" If it stays unresponsive the endpoint is wedged instead: quit and reopen Chrome, then " + browser.EnableAdvice +
+			", and keep the daemon running so the consent is asked once, not per command"
 	}
 	return fmt.Sprintf("%s: %v", what, err)
 }

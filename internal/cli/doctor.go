@@ -121,10 +121,8 @@ func (a *App) runDoctor(noProbe bool) {
 	case browser.WSPending:
 		base["state"] = stateConsentPending
 		a.emitErr("doctor", result.CodeConsentPending,
-			"the debug endpoint accepted the connection and then went silent — Chrome is holding its \"Allow remote debugging?\" prompt. "+
-				"It is browser-modal, can sit BEHIND the Chrome window, and Chrome accepts no other input until it is answered, "+
-				"so a browser that looks frozen is usually this dialog and not a crash. Find it and click Allow. "+
-				"To stop being asked at all, "+browser.EnableAdvice+".",
+			"the debug endpoint accepted the connection and then went silent. "+browser.ConsentPromptAdvice+
+				" To stop being asked at all, "+browser.EnableAdvice+".",
 			base)
 	default:
 		base["state"] = stateNoEndpoint

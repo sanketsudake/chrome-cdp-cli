@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sanketsudake/chrome-cdp-cli/internal/browser"
 	"github.com/sanketsudake/chrome-cdp-cli/internal/chrome"
 	"github.com/sanketsudake/chrome-cdp-cli/internal/result"
 )
@@ -165,10 +166,11 @@ func TestDoctorConsentPendingNamesTheDialog(t *testing.T) {
 	env, _, _ := runDoctorApp(t, nil)
 	e, _ := env["error"].(map[string]any)
 	msg, _ := e["message"].(string)
-	for _, want := range []string{"Allow remote debugging", "modal", "BEHIND", "no other input", "--remote-debugging-port=9222"} {
-		if !strings.Contains(msg, want) {
-			t.Errorf("the consent_pending message does not mention %q:\n%s", want, msg)
-		}
+	if !strings.Contains(msg, browser.ConsentPromptAdvice) {
+		t.Errorf("the consent_pending message does not carry browser.ConsentPromptAdvice:\n%s", msg)
+	}
+	if !strings.Contains(msg, "--remote-debugging-port=9222") {
+		t.Errorf("the consent_pending message does not name the recovery:\n%s", msg)
 	}
 }
 

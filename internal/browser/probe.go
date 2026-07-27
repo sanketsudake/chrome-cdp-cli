@@ -27,6 +27,23 @@ const EnableAdvice = "relaunch Chrome with --remote-debugging-port=9222 " +
 	"(on macOS: open -a \"Google Chrome\" --args --remote-debugging-port=9222), which never prompts; " +
 	"or enable chrome://inspect/#remote-debugging, which raises a consent prompt on every fresh attach"
 
+// ConsentPromptAdvice is the single authored explanation of Chrome's consent
+// dialog, for every place that has to describe it: the connect timeout, the
+// generic dial failure, the daemon's wait notice, the client's give-up message,
+// and doctor's consent_pending state.
+//
+// Every clause is here because a user cannot deduce it. That the dialog is
+// modal to the BROWSER is why the frozen window is a symptom and not a crash;
+// that it can sit behind the window is why they have not seen it; that nothing
+// else in Chrome responds until it is answered is why the tool looks like the
+// thing that broke. Five hand-written copies had already drifted — one said
+// "behind" where the others shouted it, one said "blocks all other input" —
+// and two test files asserted on a substring list that one of those copies
+// would have failed.
+const ConsentPromptAdvice = "Chrome is holding its \"Allow remote debugging?\" consent prompt. " +
+	"The prompt is browser-modal and can sit BEHIND the Chrome window, and Chrome accepts no other input until it is answered, " +
+	"so a browser that looks frozen or crashed is usually this dialog. Find it and click Allow."
+
 // WSState is what one WebSocket upgrade against Chrome's browser-level debug
 // endpoint actually did. It is three-way, and that is the whole point.
 //
