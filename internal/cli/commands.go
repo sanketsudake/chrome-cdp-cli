@@ -859,6 +859,16 @@ func (a *App) cmdSession() *cobra.Command {
 			"worth the most. It emits one extra result line describing the file.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			// `session` is Exempt — it touches no tab itself and every line it
+			// re-enters is checked on its own — but verbs_denied is checked
+			// ahead of the class precisely so an operator can name it, and
+			// "read commands from stdin and run them" is an obvious thing to
+			// want off. Without this call site the checker refused it correctly
+			// and nothing ever asked, so the rule was accepted and inert.
+			if perr := a.checkPolicy(a.policyVerb(), ""); perr != nil {
+				a.emitErr("session", perr.Code, perr.Message, perr.Details)
+				return nil
+			}
 			// Validated before anything connects, so a misspelled --record path
 			// is exit 2 with Chrome untouched and stdin unread.
 			rec, rerr := a.newSessionRecorder(cmd, rf)

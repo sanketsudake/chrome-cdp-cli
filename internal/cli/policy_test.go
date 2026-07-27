@@ -1265,3 +1265,33 @@ func TestRecipeStepsAreCheckedIndividually(t *testing.T) {
 		t.Errorf("step 2 was not refused by policy; output:\n%s", out.String())
 	}
 }
+
+// verbs_denied is checked ahead of the verb's class so it reaches Exempt verbs
+// too — but a checker that refuses correctly is useless if nothing asks it.
+//
+// `session` is Exempt (it touches no tab itself, and every line it re-enters is
+// checked on its own) and is an obvious thing for an operator to want off: it
+// runs commands the operator did not type, read from stdin. Before this call
+// site existed the checker refused it correctly and nothing ever asked, so the
+// rule was accepted and silently inert.
+func TestVerbsDeniedReachesSession(t *testing.T) {
+	t.Parallel()
+	pol := config.Policy{
+		Present: true, Enabled: true,
+		Allow:       []string{"*.example.com"},
+		VerbsDenied: []string{"session"},
+	}
+	// refusing() fails the test if any action method is reached, so this also
+	// proves stdin is never read and no command runs.
+	b := refusing(t, target.Info{ID: "aa11", Title: "App", URL: "https://app.example.com/x"})
+	app, out, _ := appWithPolicy(b, pol)
+	app.WithInput(strings.NewReader(`["snap","--target","aa11"]` + "\n"))
+	code := app.Execute("session", "--json")
+
+	if code != 7 {
+		t.Fatalf("exit = %d, want 7 (permission_denied); output:\n%s", code, out.String())
+	}
+	if !strings.Contains(out.String(), "permission_denied") {
+		t.Errorf("session was not refused by verbs_denied; output:\n%s", out.String())
+	}
+}

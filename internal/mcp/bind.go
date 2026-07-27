@@ -343,3 +343,9 @@ func (b boundBrowser) RecordCancel(ctx context.Context, targetID string) (map[st
 	defer cancel()
 	return b.Browser.RecordCancel(ctx, targetID)
 }
+
+func (b boundBrowser) RecordRestore(ctx context.Context, targetID string, frames []chrome.Frame, meta map[string]any) error {
+	ctx, cancel := b.bind(ctx)
+	defer cancel()
+	return b.Browser.RecordRestore(ctx, targetID, frames, meta)
+}
