@@ -740,6 +740,7 @@ The canvas comes from the first frame; a later frame with a different shape is s
 **`--max-size` is best-effort.**
 It re-encodes at a smaller scale, and then at a lower frame count, until the file fits; the result reports `reduced` and the `export_scale` used when a reduction happened.
 `within_max_size` is reported whenever `--max-size` was given at all — including when no reduction step was possible, since a small canvas with few frames is refused at the first step and misses the ceiling just the same.
+The ladder is bounded by `--timeout` like everything else: a long recording can run out of time before it works through every step, and the result then carries `max_size_timed_out: true` alongside the best attempt that did finish, so a larger `--timeout` is a visible next move rather than a guess.
 
 Recording is **per-tab**.
 A batch that opens new tabs records the one it started on; a multi-tab recording is out of scope.

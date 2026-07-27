@@ -3,11 +3,15 @@
 //
 // It is deliberately PURE with respect to the browser: the input is a slice of
 // already-captured frames plus options, and the output is bytes. There is no
-// CDP, no context, and no knowledge of how the frames were produced. That is
-// the whole reason RFC-0011 splits it out — frame timing through a real Chrome
-// is inherently variable, so the parts that must be exactly right (the palette,
-// the frame delays, the annotation compositing, the --max-size reduction) are
-// tested here on synthetic frames instead.
+// CDP and no knowledge of how the frames were produced. That is the whole
+// reason RFC-0011 splits it out — frame timing through a real Chrome is
+// inherently variable, so the parts that must be exactly right (the palette, the
+// frame delays, the annotation compositing, the --max-size reduction) are tested
+// here on synthetic frames instead.
+//
+// The one thing that does cross the boundary is a context, because --max-size
+// re-encodes the whole recording up to nine times and the command that asked for
+// it has a --timeout. See reduce().
 //
 // Two properties are load-bearing and any change must preserve both:
 //
@@ -24,6 +28,7 @@ package encode
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"image"
@@ -172,6 +177,11 @@ type Result struct {
 	// the reduction ladder bottomed out first — a best-effort bound, reported
 	// rather than silently missed.
 	WithinMaxSize bool
+
+	// ReductionTimedOut reports that the --max-size ladder was cut short by the
+	// context rather than by its own bounds, so this is the best COMPLETE
+	// attempt and not the best attempt available.
+	ReductionTimedOut bool
 }
 
 // ParseFormat resolves a user-supplied format name.
@@ -228,12 +238,19 @@ func Available(f Format) error {
 func IsNoEncoder(err error) bool { return errors.Is(err, ErrNoEncoder) }
 
 // Encode renders frames into the requested artifact.
-func Encode(frames []Frame, opts Options) (Result, error) {
+//
+// ctx bounds the work. Encoding is not a fixed cost — --max-size runs the whole
+// pipeline up to nine times — so the command's deadline has to reach in here, or
+// `record stop --max-size` runs for minutes past --timeout with no output.
+func Encode(ctx context.Context, frames []Frame, opts Options) (Result, error) {
 	if len(frames) == 0 {
 		return Result{}, ErrNoFrames
 	}
 	if err := Available(opts.Format); err != nil {
 		return Result{}, err
+	}
+	if err := ctx.Err(); err != nil {
+		return Result{}, fmt.Errorf("the export had no time left to run: %w", err)
 	}
 	if opts.FPS <= 0 {
 		opts.FPS = 4
@@ -242,7 +259,7 @@ func Encode(frames []Frame, opts Options) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
-	res, err := reduce(frames, imgs, opts)
+	res, err := reduce(ctx, frames, imgs, opts)
 	if err != nil {
 		return Result{}, err
 	}
@@ -267,16 +284,36 @@ func Encode(frames []Frame, opts Options) (Result, error) {
 // with WithinMaxSize false, which is the honest answer: --max-size is
 // documented as best-effort, and silently returning something larger without
 // saying so would be the failure mode.
-func reduce(frames []Frame, imgs []image.Image, opts Options) (Result, error) {
+//
+// TIME is the fourth bound, and the one the other three cannot supply: nine
+// attempts over a 600-frame recording is real minutes of work, and the command
+// that asked for it has a --timeout. When ctx expires the last COMPLETE attempt
+// is returned with ReductionTimedOut set — a finished larger artifact is worth
+// more to the user than nothing — and only an expiry before any attempt
+// finished is an error.
+func reduce(ctx context.Context, frames []Frame, imgs []image.Image, opts Options) (Result, error) {
 	p := plan{scale: 1, stride: 1}
+	var best Result
+	have := false
 	for step := 0; ; step++ {
-		res, err := encodeAt(frames, imgs, opts, p)
+		res, err := encodeAt(ctx, frames, imgs, opts, p)
 		if err != nil {
+			if have && ctx.Err() != nil {
+				// The deadline landed mid-attempt. A half-rendered attempt is not
+				// an artifact; the previous complete one is.
+				best.ReductionTimedOut = true
+				return best, nil
+			}
 			return Result{}, err
 		}
 		res.Reduced = p.scale < 1 || p.stride > 1
 		res.WithinMaxSize = opts.MaxBytes <= 0 || res.Bytes <= opts.MaxBytes
+		best, have = res, true
 		if res.WithinMaxSize || step >= maxReductionSteps {
+			return res, nil
+		}
+		if ctx.Err() != nil {
+			res.ReductionTimedOut = true
 			return res, nil
 		}
 		next, ok := p.next(res.Bytes, opts.MaxBytes, imgs[0], len(imgs))
@@ -326,12 +363,17 @@ func (p plan) next(got, want int, first image.Image, count int) (plan, bool) {
 const minScaleFactor = 0.1
 
 // encodeAt renders one attempt at the given plan.
-func encodeAt(frames []Frame, imgs []image.Image, opts Options, p plan) (Result, error) {
+func encodeAt(ctx context.Context, frames []Frame, imgs []image.Image, opts Options, p plan) (Result, error) {
 	kept, keptImgs := stride(frames, imgs, p.stride)
 	w, h := scaledSize(imgs[0], p.scale)
 	canvas := make([]*image.RGBA, 0, len(keptImgs))
 	annotated := false
 	for i, src := range keptImgs {
+		// One check per frame: fine-grained enough that a 600-frame attempt
+		// abandons promptly, coarse enough to cost nothing.
+		if err := ctx.Err(); err != nil {
+			return Result{}, fmt.Errorf("the export ran out of time after %d of %d frames: %w", i, len(keptImgs), err)
+		}
 		dst, pl := render(src, w, h)
 		if opts.Annotate && drawMarks(dst, kept[i], src, pl) {
 			annotated = true
@@ -363,7 +405,7 @@ func encodeAt(frames []Frame, imgs []image.Image, opts Options, p plan) (Result,
 
 	switch opts.Format {
 	case FormatGIF:
-		data, err := encodeGIF(canvas, d, opts.Loop)
+		data, err := encodeGIF(ctx, canvas, d, opts.Loop)
 		if err != nil {
 			return Result{}, err
 		}
@@ -512,8 +554,11 @@ func gifLoopCount(plays int) int {
 }
 
 // encodeGIF writes the animation with a palette shared across every frame.
-func encodeGIF(canvas []*image.RGBA, delay []int, loop int) ([]byte, error) {
-	q := newQuantizer(canvas)
+func encodeGIF(ctx context.Context, canvas []*image.RGBA, delay []int, loop int) ([]byte, error) {
+	q, err := newQuantizer(ctx, canvas)
+	if err != nil {
+		return nil, err
+	}
 	g := &gif.GIF{
 		Image:     make([]*image.Paletted, 0, len(canvas)),
 		Delay:     delay,
@@ -818,21 +863,32 @@ type quantizer struct {
 	cache []int16 // 32768 buckets; -1 = not yet resolved
 }
 
-func newQuantizer(canvas []*image.RGBA) *quantizer {
-	counts := map[color.RGBA]int{}
-	overflow := false
+// quantSampleBudget bounds the histogram pass. Above it the colours are counted
+// from a strided sample instead of from every pixel: this pass inserts one map
+// entry per pixel of every frame, so a 600-frame 640x400 recording is ~150
+// million map operations — repeated once per --max-size attempt.
+const quantSampleBudget = 4 << 20
+
+func newQuantizer(ctx context.Context, canvas []*image.RGBA) (*quantizer, error) {
+	total := 0
 	for _, c := range canvas {
 		b := c.Bounds()
-		for y := b.Min.Y; y < b.Max.Y; y++ {
-			for x := b.Min.X; x < b.Max.X; x++ {
-				px := c.RGBAAt(x, y)
-				px.A = 0xFF // GIF here is fully opaque; alpha would split colours pointlessly
-				if _, seen := counts[px]; !seen && len(counts) >= 1<<16 {
-					overflow = true
-					continue
-				}
-				counts[px]++
-			}
+		total += b.Dx() * b.Dy()
+	}
+	step := 1
+	if total > quantSampleBudget {
+		step = total/quantSampleBudget + 1
+	}
+	counts, overflow, err := countColors(ctx, canvas, step)
+	if err != nil {
+		return nil, err
+	}
+	if step > 1 && !overflow && len(counts) <= exactPaletteLimit {
+		// The sample says this is a flat frame set — the case worth reproducing
+		// colour for colour — so confirm it over every pixel before committing to
+		// an exact palette, which a single missed colour would silently break.
+		if counts, overflow, err = countColors(ctx, canvas, 1); err != nil {
+			return nil, err
 		}
 	}
 	q := &quantizer{}
@@ -845,7 +901,7 @@ func newQuantizer(canvas []*image.RGBA) *quantizer {
 		if len(q.pal) == 0 {
 			q.pal = color.Palette{color.RGBA{A: 0xFF}}
 		}
-		return q
+		return q, nil
 	}
 	for _, c := range sortedColors(counts) {
 		if len(q.pal) >= paletteSize {
@@ -857,7 +913,39 @@ func newQuantizer(canvas []*image.RGBA) *quantizer {
 	for i := range q.cache {
 		q.cache[i] = -1
 	}
-	return q
+	return q, nil
+}
+
+// countColors builds the colour histogram, visiting every step'th pixel.
+//
+// It reports whether the distinct-colour count overflowed its own bound, which
+// is what decides between the exact and the nearest-colour palette regimes.
+func countColors(ctx context.Context, canvas []*image.RGBA, step int) (map[color.RGBA]int, bool, error) {
+	counts := map[color.RGBA]int{}
+	overflow := false
+	n := 0
+	for _, c := range canvas {
+		if err := ctx.Err(); err != nil {
+			return nil, false, fmt.Errorf("the export ran out of time building the palette: %w", err)
+		}
+		b := c.Bounds()
+		for y := b.Min.Y; y < b.Max.Y; y++ {
+			for x := b.Min.X; x < b.Max.X; x++ {
+				n++
+				if step > 1 && n%step != 0 {
+					continue
+				}
+				px := c.RGBAAt(x, y)
+				px.A = 0xFF // GIF here is fully opaque; alpha would split colours pointlessly
+				if _, seen := counts[px]; !seen && len(counts) >= 1<<16 {
+					overflow = true
+					continue
+				}
+				counts[px]++
+			}
+		}
+	}
+	return counts, overflow, nil
 }
 
 // sortedColors orders the counted colours by frequency, breaking ties on the

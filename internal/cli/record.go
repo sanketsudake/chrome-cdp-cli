@@ -484,7 +484,7 @@ func (a *App) exportRecording(ctx context.Context, b chrome.Browser, command str
 		// `record start --annotate` decides when `record stop` did not.
 		annotate, _ = meta["annotate"].(bool)
 	}
-	res, err := encode.Encode(toEncodeFrames(frames), encode.Options{
+	res, err := encode.Encode(ctx, toEncodeFrames(frames), encode.Options{
 		Format:   opts.format,
 		FPS:      metaFloat(meta, "fps", chrome.DefaultRecordFPS),
 		Loop:     opts.loop,
@@ -580,6 +580,13 @@ func recordResultPayload(meta map[string]any, res encode.Result, opts exportOpts
 	// reported as a plain byte count with nothing said about it.
 	if opts.maxBytes > 0 {
 		out["within_max_size"] = res.WithinMaxSize
+		if res.ReductionTimedOut {
+			// The ladder was cut short by --timeout, not by its own bounds: what
+			// came back is the best COMPLETE attempt, and a longer timeout might
+			// have done better. Saying so is the difference between "this is as
+			// small as it gets" and "give it more time".
+			out["max_size_timed_out"] = true
+		}
 	}
 	return out
 }

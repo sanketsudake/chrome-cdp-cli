@@ -2,6 +2,7 @@ package encode
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"image"
@@ -88,7 +89,7 @@ func TestGIFRoundTripIsExact(t *testing.T) {
 		{Data: solidPNG(t, 24, 16, green), TS: base.Add(250 * time.Millisecond)},
 		{Data: solidPNG(t, 24, 16, blue), TS: base.Add(500 * time.Millisecond)},
 	}
-	res, err := Encode(frames, Options{Format: FormatGIF, FPS: 4, Loop: 3})
+	res, err := Encode(context.Background(), frames, Options{Format: FormatGIF, FPS: 4, Loop: 3})
 	if err != nil {
 		t.Fatalf("Encode: %v", err)
 	}
@@ -145,7 +146,7 @@ func TestLoopPlaysExactlyNTimes(t *testing.T) {
 	for plays, want := range cases {
 		t.Run(fmt.Sprintf("%d plays", plays), func(t *testing.T) {
 			t.Parallel()
-			res, err := Encode(frames, Options{Format: FormatGIF, FPS: 4, Loop: plays})
+			res, err := Encode(context.Background(), frames, Options{Format: FormatGIF, FPS: 4, Loop: plays})
 			if err != nil {
 				t.Fatalf("Encode: %v", err)
 			}
@@ -169,7 +170,7 @@ func TestLoopCountInfinite(t *testing.T) {
 		{Data: solidPNG(t, 8, 8, red)},
 		{Data: solidPNG(t, 8, 8, blue)},
 	}
-	res, err := Encode(frames, Options{Format: FormatGIF, FPS: 4, Loop: 0})
+	res, err := Encode(context.Background(), frames, Options{Format: FormatGIF, FPS: 4, Loop: 0})
 	if err != nil {
 		t.Fatalf("Encode: %v", err)
 	}
@@ -232,7 +233,7 @@ func TestAnnotationIsOptIn(t *testing.T) {
 	src := solidPNG(t, 40, 30, green)
 	frames := []Frame{{Data: src, Marks: []Mark{{X: 20, Y: 15, Command: "click"}}}}
 
-	res, err := Encode(frames, Options{Format: FormatFrames, FPS: 4})
+	res, err := Encode(context.Background(), frames, Options{Format: FormatFrames, FPS: 4})
 	if err != nil {
 		t.Fatalf("Encode: %v", err)
 	}
@@ -262,7 +263,7 @@ func TestAnnotationMarksTheClick(t *testing.T) {
 		Data:  solidPNG(t, 60, 40, green),
 		Marks: []Mark{{X: 30, Y: 20, Command: "click"}},
 	}}
-	res, err := Encode(frames, Options{Format: FormatFrames, FPS: 4, Annotate: true})
+	res, err := Encode(context.Background(), frames, Options{Format: FormatFrames, FPS: 4, Annotate: true})
 	if err != nil {
 		t.Fatalf("Encode: %v", err)
 	}
@@ -292,7 +293,7 @@ func TestAnnotationScalesPageCoordinates(t *testing.T) {
 		CSSHeight: 100,
 		Marks:     []Mark{{X: 80, Y: 80, Command: "click"}},
 	}}
-	res, err := Encode(frames, Options{Format: FormatFrames, FPS: 4, Annotate: true})
+	res, err := Encode(context.Background(), frames, Options{Format: FormatFrames, FPS: 4, Annotate: true})
 	if err != nil {
 		t.Fatalf("Encode: %v", err)
 	}
@@ -317,7 +318,7 @@ func TestMixedDimensionsAreLetterboxed(t *testing.T) {
 		{Data: solidPNG(t, 40, 20, green)}, // sets the canvas: 40x20
 		{Data: solidPNG(t, 20, 20, red)},   // square: must not be stretched to 40 wide
 	}
-	res, err := Encode(frames, Options{Format: FormatFrames, FPS: 4})
+	res, err := Encode(context.Background(), frames, Options{Format: FormatFrames, FPS: 4})
 	if err != nil {
 		t.Fatalf("Encode: %v", err)
 	}
@@ -358,7 +359,7 @@ func TestLetterboxedAnnotationLandsOnTheContent(t *testing.T) {
 			Marks:     []Mark{{X: 10, Y: 10, Command: "click"}},
 		},
 	}
-	res, err := Encode(frames, Options{Format: FormatFrames, FPS: 4, Annotate: true})
+	res, err := Encode(context.Background(), frames, Options{Format: FormatFrames, FPS: 4, Annotate: true})
 	if err != nil {
 		t.Fatalf("Encode: %v", err)
 	}
@@ -421,7 +422,7 @@ func TestAnnotatedReportsWhetherMarkersWereDrawn(t *testing.T) {
 	for name, c := range cases {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
-			res, err := Encode([]Frame{{Data: solidPNG(t, 40, 30, green), Marks: c.marks}},
+			res, err := Encode(context.Background(), []Frame{{Data: solidPNG(t, 40, 30, green), Marks: c.marks}},
 				Options{Format: FormatFrames, FPS: 4, Annotate: true})
 			if err != nil {
 				t.Fatalf("Encode: %v", err)
@@ -446,7 +447,7 @@ func TestMaxSizeReductionTerminates(t *testing.T) {
 			TS:   base.Add(time.Duration(i) * 250 * time.Millisecond),
 		})
 	}
-	full, err := Encode(frames, Options{Format: FormatGIF, FPS: 4})
+	full, err := Encode(context.Background(), frames, Options{Format: FormatGIF, FPS: 4})
 	if err != nil {
 		t.Fatalf("Encode (unbounded): %v", err)
 	}
@@ -457,7 +458,7 @@ func TestMaxSizeReductionTerminates(t *testing.T) {
 	t.Run("a reachable ceiling is met", func(t *testing.T) {
 		t.Parallel()
 		ceiling := full.Bytes / 3
-		res, err := Encode(frames, Options{Format: FormatGIF, FPS: 4, MaxBytes: ceiling})
+		res, err := Encode(context.Background(), frames, Options{Format: FormatGIF, FPS: 4, MaxBytes: ceiling})
 		if err != nil {
 			t.Fatalf("Encode: %v", err)
 		}
@@ -477,7 +478,7 @@ func TestMaxSizeReductionTerminates(t *testing.T) {
 
 	t.Run("an impossible ceiling stops and says so", func(t *testing.T) {
 		t.Parallel()
-		res, err := Encode(frames, Options{Format: FormatGIF, FPS: 4, MaxBytes: 1})
+		res, err := Encode(context.Background(), frames, Options{Format: FormatGIF, FPS: 4, MaxBytes: 1})
 		if err != nil {
 			t.Fatalf("Encode: %v", err)
 		}
@@ -494,6 +495,57 @@ func TestMaxSizeReductionTerminates(t *testing.T) {
 			t.Errorf("the best-effort export does not decode: %v", err)
 		}
 	})
+}
+
+// TestMaxSizeRespectsTheDeadline: the reduction ladder is up to nine full
+// re-encodes, each of which resizes every pixel and rebuilds the palette, so an
+// unbounded one runs for minutes past --timeout with no output at all.
+//
+// It must stop when the context does, and either hand back the best complete
+// attempt (flagged) or fail with the context's own error — never grind on.
+func TestMaxSizeRespectsTheDeadline(t *testing.T) {
+	t.Parallel()
+	base := time.Unix(1700000000, 0)
+	frames := make([]Frame, 0, 12)
+	for i := range 12 {
+		frames = append(frames, Frame{
+			Data: noisyPNG(t, 400, 300, int64(i+1)),
+			TS:   base.Add(time.Duration(i) * 250 * time.Millisecond),
+		})
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 40*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	// An unreachable ceiling, so nothing but the deadline can stop the ladder.
+	res, err := Encode(ctx, frames, Options{Format: FormatGIF, FPS: 4, MaxBytes: 1})
+	elapsed := time.Since(start)
+
+	if elapsed > 20*time.Second {
+		t.Fatalf("the export ran for %s past a 40ms deadline", elapsed)
+	}
+	switch {
+	case err != nil:
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Errorf("error = %v, want it to name the expired context", err)
+		}
+	case !res.ReductionTimedOut:
+		t.Errorf("the export finished the whole ladder inside a 40ms deadline (%s) without reporting a timeout", elapsed)
+	case res.Bytes == 0:
+		t.Error("a timed-out reduction returned no artifact at all")
+	}
+}
+
+// TestExpiredContextDoesNoWork: a context that is already over is refused up
+// front rather than paying for a full encode nobody is waiting for.
+func TestExpiredContextDoesNoWork(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err := Encode(ctx, []Frame{{Data: solidPNG(t, 8, 8, red)}}, Options{Format: FormatGIF, FPS: 4})
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("Encode on a cancelled context = %v, want context.Canceled", err)
+	}
 }
 
 // TestPlanNextStrictlyShrinks is the termination argument as a test: every step
@@ -527,7 +579,7 @@ func TestFramesExportIsNumbered(t *testing.T) {
 		{Data: solidPNG(t, 10, 10, green)},
 		{Data: solidPNG(t, 10, 10, blue)},
 	}
-	res, err := Encode(frames, Options{Format: FormatFrames, FPS: 4})
+	res, err := Encode(context.Background(), frames, Options{Format: FormatFrames, FPS: 4})
 	if err != nil {
 		t.Fatalf("Encode: %v", err)
 	}
@@ -557,7 +609,7 @@ func TestManyColoursStillEncodes(t *testing.T) {
 		{Data: noisyPNG(t, 64, 48, 1)},
 		{Data: noisyPNG(t, 64, 48, 2)},
 	}
-	res, err := Encode(frames, Options{Format: FormatGIF, FPS: 4})
+	res, err := Encode(context.Background(), frames, Options{Format: FormatGIF, FPS: 4})
 	if err != nil {
 		t.Fatalf("Encode: %v", err)
 	}
@@ -629,7 +681,7 @@ func TestVideoResultMatchesTheFile(t *testing.T) {
 			TS:   base.Add(time.Duration(i) * 5 * time.Second),
 		})
 	}
-	res, err := Encode(frames, Options{Format: FormatMP4, FPS: 4})
+	res, err := Encode(context.Background(), frames, Options{Format: FormatMP4, FPS: 4})
 	if err != nil {
 		t.Fatalf("Encode: %v", err)
 	}
@@ -664,7 +716,7 @@ func TestVideoResultMatchesTheFile(t *testing.T) {
 
 func TestEncodeRejectsNoFrames(t *testing.T) {
 	t.Parallel()
-	if _, err := Encode(nil, Options{Format: FormatGIF}); !errors.Is(err, ErrNoFrames) {
+	if _, err := Encode(context.Background(), nil, Options{Format: FormatGIF}); !errors.Is(err, ErrNoFrames) {
 		t.Errorf("Encode(nil) error = %v, want ErrNoFrames", err)
 	}
 }
@@ -684,7 +736,7 @@ func TestUndecodableFrameIsSkippedNotFatal(t *testing.T) {
 		{Data: []byte("\xff\xd8\xff not a jpeg"), TS: base.Add(250 * time.Millisecond)},
 		{Data: solidPNG(t, 12, 8, blue), TS: base.Add(500 * time.Millisecond)},
 	}
-	res, err := Encode(frames, Options{Format: FormatGIF, FPS: 4})
+	res, err := Encode(context.Background(), frames, Options{Format: FormatGIF, FPS: 4})
 	if err != nil {
 		t.Fatalf("one undecodable frame killed the export: %v", err)
 	}
@@ -703,7 +755,7 @@ func TestUndecodableFrameIsSkippedNotFatal(t *testing.T) {
 	}
 
 	// Nothing decodable at all is still an error: there is no recording to save.
-	if _, err := Encode([]Frame{{Data: []byte("junk")}}, Options{Format: FormatGIF, FPS: 4}); err == nil {
+	if _, err := Encode(context.Background(), []Frame{{Data: []byte("junk")}}, Options{Format: FormatGIF, FPS: 4}); err == nil {
 		t.Error("an export with no decodable frame at all reported success")
 	}
 }
@@ -781,7 +833,7 @@ func TestMissingEncoderNamesTheRequirement(t *testing.T) {
 		if !strings.Contains(err.Error(), "ffmpeg") {
 			t.Errorf("Available(%q) error %q does not name ffmpeg", f, err)
 		}
-		if _, eerr := Encode([]Frame{{Data: solidPNG(t, 8, 8, red)}}, Options{Format: f, FPS: 4}); !IsNoEncoder(eerr) {
+		if _, eerr := Encode(context.Background(), []Frame{{Data: solidPNG(t, 8, 8, red)}}, Options{Format: f, FPS: 4}); !IsNoEncoder(eerr) {
 			t.Errorf("Encode(%q) = %v, want an ErrNoEncoder", f, eerr)
 		}
 	}
