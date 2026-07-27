@@ -1,9 +1,9 @@
 # RFC-0013: Surviving Chrome's consent prompt
 
-- **Status:** Draft
+- **Status:** Accepted — implemented in [#18](https://github.com/sanketsudake/chrome-cdp-cli/pull/18)
 - **Priority:** P0
 - **Area:** connection
-- **Depends on:** the spawn serialisation in #17 (necessary, not sufficient)
+- **Depends on:** the spawn serialisation, which shipped alongside this in [#18](https://github.com/sanketsudake/chrome-cdp-cli/pull/18) — necessary, not sufficient
 
 ## Summary
 
@@ -16,7 +16,7 @@ A user's Chrome froze with the consent dialog on screen and no button responding
 It was reproduced deliberately afterwards, and the reproduction contradicted the first diagnosis.
 
 The initial theory was **stacked prompts**: several `chrome-cdp` processes had started at once, each found no daemon, each spawned one, and each spawned daemon attached to Chrome and raised its own prompt.
-That much is real, and #17 fixes it — eight concurrent callers produced eight daemons before the fix and one after.
+That much is real, and the spawn serialisation fixes it — eight concurrent callers produced eight daemons before the fix and one after.
 
 But the controlled reproduction showed a **single** prompt wedges Chrome just as thoroughly.
 Serialising the spawn is necessary and not sufficient.
@@ -74,7 +74,7 @@ As a user whose browser is already wedged, I want to be told the actual remedy, 
 
 **US-5 — One prompt, not many.**
 As a user running several commands at once, I want at most one consent request.
-*Acceptance:* covered by #17 for concurrent spawns; this RFC keeps it true across the wait as well.
+*Acceptance:* covered by the spawn serialisation for concurrent spawns; this RFC keeps it true across the wait as well.
 Serialising the spawn only guarantees one prompt *at a time*: without more, each queued caller in turn cleared the previous verdict and raised its own, so eight commands became eight sequential prompts.
 A `consent_pending` verdict is inherited by callers released within a few seconds of it, so a queue drains on one answer.
 
@@ -147,7 +147,7 @@ Chrome's debug port is a loopback port any local process can bind, and the budge
 Given a listener answering `101` without a valid `Sec-WebSocket-Accept` for the key we sent, the endpoint is classified refused.
 
 **VS-7 — Concurrency stays at one prompt.**
-The guard from #17, restated here so this RFC's changes cannot regress it.
+The spawn-serialisation guard, restated here so this RFC's changes cannot regress it.
 
 ## Test plan
 

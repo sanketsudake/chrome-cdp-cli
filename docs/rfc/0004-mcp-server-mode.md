@@ -1,6 +1,6 @@
 # RFC-0004: MCP server mode — `chrome-cdp mcp`
 
-- **Status:** Draft
+- **Status:** Accepted — implemented in [#15](https://github.com/sanketsudake/chrome-cdp-cli/pull/15), with follow-up fixes in [#18](https://github.com/sanketsudake/chrome-cdp-cli/pull/18)
 - **Priority:** P0
 - **Area:** distribution
 - **Depends on:** RFC-0012 (should land with or before this)

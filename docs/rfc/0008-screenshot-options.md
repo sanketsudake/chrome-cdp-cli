@@ -1,6 +1,6 @@
 # RFC-0008: Screenshot options — element, full-page, region, format
 
-- **Status:** Draft
+- **Status:** Accepted — implemented in [#11](https://github.com/sanketsudake/chrome-cdp-cli/pull/11)
 - **Priority:** P1
 - **Area:** capture
 - **Depends on:** —

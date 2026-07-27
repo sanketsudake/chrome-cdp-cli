@@ -1,6 +1,6 @@
 # RFC-0003: Network requests — the `net` verb
 
-- **Status:** Draft
+- **Status:** Accepted — implemented in [#13](https://github.com/sanketsudake/chrome-cdp-cli/pull/13), with follow-up fixes in [#16](https://github.com/sanketsudake/chrome-cdp-cli/pull/16)
 - **Priority:** P0
 - **Area:** observability
 - **Depends on:** RFC-0002 (reuses the daemon-side CDP event buffer)

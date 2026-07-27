@@ -1,6 +1,6 @@
 # RFC-0012: Domain allow-list — bounding what the CLI may drive
 
-- **Status:** Draft
+- **Status:** Accepted — implemented in [#12](https://github.com/sanketsudake/chrome-cdp-cli/pull/12)
 - **Priority:** P2 *(raise to P0 if RFC-0004 is scheduled — MCP should not ship without it)*
 - **Area:** safety
 - **Depends on:** —

@@ -1,6 +1,6 @@
 # RFC-0011: Session recording — `record` and GIF export
 
-- **Status:** Draft
+- **Status:** Accepted — implemented in [#14](https://github.com/sanketsudake/chrome-cdp-cli/pull/14), with follow-up fixes in [#18](https://github.com/sanketsudake/chrome-cdp-cli/pull/18)
 - **Priority:** P2
 - **Area:** capture
 - **Depends on:** RFC-0008 (shares capture options), RFC-0002 (daemon-side buffering pattern)

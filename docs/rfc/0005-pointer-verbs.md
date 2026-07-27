@@ -1,6 +1,6 @@
 # RFC-0005: Pointer verbs — `hover`, `dblclick`, `rclick`, `drag`
 
-- **Status:** Draft
+- **Status:** Accepted — implemented in [#10](https://github.com/sanketsudake/chrome-cdp-cli/pull/10)
 - **Priority:** P1
 - **Area:** input
 - **Depends on:** —
