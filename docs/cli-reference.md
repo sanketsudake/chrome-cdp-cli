@@ -611,6 +611,69 @@ Conditionals, loops, retries, branching, and reading one step's output into a la
 Recipes cannot invoke recipes, and a recipe is capped at 200 steps.
 If an automation needs control flow, write a program that calls `session` — that is the supported answer, not a bigger recipe format.
 
+### MCP server
+
+`mcp` runs the CLI as a [Model Context Protocol](https://modelcontextprotocol.io) server over stdio, exposing the verbs as MCP tools.
+It is a front end, not a fork: a tool call becomes the same argv you would type, runs through the same command tree against the same connection, and comes back as the same envelope — so a flow you debug at the shell behaves identically when an assistant runs it.
+
+```jsonc
+// claude_desktop_config.json, .mcp.json, or your client's equivalent
+{ "mcpServers": { "chrome-cdp": { "command": "chrome-cdp", "args": ["mcp"] } } }
+```
+
+| Flag | Default | Purpose |
+|------|---------|---------|
+| `--read-only` | off | expose only tools that cannot modify page state |
+| `--tools <set>` | `default` | `default`, `full`, or a comma-separated list of tool names |
+| `--target <spec>` | — | pin the server to one tab; otherwise each tool takes a `target` |
+
+Global flags (`--timeout`, `--no-daemon`, `--port`, `--profile-dir`, `--allow`, config file) apply unchanged, and the daemon still holds the connection — a long-lived server over one shared connection is exactly what it is for.
+Transport is stdio only; there is no HTTP or SSE mode, because a network-reachable server driving your authenticated browser is a different security posture.
+
+**A policy allow-list is required.**
+`chrome-cdp mcp` refuses to start unless a `[policy]` table with a non-empty `allow` is configured (or `--allow` is passed): it exits 2 and prints the block it needs.
+The CLI's unrestricted default is right for a person who typed a command; handing an assistant a browser that is signed in to everything is a different question, and it should be answered on purpose.
+Run [`chrome-cdp policy init`](#policy) on the tab you want it to drive.
+`--policy-off` is refused in this mode.
+
+**The tool surface is bounded** — an agent pays for every tool description in its context window — so related verbs are grouped behind an `action` or `kind` argument.
+Names are prefixed `chrome_cdp_` so they stay unambiguous in clients that flatten every server into one namespace.
+
+| Tool | Wraps | Notes |
+|------|-------|-------|
+| `chrome_cdp_tabs` | `list`, `open`, `use`, `close`, `activate` | one `action` argument |
+| `chrome_cdp_navigate` | `nav`, including back/forward/reload | |
+| `chrome_cdp_snapshot` | `snap` | the primary read |
+| `chrome_cdp_read` | `text`, `html`, `value`, `grid` | one `kind` argument |
+| `chrome_cdp_click` | `click` | |
+| `chrome_cdp_type_text` | `type`, `fill` | `replace: true` picks `fill` |
+| `chrome_cdp_key` | `key` | |
+| `chrome_cdp_pointer` | `hover`, `dblclick`, `rclick`, `drag` | one `action` argument |
+| `chrome_cdp_select_option` | `select` | cascade paths included |
+| `chrome_cdp_scroll` | `scroll` | |
+| `chrome_cdp_upload` | `upload` | `upload_roots` still applies |
+| `chrome_cdp_wait_for` | `wait` | every condition, `--request` included |
+| `chrome_cdp_screenshot` | `screenshot` | returns an image content block |
+| `chrome_cdp_console` | `console` | |
+| `chrome_cdp_network` | `net` | |
+| `chrome_cdp_evaluate` | `eval` | powerful and unconstrained; its description says so |
+| `chrome_cdp_batch` | `session` | several tools over one round trip |
+| `chrome_cdp_raw_cdp` | `raw` | `--tools full` only |
+
+Each tool's arguments mirror the CLI flags they wrap, in `snake_case` (`in_row` for `--in-row`), and the element-addressing arguments (`by`, `role`, `nth`, `match`, `in_row`, `wait`, `pierce`) are documented in every schema that takes them — the accessible-name addressing is this tool's advantage on real applications, and an agent only gets it if the schema says so.
+The streaming forms (`console --follow`, `net --follow`) are not exposed: they would break the one-result-per-call contract.
+`recipe` is not either — a recipe is authored and reviewed at the shell.
+
+`--read-only` reuses the [policy layer's verb classification](#what-is-checked) rather than a second table, so it can never disagree with a `read_only` origin.
+It exposes `tabs` (without `open`), `snapshot`, `read`, `wait_for`, `screenshot`, `console`, `network` and `batch`; invoking anything else by name returns a typed `usage` error rather than a protocol error.
+
+**Results keep the contract.**
+A success carries the envelope's `result` object as `structuredContent`, plus a one-line text summary.
+A failure is `isError: true` with `structuredContent` carrying `code` and `exit` — and the recoverable details (`tab_hidden`, `occluded`, `zero_area`) — so an agent branches on the same values a shell script does rather than on prose.
+
+**stdout is the protocol; diagnostics go to stderr.**
+Nothing else may write to stdout while the server runs, and the process enforces that rather than trusting it.
+
 ### Capture
 
 | Command | Writes |
