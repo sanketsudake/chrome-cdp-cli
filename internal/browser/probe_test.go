@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -90,6 +91,12 @@ func closedWS(t *testing.T) string {
 
 func wsFor(ln net.Listener) string {
 	return fmt.Sprintf("ws://%s/devtools/browser/stub", ln.Addr().String())
+}
+
+// wsRoot is the ws:// root of an http:// endpoint — where the browser-level
+// endpoint lives when /json/version cannot say.
+func wsRoot(httpURL string) string {
+	return "ws://" + strings.TrimPrefix(httpURL, "http://") + "/"
 }
 
 // TestAwaitUpgradeRefusedIsFast is the safety property behind the long consent
@@ -278,8 +285,13 @@ func TestResolveWSURL(t *testing.T) {
 	}{
 		{"a ws url passes through", "ws://127.0.0.1:9222/devtools/browser/x", "ws://127.0.0.1:9222/devtools/browser/x", true},
 		{"an http endpoint resolves via /json/version", srv.URL, "ws://127.0.0.1:9222/devtools/browser/abc", true},
-		{"a 404 resolves to nothing", notFound.URL, "", false},
-		{"nothing listening", "http://127.0.0.1:1", "", false},
+		// The chrome://inspect toggle path 404s /json/version whether or not
+		// consent has been granted, so a 404 must NOT end the resolution: it
+		// leaves the browser endpoint at the root of the same host:port, and
+		// probing that is the only way the pending state is visible on the one
+		// path that actually prompts.
+		{"a 404 falls back to the ws root", notFound.URL, wsRoot(notFound.URL), true},
+		{"nothing listening still falls back", "http://127.0.0.1:1", "ws://127.0.0.1:1/", true},
 		{"empty", "", "", false},
 	} {
 		t.Run(c.name, func(t *testing.T) {

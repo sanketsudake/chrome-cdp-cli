@@ -279,3 +279,54 @@ func TestConnectExplicitPortStillProbes(t *testing.T) {
 		t.Errorf("error.code = %q, want %q — the --port endpoint was not probed as a WebSocket", got, result.CodeConsentPending)
 	}
 }
+
+// TestConnectExplicitPortDetectsConsentWithoutJSONVersion is the same path with
+// the JSON API withheld, which is what the toggle actually does.
+//
+// RFC-0013's fourth observation: on the chrome://inspect path /json/version
+// 404s regardless of consent state. So `--port 9222` against a toggle-path
+// Chrome holding an unanswered prompt used to resolve to nothing, classify as
+// refused, and fall to InstructToggle — telling the user "Chrome is running but
+// not debug-enabled" about a Chrome that IS debug-enabled and is at that moment
+// showing them the dialog. It sent them to re-enable a setting already on.
+func TestConnectExplicitPortDetectsConsentWithoutJSONVersion(t *testing.T) {
+	// One listener that both 404s every HTTP request and stalls the upgrade:
+	// exactly the toggle path with consent pending.
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func(c net.Conn) {
+				buf := make([]byte, 1024)
+				n, _ := c.Read(buf)
+				if strings.Contains(string(buf[:n]), "/json/version") {
+					_, _ = c.Write([]byte("HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n"))
+					_ = c.Close()
+					return
+				}
+				<-t.Context().Done() // the upgrade: accepted, and then silence
+				_ = c.Close()
+			}(c)
+		}
+	}()
+
+	_, port, _ := net.SplitHostPort(ln.Addr().String())
+	p, _ := strconv.Atoi(port)
+	pinChromeRunning(t, true) // and yet: a hanging upgrade is not "enable the toggle"
+	shrinkPendingThreshold(t, 100*time.Millisecond)
+
+	_, cerr := Connect(context.Background(), Options{
+		Port: p, NoLaunch: true, ConsentTimeout: 700 * time.Millisecond,
+	})
+	if got := connectErrCode(t, cerr); got != result.CodeConsentPending {
+		t.Errorf("error.code = %q, want %q — with /json/version 404ing, the pending prompt is invisible and the user is told to re-enable a setting that is already on:\n%v",
+			got, result.CodeConsentPending, cerr)
+	}
+}

@@ -94,7 +94,7 @@ func (u *Upgrade) Close() {
 //
 // A ws:// endpoint (the DevToolsActivePort path) is already one. An explicit
 // --port names an http:// endpoint instead, and the browser-level WebSocket path
-// is only discoverable through Chrome's HTTP JSON API — the same resolution
+// is normally discoverable through Chrome's HTTP JSON API — the same resolution
 // chromedp's remote allocator performs, done here first so the probe and the
 // attach agree on what they are talking to.
 //
@@ -102,6 +102,17 @@ func (u *Upgrade) Close() {
 // answers the same whether or not consent is pending (on the chrome://inspect
 // path it 404s either way), so it can locate an endpoint and can never classify
 // one. Only the upgrade does that.
+//
+// Which is exactly why a failed lookup falls back to the ws:// ROOT of the same
+// host:port rather than giving up. On the toggle path the JSON API is simply
+// absent, so "no answer from /json/version" carried no information at all — and
+// treating it as "no endpoint" made the pending state undetectable on the one
+// path that actually prompts: `--port 9222` against a toggle-path Chrome
+// holding an unanswered dialog reported not_debug_enabled, sending the user to
+// re-enable a setting that was already on. Probing the root instead costs
+// nothing in the granted case (an endpoint that will not upgrade there is
+// classified refused, which is where it already was) and makes the hang — the
+// one unambiguous consent signature — visible.
 func ResolveWSURL(endpoint string, timeout time.Duration) (string, bool) {
 	switch {
 	case strings.HasPrefix(endpoint, "ws://"), strings.HasPrefix(endpoint, "wss://"):
@@ -110,6 +121,20 @@ func ResolveWSURL(endpoint string, timeout time.Duration) (string, bool) {
 	default:
 		return "", false
 	}
+	hostport, ok := HostPort(endpoint)
+	if !ok {
+		return "", false
+	}
+	if ws, ok := wsFromJSONVersion(endpoint, hostport, timeout); ok {
+		return ws, true
+	}
+	return "ws://" + hostport + "/", true
+}
+
+// wsFromJSONVersion asks Chrome's HTTP JSON API where the browser-level
+// WebSocket is. It reports false for every way that can fail to answer, all of
+// which mean the same thing here: ask the socket instead.
+func wsFromJSONVersion(endpoint, hostport string, timeout time.Duration) (string, bool) {
 	client := &http.Client{Timeout: timeout}
 	resp, err := client.Get(strings.TrimSuffix(endpoint, "/") + "/json/version")
 	if err != nil {
