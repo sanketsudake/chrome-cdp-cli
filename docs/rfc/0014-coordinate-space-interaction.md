@@ -124,11 +124,12 @@ Coordinate actions report the point and what was under it:
 ```json
 { "ok": true, "command": "click",
   "target": {"id":"…","title":"…","url":"…"},
-  "result": { "x": 512, "y": 340,
-              "hit": {"tag": "canvas", "role": "img", "name": "Floor plan"},
-              "modifiers": [] },
+  "result": { "clicked": "512,340", "x": 512, "y": 340,
+              "hit": {"tag": "CANVAS", "id": "board", "role": "img", "name": "Floor plan"} },
   "elapsed_ms": 74 }
 ```
+
+`click` keeps its long-standing `clicked` key — the Agent Skill and the human formatter both read it — and gains the coordinate evidence beside it rather than swapping shapes.
 
 `hit` is best-effort observability (`document.elementFromPoint` plus a11y lookup), not a precondition — a canvas hit is still a valid click.
 Selector-form results keep their existing shape from RFC-0005, so `--at` adds a field but never changes an existing one.
@@ -182,6 +183,10 @@ All usage errors are rejected before connecting to Chrome, per the standing conv
   Primary approach: inject a temporary hidden `<input type=file>`, attach the files with `DOM.setFileInputFiles` (real CDP file attachment, same as RFC-0006), then in page JS move `input.files` into a `DataTransfer` and dispatch `dragenter` → `dragover` → `drop` on the target, then remove the input.
   The events are untrusted but the `File` objects are real, and drop handlers read `dataTransfer.files` — this is the approach known to work with the common drop-zone libraries.
   `Input.dispatchDragEvent` is the trusted-event alternative; see Open Questions.
+- **`window size` is authorized at the BROWSER level, not per tab.**
+  **Added during implementation.** A resize acts on the OS window every tab in it shares, so checking it against the one resolved tab's origin would let a permission granted for one origin reflow another origin's page.
+  It is checked with no origin — the same fail-closed treatment `raw --browser` already gets — so an active allow-list refuses it and `--policy-off` remains the deliberate escape hatch.
+  `window info` only reads the window's own geometry, touches no page content, and stays per-target.
 - **Drop-zone paths obey RFC-0012.**
   `--drop` is still a file *upload*; the policy upload-path allow-list applies identically to both modes, checked before any page interaction.
 - **`window` needs `windowState: normal` first.**

@@ -159,25 +159,25 @@ func tabsTool() *tool {
 			}
 			switch action {
 			case "list":
-				return "list", c.flags("action", "target", "width", "height"), nil, nil
+				return "list", c.flags("action", "target"), nil, nil
 			case "open":
 				if !c.has("url") {
 					return "", nil, nil, usagef("tabs action=\"open\" needs `url`")
 				}
-				return "open", c.flags("action", "url", "target", "title", "all", "width", "height"), []string{c.str("url")}, nil
+				return "open", c.flags("action", "url", "target", "title", "all"), []string{c.str("url")}, nil
 			case "use":
 				if !c.has("target") {
 					return "", nil, nil, usagef("tabs action=\"use\" needs `target` (an id prefix, url:<s>, title:<s>, or @N)")
 				}
-				return "use", c.flags("action", "target", "url", "title", "all", "width", "height"), []string{c.str("target")}, nil
+				return "use", c.flags("action", "target", "url", "title", "all"), []string{c.str("target")}, nil
 			case "window_info":
-				return "window info", c.flags("action", "width", "height", "target"), nil, nil
+				return "window info", c.flags("action", "target"), nil, nil
 			case "window_size":
 				if !c.has("width") || !c.has("height") {
 					return "", nil, nil, usagef("tabs action=\"window_size\" needs `width` and `height`")
 				}
-				return "window size", c.flags("action", "width", "height", "target"),
-					[]string{c.str("width"), c.str("height")}, nil
+				return "window size", c.flags("action", "target"),
+					[]string{c.num("width"), c.num("height")}, nil
 			case "close", "activate":
 				var pos []string
 				if c.has("target") {
@@ -308,11 +308,15 @@ func clickTool() *tool {
 		args: concat([]arg{
 			{name: "at", typ: "string", flag: "at",
 				desc: "act at this viewport coordinate \"x,y\" instead of resolving an element — for canvas/WebGL surfaces the accessibility tree cannot see, or when acting on what a screenshot showed. Mutually exclusive with `selector` and every addressing arg."},
-			{name: "selector", typ: "string", pos: true, required: true, desc: "the element to click (see Addressing)."},
+			{name: "selector", typ: "string", pos: true, desc: "the element to click (see Addressing). Required unless `at` is given."},
 			{name: "modifiers", typ: "string", flag: "modifiers", desc: "modifier keys held during the click, +-joined: ctrl+shift+alt+cmd."},
 		}, actArgs(), queryArgs(), targetArgs()),
 		build: func(c *call) (string, []string, []string, error) {
-			return "click", c.flags("selector"), []string{c.str("selector")}, nil
+			pos, err := pointerTargetArgs(c, "click")
+			if err != nil {
+				return "", nil, nil, err
+			}
+			return "click", c.flags("selector"), pos, nil
 		},
 	}
 }
@@ -372,9 +376,12 @@ func pointerTool() *tool {
 		title: "Pointer gestures",
 		desc: "Pointer gestures other than a plain click: hover (reveal a menu or tooltip), dblclick, rclick (open a context menu), and drag.\n\n" +
 			"A drag needs a destination: either `to` (a drop-target selector) or `dx`/`dy` (a pixel offset from the source centre). `hold` waits after the press before moving, which is what long-press-to-drag UIs require." + addressingHelp,
-		disc:    "action",
-		actions: map[string]string{"hover": "hover", "dblclick": "dblclick", "rclick": "rclick", "drag": "drag"},
-		verbs:   []string{"hover", "dblclick", "rclick", "tripleclick", "drag"},
+		disc: "action",
+		actions: map[string]string{
+			"hover": "hover", "dblclick": "dblclick", "rclick": "rclick",
+			"tripleclick": "tripleclick", "drag": "drag",
+		},
+		verbs: []string{"hover", "dblclick", "rclick", "tripleclick", "drag"},
 		args: concat([]arg{
 			{name: "at", typ: "string", flag: "at",
 				desc: "act at this viewport coordinate \"x,y\" instead of resolving an element. Mutually exclusive with `selector` and every addressing arg."},
@@ -382,7 +389,7 @@ func pointerTool() *tool {
 				desc: "action=\"drag\": release at this viewport coordinate \"x,y\" (mutually exclusive with `to` and `dx`/`dy`)."},
 			{name: "action", typ: "string", required: true, enum: []string{"hover", "dblclick", "rclick", "tripleclick", "drag"},
 				desc: "which gesture to dispatch."},
-			{name: "selector", typ: "string", pos: true, required: true, desc: "the element to act on (the drag SOURCE for action=\"drag\")."},
+			{name: "selector", typ: "string", pos: true, desc: "the element to act on (the drag SOURCE for action=\"drag\"). Required unless `at` is given."},
 			{name: "modifiers", typ: "string", flag: "modifiers", desc: "modifier keys held during the gesture, +-joined: ctrl+shift+alt+cmd."},
 			{name: "hold", typ: "string", flag: "hold", desc: "hover: keep the pointer in place this long (slow tooltips). drag: pause after the press before moving. Go duration, e.g. \"500ms\"."},
 			{name: "to", typ: "string", flag: "to", desc: "action=\"drag\": drop-target selector (mutually exclusive with dx/dy)."},
@@ -399,7 +406,11 @@ func pointerTool() *tool {
 			}); err != nil {
 				return "", nil, nil, err
 			}
-			return action, c.flags("action", "selector"), []string{c.str("selector")}, nil
+			pos, err := pointerTargetArgs(c, "pointer")
+			if err != nil {
+				return "", nil, nil, err
+			}
+			return action, c.flags("action", "selector"), pos, nil
 		},
 	}
 }
@@ -684,4 +695,23 @@ func quoteList(list []string) string {
 		out = append(out, `"`+s+`"`)
 	}
 	return strings.Join(out, " / ")
+}
+
+// pointerTargetArgs resolves the selector-or-coordinate choice every pointer
+// tool shares, and returns the positional args the CLI should receive.
+//
+// `selector` cannot simply be schema-required: the coordinate form has no
+// selector, and requiring one made --at unreachable through MCP entirely. The
+// either/or is enforced here instead, where both arguments are visible.
+func pointerTargetArgs(c *call, tool string) ([]string, error) {
+	hasSel, hasAt := c.has("selector"), c.has("at")
+	switch {
+	case hasSel && hasAt:
+		return nil, usagef("%s takes `selector` or `at`, not both — `at` acts at a coordinate and resolves no element", tool)
+	case !hasSel && !hasAt:
+		return nil, usagef("%s needs `selector`, or `at` to act at a viewport coordinate", tool)
+	case hasAt:
+		return nil, nil
+	}
+	return []string{c.str("selector")}, nil
 }

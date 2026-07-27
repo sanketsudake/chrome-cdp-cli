@@ -52,7 +52,10 @@ func (c *CDP) Pointer(ctx context.Context, id, selector string, opts PointerOpts
 	// annotation needs no geometry of its own.
 	var markX, markY float64
 	core := chromedp.ActionFunc(func(actx context.Context) error {
-		x, y, hit, err := pointerOrigin(actx, selector, opts)
+		// One viewport reading per gesture: a drag validates two points, and
+		// nothing between them can resize the window.
+		gate := &viewportGate{}
+		x, y, hit, err := pointerOrigin(actx, selector, opts, gate)
 		if err != nil {
 			return err
 		}
@@ -68,13 +71,7 @@ func (c *CDP) Pointer(ctx context.Context, id, selector string, opts PointerOpts
 			// Agent Skill and the human formatter both read `clicked`. Routing the
 			// verb through this method must not change what it emits, so it keeps
 			// its own shape instead of adopting the x/y/name one.
-			out = map[string]any{"clicked": pointerLabel(selector, opts)}
-			if opts.At != nil {
-				// The coordinate form has no selector to echo, so it reports the
-				// point and what sat under it — the evidence a caller needs to
-				// confirm the click went where the screenshot said.
-				out["x"], out["y"], out["hit"] = x, y, hit
-			}
+			out = addHitEvidence(map[string]any{"clicked": pointerLabel(selector, opts)}, opts, x, y, hit)
 			return nil
 		case PointerHover:
 			// Dispatch the move and return. Whether the app rendered a tooltip is
@@ -103,7 +100,7 @@ func (c *CDP) Pointer(ctx context.Context, id, selector string, opts PointerOpts
 				return err
 			}
 		case PointerDrag:
-			tx, ty, err := dragDestination(actx, x, y, opts)
+			tx, ty, err := dragDestination(actx, x, y, opts, gate)
 			if err != nil {
 				return err
 			}
@@ -119,16 +116,13 @@ func (c *CDP) Pointer(ctx context.Context, id, selector string, opts PointerOpts
 		default:
 			return fmt.Errorf("unknown pointer action %q", opts.Action)
 		}
-		out = map[string]any{
+		out = addHitEvidence(map[string]any{
 			"action":    string(opts.Action),
 			"x":         x,
 			"y":         y,
 			"name":      pointerLabel(selector, opts),
 			"modifiers": modifierNames(opts.Modifiers),
-		}
-		if opts.At != nil {
-			out["hit"] = hit
-		}
+		}, opts, x, y, hit)
 		return nil
 	})
 	action, sink := withOptionalDialog(opts.Query, core)
@@ -145,9 +139,9 @@ func (c *CDP) Pointer(ctx context.Context, id, selector string, opts PointerOpts
 // dragDestination resolves where a drag ends: the centre of the --to element
 // (addressed with ToQuery, so --to-by works), or the (Dx, Dy) offset from the
 // source centre. The CLI guarantees exactly one form is set.
-func dragDestination(ctx context.Context, x, y float64, opts PointerOpts) (float64, float64, error) {
+func dragDestination(ctx context.Context, x, y float64, opts PointerOpts, gate *viewportGate) (float64, float64, error) {
 	if opts.ToAt != nil {
-		if err := checkInViewport(ctx, *opts.ToAt); err != nil {
+		if err := gate.check(ctx, *opts.ToAt); err != nil {
 			return 0, 0, err
 		}
 		return opts.ToAt.X, opts.ToAt.Y, nil
@@ -277,12 +271,21 @@ func pointerHold(ctx context.Context, d time.Duration) error {
 // coordinate is checked only for being inside the viewport, because the
 // caller named a PLACE — second-guessing that would make every canvas app
 // unreachable, since elementFromPoint there always answers "the canvas".
-func pointerOrigin(ctx context.Context, selector string, opts PointerOpts) (x, y float64, hit map[string]any, err error) {
+func pointerOrigin(ctx context.Context, selector string, opts PointerOpts, gate *viewportGate) (x, y float64, hit map[string]any, err error) {
 	if opts.At != nil {
-		if err := checkInViewport(ctx, *opts.At); err != nil {
+		// A drag reports both endpoints, not a hit, so it does not pay for the
+		// page-side element walk its envelope has nowhere to put.
+		if opts.Action == PointerDrag {
+			if err := gate.check(ctx, *opts.At); err != nil {
+				return 0, 0, nil, err
+			}
+			return opts.At.X, opts.At.Y, nil, nil
+		}
+		hit, err := gate.checkAndDescribe(ctx, *opts.At)
+		if err != nil {
 			return 0, 0, nil, err
 		}
-		return opts.At.X, opts.At.Y, hitAt(ctx, *opts.At), nil
+		return opts.At.X, opts.At.Y, hit, nil
 	}
 	nid, err := resolveNodeReady(ctx, selector, opts.Query)
 	if err != nil {
@@ -299,4 +302,22 @@ func pointerLabel(selector string, opts PointerOpts) string {
 		return fmt.Sprintf("%g,%g", opts.At.X, opts.At.Y)
 	}
 	return selector
+}
+
+// addHitEvidence attaches the coordinate form's evidence — the point acted on
+// and what sat under it — to an envelope. A no-op for the selector form, which
+// already names its target.
+//
+// The coordinate form needs it because it is deliberately NOT occlusion-checked:
+// the coordinate is the intent, so the caller gets the evidence to verify where
+// it landed rather than a refusal it did not ask for.
+func addHitEvidence(out map[string]any, opts PointerOpts, x, y float64, hit map[string]any) map[string]any {
+	if opts.At == nil {
+		return out
+	}
+	out["hit"] = hit
+	if _, ok := out["x"]; !ok {
+		out["x"], out["y"] = x, y
+	}
+	return out
 }

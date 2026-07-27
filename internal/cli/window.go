@@ -10,6 +10,8 @@ package cli
 import (
 	"context"
 	"fmt"
+	"strconv"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -59,20 +61,27 @@ func (a *App) cmdWindowSize() *cobra.Command {
 		Short: "Resize the real Chrome window (CSS pixels)",
 		Args:  cobra.ExactArgs(2),
 		RunE: func(_ *cobra.Command, args []string) error {
-			w, msg := parseWindowDim("width", args[0])
-			if msg == "" {
-				var m2 string
-				_, m2 = parseWindowDim("height", args[1])
-				msg = m2
-			}
-			if msg != "" {
-				a.emitErr("window", result.CodeUsage, msg, nil)
+			// A resize acts on the OS WINDOW, which every tab in it shares — so
+			// authorizing it against the one resolved tab's origin would let a
+			// permission granted for one origin reflow another's page. It is
+			// checked with no origin, the same fail-closed answer `raw --browser`
+			// gets for the same reason: under an active allow-list, "we cannot
+			// name an origin for this" means refuse.
+			if perr := a.checkPolicy("window size", ""); perr != nil {
+				a.emitErr("window", perr.Code, perr.Message, perr.Details)
 				return nil
 			}
-			h, _ := parseWindowDim("height", args[1])
-			a.runResolved("window", func(ctx context.Context, b chrome.Browser, id string) (any, error) {
-				return b.Window(ctx, id, chrome.WindowOpts{Width: w, Height: h})
-			})
+			w, msg := parseWindowDim("width", args[0])
+			if msg == "" {
+				var h int64
+				if h, msg = parseWindowDim("height", args[1]); msg == "" {
+					a.runResolved("window", func(ctx context.Context, b chrome.Browser, id string) (any, error) {
+						return b.Window(ctx, id, chrome.WindowOpts{Width: w, Height: h})
+					})
+					return nil
+				}
+			}
+			a.emitErr("window", result.CodeUsage, msg, nil)
 			return nil
 		},
 	}
@@ -80,9 +89,14 @@ func (a *App) cmdWindowSize() *cobra.Command {
 
 // parseWindowDim parses one dimension, rejecting anything that is not a
 // positive, plausible pixel count — before connecting.
+//
+// strconv, not fmt.Sscanf: Sscanf stops at the first character it cannot use
+// and reports success for what it consumed, so "12abc" would resize to 12 and
+// "1.5" to 1. A typo silently becoming a different window is exactly the
+// failure this validation exists to prevent.
 func parseWindowDim(name, s string) (int64, string) {
-	var v int64
-	if _, err := fmt.Sscanf(s, "%d", &v); err != nil {
+	v, err := strconv.ParseInt(strings.TrimSpace(s), 10, 64)
+	if err != nil {
 		return 0, fmt.Sprintf("%s must be a whole number of pixels (got %q)", name, s)
 	}
 	if v < 1 || v > windowDimMax {

@@ -8,14 +8,14 @@ package chrome
 // drawing surfaces drivable at all — the accessibility tree sees one node
 // there, so no selector can reach inside it — and it is the shape a
 // screenshot-reading agent already thinks in.
+//
+// The measurement itself lives in geometry.go, with the element-geometry
+// primitive, so there is one definition of the page's coordinate space.
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
-
-	cdpruntime "github.com/chromedp/cdproto/runtime"
 )
 
 // ErrCoordinateOOB is a coordinate outside the current viewport.
@@ -29,62 +29,55 @@ var ErrCoordinateOOB = errors.New("coordinate is outside the viewport")
 // daemon RPC has flattened it to a plain message.
 func IsCoordinateOOB(err error) bool { return errIs(err, ErrCoordinateOOB) }
 
-// viewportSize reads the layout viewport in CSS pixels.
-func viewportSize(ctx context.Context) (w, h float64, err error) {
-	var v struct{ W, H float64 }
-	res, exc, err := cdpruntime.Evaluate(`({W: window.innerWidth, H: window.innerHeight})`).
-		WithReturnByValue(true).Do(ctx)
-	if err != nil {
-		return 0, 0, err
-	}
-	if exc != nil {
-		return 0, 0, fmt.Errorf("viewport probe: %s", exc.Text)
-	}
-	if res == nil || len(res.Value) == 0 {
-		return 0, 0, errors.New("viewport probe returned no value")
-	}
-	if err := json.Unmarshal([]byte(res.Value), &v); err != nil {
-		return 0, 0, err
-	}
-	return v.W, v.H, nil
+// viewportGate validates coordinates against the viewport, reading it at most
+// once per gesture.
+//
+// A drag checks two points, and nothing between them can resize the window, so
+// the second check reuses the first reading rather than paying for a second
+// round trip.
+type viewportGate struct {
+	w, h   float64
+	probed bool
+	failed bool // the probe itself errored; see check
 }
 
-// checkInViewport rejects a coordinate outside the viewport BEFORE anything is
-// dispatched, so a refused gesture leaves the page untouched.
-func checkInViewport(ctx context.Context, p Point) error {
-	w, h, err := viewportSize(ctx)
-	if err != nil {
-		// A viewport we cannot measure is not grounds to refuse the caller's
-		// explicit instruction; dispatch and let Chrome decide.
+// check rejects p if it lies outside the viewport.
+//
+// A viewport that cannot be measured is not grounds to refuse the caller's
+// explicit instruction: the check exists to catch a wrong-sized window, not to
+// gate the gesture on a working probe. So a failed probe allows and lets Chrome
+// decide, and — having failed once — is not retried for the second point.
+func (g *viewportGate) check(ctx context.Context, p Point) error {
+	if !g.probed {
+		g.probed = true
+		probe, err := probePoint(ctx, p, false)
+		if err != nil {
+			g.failed = true
+		} else {
+			g.w, g.h = probe.VW, probe.VH
+		}
+	}
+	if g.failed {
 		return nil
 	}
-	if p.X < 0 || p.Y < 0 || p.X > w || p.Y > h {
-		return fmt.Errorf("%w: (%g,%g) is outside the %gx%g viewport", ErrCoordinateOOB, p.X, p.Y, w, h)
+	if p.X < 0 || p.Y < 0 || p.X > g.w || p.Y > g.h {
+		return fmt.Errorf("%w: (%g,%g) is outside the %gx%g viewport", ErrCoordinateOOB, p.X, p.Y, g.w, g.h)
 	}
 	return nil
 }
 
-// hitAt reports what sits under a coordinate: the tag, id, ARIA role, and
-// accessible name of the topmost element there.
-//
-// It is observability, never a precondition. A canvas app's every coordinate
-// resolves to the same <canvas>, which is exactly the case coordinate
-// addressing exists to serve — so this describes the target, and refuses
-// nothing.
-func hitAt(ctx context.Context, p Point) map[string]any {
-	expr := fmt.Sprintf(`(() => {
-  const el = document.elementFromPoint(%g, %g);
-  if (!el) return null;`+axNameHelpersJS+`
-  return {tag: el.tagName, id: el.id || undefined,
-          role: roleOf(el) || undefined, name: norm(accName(el)) || undefined};
-})()`, p.X, p.Y)
-	res, exc, err := cdpruntime.Evaluate(expr).WithReturnByValue(true).Do(ctx)
-	if err != nil || exc != nil || res == nil || len(res.Value) == 0 {
-		return nil
+// checkAndDescribe validates p and, in the same round trip, reports what sits
+// under it. Used for the gestures whose envelope carries a `hit`.
+func (g *viewportGate) checkAndDescribe(ctx context.Context, p Point) (map[string]any, error) {
+	probe, err := probePoint(ctx, p, true)
+	if err != nil {
+		// Probe failed: allow, and record that so a second point does not retry.
+		g.probed, g.failed = true, true
+		return nil, nil
 	}
-	var hit map[string]any
-	if json.Unmarshal([]byte(res.Value), &hit) != nil {
-		return nil
+	g.probed, g.w, g.h = true, probe.VW, probe.VH
+	if p.X < 0 || p.Y < 0 || p.X > g.w || p.Y > g.h {
+		return nil, fmt.Errorf("%w: (%g,%g) is outside the %gx%g viewport", ErrCoordinateOOB, p.X, p.Y, g.w, g.h)
 	}
-	return hit
+	return probe.Hit, nil
 }

@@ -429,6 +429,9 @@ chrome-cdp window info             # {left, top, width, height, state}
 ```
 
 Use `window size` before a coordinate workflow so the pixels you read stay valid on the next run, and `emulate viewport` when you are testing responsive breakpoints.
+
+`window size` is checked at the **browser** level under a policy: it resizes the window every tab shares, so an allow-list naming one origin does not authorize it (the same rule `raw --browser` follows), and `--policy-off` is the explicit way through.
+`window info` reads only the window's own geometry and stays per-target.
 The reported bounds are read back **after** the change, because the window manager may clamp a request to the screen — a clamped resize should not look like a successful one.
 A maximized or fullscreen window is returned to `normal` first, since Chrome refuses a size change otherwise.
 

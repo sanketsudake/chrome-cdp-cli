@@ -651,6 +651,12 @@ func (a *App) cmdScroll() *cobra.Command {
 					a.emitErr("scroll", result.CodeUsage, "--at anchors a wheel dispatch and needs --wheel", nil)
 					return nil
 				}
+				// The wheel goes to the coordinate OR the selector's centre, not
+				// both — accepting a selector here would silently discard it.
+				if sel != "" {
+					a.emitErr("scroll", result.CodeUsage, "--at anchors the wheel at a coordinate and takes no selector; drop one or the other", nil)
+					return nil
+				}
 				p, err := parsePoint(at)
 				if err != nil {
 					a.emitErr("scroll", result.CodeUsage, err.Error(), nil)

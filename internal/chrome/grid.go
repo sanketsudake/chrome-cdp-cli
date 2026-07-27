@@ -239,7 +239,8 @@ func wheelPoint(ctx context.Context, selector string, q QueryOpts) (float64, flo
 // what lets a map or canvas zoom around the cursor rather than its middle.
 func wheelOrigin(ctx context.Context, selector string, opts ScrollOpts) (float64, float64, error) {
 	if opts.At != nil {
-		if err := checkInViewport(ctx, *opts.At); err != nil {
+		// scroll's envelope carries no `hit`, so the probe skips the element walk.
+		if err := (&viewportGate{}).check(ctx, *opts.At); err != nil {
 			return 0, 0, err
 		}
 		return opts.At.X, opts.At.Y, nil

@@ -282,7 +282,11 @@ func TestArgumentValidation(t *testing.T) {
 		want string
 	}{
 		{"unknown argument", prefix + "click", map[string]any{"selector": "#x", "selectr": "#y"}, "unknown argument"},
-		{"missing required", prefix + "click", map[string]any{}, "is required"},
+		{"missing required", prefix + "read", map[string]any{}, "is required"},
+		// click's target is selector-or-at, so its "missing" message names both
+		// rather than the generic required-arg wording.
+		{"click without a target", prefix + "click", map[string]any{}, "needs `selector`, or `at`"},
+		{"click with both targets", prefix + "click", map[string]any{"selector": "#x", "at": "1,2"}, "not both"},
 		{"wrong type", prefix + "click", map[string]any{"selector": 3}, "must be a string"},
 		{"non-integer", prefix + "click", map[string]any{"selector": "#x", "nth": 1.5}, "must be a integer"},
 		{"wrong kind argument", prefix + "read", map[string]any{"kind": "text", "inner": true}, "applies to kind"},
