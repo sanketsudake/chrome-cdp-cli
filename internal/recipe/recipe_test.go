@@ -262,6 +262,18 @@ func TestMalformedRecipesRejectedAtLoad(t *testing.T) {
 			body: "name: x\nsteps:\n  - run: [\"nav\", \"{{}}\"]\n",
 			want: "empty placeholder",
 		},
+		// yaml.v3 drops a null sequence element into []fileStep without a word.
+		// A commented-out first step then renumbers every later one, and
+		// --from-step (documented as sharp: earlier steps' effects are assumed
+		// done) skips the wrong one — typically a navigation.
+		"a null step entry": {
+			body: "name: x\nsteps:\n  -\n  - run: [\"snap\"]\n",
+			want: "step 1 is empty",
+		},
+		"a null step entry in the middle": {
+			body: "name: x\nsteps:\n  - run: [\"snap\"]\n  -\n  - run: [\"snap\"]\n",
+			want: "step 2 is empty",
+		},
 		"unknown on_error": {
 			body: "name: x\nsteps:\n  - run: [\"snap\"]\n    on_error: retry\n",
 			want: "on_error",
@@ -667,6 +679,27 @@ func TestStepWithItsOwnTerminator(t *testing.T) {
 	want := []string{"text", "--target", "aa11", "--", "-weird-selector"}
 	if !reflect.DeepEqual(plan.Steps[0].Argv, want) {
 		t.Errorf("argv = %#v, want %#v", plan.Steps[0].Argv, want)
+	}
+}
+
+// A dropped null step is not just a validation nicety: it renumbers the file.
+// The author who comments out step 1 and then runs --from-step 2 gets what
+// they read as step 3, and `failed.index` is off by the same amount.
+func TestNullStepDoesNotShiftTheNumbering(t *testing.T) {
+	t.Parallel()
+	// The first entry is a step whose body was commented out — the way this
+	// actually happens.
+	body := "name: x\nsteps:\n" +
+		"  -\n" +
+		"  #  run: [\"nav\", \"https://app.test/\"]\n" +
+		"  - run: [\"fill\", \"#a\", \"1\"]\n" +
+		"  - run: [\"click\", \"#save\"]\n"
+	r, err := Load(write(t, t.TempDir(), "x", body), "project")
+	if err == nil {
+		t.Fatalf("Load = %d steps with the null dropped, want an error naming the empty entry", len(r.Steps))
+	}
+	if !strings.Contains(err.Error(), "step 1 is empty") {
+		t.Errorf("error %q does not name the empty step by the number the author reads", err)
 	}
 }
 

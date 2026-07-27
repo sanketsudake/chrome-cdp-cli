@@ -237,10 +237,44 @@ func parse(data []byte, path, source string) (*Recipe, error) {
 	if err := validateHeader(r, &f, path); err != nil {
 		return nil, err
 	}
+	if err := checkStepEntries(data, len(f.Steps), path); err != nil {
+		return nil, err
+	}
 	if err := validateSteps(r, &f, path); err != nil {
 		return nil, err
 	}
 	return r, nil
+}
+
+// checkStepEntries refuses a null entry in `steps:`.
+//
+// yaml.v3 drops a null sequence element into []fileStep without a word (`- {}`
+// is not dropped, so it is not even consistent), and a dropped step renumbers
+// every step after it. An author who comments out the body of step 1 and then
+// runs --from-step 2 gets what they read as step 3 — and --from-step is sharp
+// by design, assuming every earlier step's effect is already in place, so the
+// step it skips is typically the navigation that put the page where the rest
+// expects it. `failed.index` is off by the same amount.
+//
+// It re-reads the raw sequence rather than making `steps` a yaml.Node, because
+// decoding a Node does not honour KnownFields and an unknown key inside a step
+// would stop being an error.
+func checkStepEntries(data []byte, decoded int, path string) error {
+	var raw struct {
+		Steps []yaml.Node `yaml:"steps"`
+	}
+	if err := yaml.Unmarshal(data, &raw); err != nil {
+		return nil // the first pass already reported whatever is wrong with it
+	}
+	for i, n := range raw.Steps {
+		if n.Kind == 0 || n.Tag == "!!null" {
+			return fmt.Errorf("%s: step %d is empty; a step must have a `run` (a bare `-` is dropped by the YAML parser, which would renumber every step after it)", path, i+1)
+		}
+	}
+	if len(raw.Steps) != decoded {
+		return fmt.Errorf("%s: `steps` has %d entries but only %d could be read; every entry must be a step with a `run`", path, len(raw.Steps), decoded)
+	}
+	return nil
 }
 
 // yamlMsg trims yaml.v3's leading "yaml: " / line-noise prefix so the CLI's
