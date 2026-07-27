@@ -713,6 +713,8 @@ Whichever fires sets `truncated: true` with a `reason` and counts the loss in `d
 The daemon records `(timestamp, command, coordinates)` alongside the frames — the coordinates come from the pointer verbs, which already resolve and report a centre point — and the exporter draws position markers.
 Without `--annotate` the exported frames are pixel-identical to what Chrome captured, which is what makes a recording usable as a README asset.
 One recording can therefore be exported both ways.
+`annotated` in the result is a claim about the pixels: it is `true` only when a marker was actually drawn, so a recording with no actions in it — or one whose only mark fell outside the frame — reports `false` rather than implying markers you will not find.
+`--max-size` dropping frames does not drop their markers: a dropped frame's marks move to the nearest kept one.
 
 **Formats.**
 `gif` and `frames` need nothing installed, and `gif` is the default because the dependency-free path should be the one that works out of the box.

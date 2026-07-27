@@ -366,6 +366,69 @@ func TestLetterboxedAnnotationLandsOnTheContent(t *testing.T) {
 	}
 }
 
+// TestStrideCarriesMarksForward: dropping frames for --max-size must not drop
+// the action markers with them.
+//
+// attachMarks goes to real trouble to guarantee a marker never disappears — one
+// that has nowhere to land is indistinguishable from the click not having
+// happened — and the stride would otherwise quietly undo that, leaving
+// `--annotate --max-size` reporting an annotated GIF with no markers on it.
+func TestStrideCarriesMarksForward(t *testing.T) {
+	t.Parallel()
+	frames := make([]Frame, 8)
+	imgs := make([]image.Image, 8)
+	for i := range frames {
+		frames[i] = Frame{Data: solidPNG(t, 8, 8, green)}
+		imgs[i] = image.NewRGBA(image.Rect(0, 0, 8, 8))
+	}
+	frames[1].Marks = []Mark{{X: 1, Y: 1, Command: "click"}}
+	frames[3].Marks = []Mark{{X: 3, Y: 3, Command: "type"}}
+
+	kept, keptImgs := stride(frames, imgs, 2)
+	if len(kept) != 4 || len(keptImgs) != 4 {
+		t.Fatalf("stride kept %d frames / %d images, want 4 of each", len(kept), len(keptImgs))
+	}
+	total := 0
+	for _, f := range kept {
+		total += len(f.Marks)
+	}
+	if total != 2 {
+		t.Errorf("the kept frames carry %d marks, want both of the 2 the dropped frames held", total)
+	}
+	// The caller's frames are shared with the other reduction attempts, so the
+	// stride must not mutate them.
+	if len(frames[0].Marks) != 0 || len(frames[1].Marks) != 1 {
+		t.Errorf("stride mutated its input: %v / %v", frames[0].Marks, frames[1].Marks)
+	}
+}
+
+// TestAnnotatedReportsWhetherMarkersWereDrawn: `annotated: true` is a claim
+// about the pixels, so an export that drew nothing must not make it.
+func TestAnnotatedReportsWhetherMarkersWereDrawn(t *testing.T) {
+	t.Parallel()
+	cases := map[string]struct {
+		marks []Mark
+		want  bool
+	}{
+		"a mark on the frame": {[]Mark{{X: 20, Y: 15}}, true},
+		"no marks at all":     {nil, false},
+		"a mark off-canvas":   {[]Mark{{X: 4000, Y: 3000}}, false},
+	}
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			res, err := Encode([]Frame{{Data: solidPNG(t, 40, 30, green), Marks: c.marks}},
+				Options{Format: FormatFrames, FPS: 4, Annotate: true})
+			if err != nil {
+				t.Fatalf("Encode: %v", err)
+			}
+			if res.Annotated != c.want {
+				t.Errorf("Annotated = %v, want %v", res.Annotated, c.want)
+			}
+		})
+	}
+}
+
 // TestMaxSizeReductionTerminates is the property that matters about the
 // --max-size loop: it always stops, it reports the values it actually used, and
 // it says so when the ceiling could not be met rather than pretending.

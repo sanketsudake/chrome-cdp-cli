@@ -320,22 +320,27 @@ func encodeAt(frames []Frame, imgs []image.Image, opts Options, p plan) (Result,
 	kept, keptImgs := stride(frames, imgs, p.stride)
 	w, h := scaledSize(imgs[0], p.scale)
 	canvas := make([]*image.RGBA, 0, len(keptImgs))
+	annotated := false
 	for i, src := range keptImgs {
 		dst, pl := render(src, w, h)
-		if opts.Annotate {
-			drawMarks(dst, kept[i], src, pl)
+		if opts.Annotate && drawMarks(dst, kept[i], src, pl) {
+			annotated = true
 		}
 		canvas = append(canvas, dst)
 	}
 	d := delays(kept, opts.FPS)
 
 	res := Result{
-		Format:    opts.Format,
-		Frames:    len(canvas),
-		Scale:     p.scale,
-		Width:     w,
-		Height:    h,
-		Annotated: opts.Annotate,
+		Format: opts.Format,
+		Frames: len(canvas),
+		Scale:  p.scale,
+		Width:  w,
+		Height: h,
+		// What was DRAWN, not what was asked for: a recording with no actions in
+		// it, or whose only mark fell outside the frame, produces no markers, and
+		// reporting `annotated: true` over an unmarked GIF is how a reader
+		// concludes the click never happened.
+		Annotated: annotated,
 	}
 	for _, cs := range d {
 		res.DurationMs += int64(cs) * 10
@@ -375,17 +380,32 @@ func encodeAt(frames []Frame, imgs []image.Image, opts Options, p plan) (Result,
 }
 
 // stride keeps every n'th frame (n == 1 keeps all of them).
+//
+// A dropped frame's MARKS do not go with it: they move to the nearest kept
+// frame. attachMarks takes real trouble to guarantee a marker never disappears —
+// one with nowhere to land is indistinguishable from the click not having
+// happened — and decimating the frames to meet --max-size must not undo that.
+//
+// The input frames are shared with every other reduction attempt, so the marks
+// are appended to copies rather than to the caller's slices.
 func stride(frames []Frame, imgs []image.Image, n int) ([]Frame, []image.Image) {
 	if n <= 1 {
 		return frames, imgs
 	}
 	outF := make([]Frame, 0, len(frames)/n+1)
 	outI := make([]image.Image, 0, len(imgs)/n+1)
+	for i := 0; i < len(frames); i += n {
+		f := frames[i]
+		f.Marks = append([]Mark(nil), f.Marks...)
+		outF = append(outF, f)
+		outI = append(outI, imgs[i])
+	}
 	for i := range frames {
-		if i%n == 0 {
-			outF = append(outF, frames[i])
-			outI = append(outI, imgs[i])
+		if i%n == 0 || len(frames[i].Marks) == 0 {
+			continue
 		}
+		k := min((i+n/2)/n, len(outF)-1) // the kept frame nearest in time
+		outF[k].Marks = append(outF[k].Marks, frames[i].Marks...)
 	}
 	return outF, outI
 }
@@ -559,9 +579,13 @@ const markRadius = 9
 // whole canvas once a differently-shaped frame has been letterboxed. The marks
 // are in PAGE coordinates and belong on the content, so the mapping has to go
 // through pl rather than through dst.Bounds().
-func drawMarks(dst *image.RGBA, f Frame, src image.Image, pl placement) {
+// It reports whether any marker actually put pixels on the canvas, which is
+// what Result.Annotated has to mean: a mark resolving to a point outside the
+// frame draws nothing, and claiming otherwise tells a reader the click did not
+// happen.
+func drawMarks(dst *image.RGBA, f Frame, src image.Image, pl placement) bool {
 	if len(f.Marks) == 0 {
-		return
+		return false
 	}
 	sb := src.Bounds()
 	// Page CSS pixels -> canvas pixels. CSSWidth is what the capture covered in
@@ -580,16 +604,22 @@ func drawMarks(dst *image.RGBA, f Frame, src image.Image, pl placement) {
 
 	red := color.RGBA{R: 0xE1, G: 0x1D, B: 0x48, A: 0xFF}
 	white := color.RGBA{R: 0xFF, G: 0xFF, B: 0xFF, A: 0xFF}
+	drew := false
 	for _, m := range f.Marks {
 		cx := pl.x + int(math.Round(m.X*kx))
 		cy := pl.y + int(math.Round(m.Y*ky))
-		disc(dst, cx, cy, r+2, white)
+		if disc(dst, cx, cy, r+2, white) {
+			drew = true
+		}
 		disc(dst, cx, cy, r, red)
 	}
+	return drew
 }
 
-// disc fills a filled circle, clipped to the image.
-func disc(dst *image.RGBA, cx, cy, r int, c color.RGBA) {
+// disc fills a filled circle, clipped to the image, reporting whether any pixel
+// landed inside it.
+func disc(dst *image.RGBA, cx, cy, r int, c color.RGBA) bool {
+	drew := false
 	b := dst.Bounds()
 	for y := cy - r; y <= cy+r; y++ {
 		if y < b.Min.Y || y >= b.Max.Y {
@@ -603,9 +633,11 @@ func disc(dst *image.RGBA, cx, cy, r int, c color.RGBA) {
 			dx := x - cx
 			if dx*dx+dy*dy <= r*r {
 				dst.SetRGBA(x, y, c)
+				drew = true
 			}
 		}
 	}
+	return drew
 }
 
 // placement is where one frame's content sits on the export canvas: the origin
