@@ -85,7 +85,7 @@ func (a *App) newRoot() *cobra.Command {
 		a.cmdScreenshot(), a.cmdPDF(),
 		a.cmdCookie(), a.cmdHeaders(), a.cmdEmulate(), a.cmdFrame(), a.cmdWait(),
 		a.cmdConsole(), a.cmdNet(), a.cmdRecord(), a.cmdRaw(),
-		a.cmdSession(), a.cmdRecipe(), a.cmdDoctor(), a.cmdDaemon(), a.cmdPolicy(), a.cmdExitCodes(), a.cmdVersion(),
+		a.cmdSession(), a.cmdRecipe(), a.cmdMCP(), a.cmdDoctor(), a.cmdDaemon(), a.cmdPolicy(), a.cmdExitCodes(), a.cmdVersion(),
 	)
 	return root
 }
