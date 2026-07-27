@@ -577,7 +577,9 @@ func rawCDPTool() *tool {
 		name:  prefix + "raw_cdp",
 		title: "Raw CDP call",
 		desc: "Call any Chrome DevTools Protocol method directly.\n\n" +
-			"The escape hatch, exposed only under --tools full: it is unconstrained, browser-level calls reach every tab at once, and a policy cannot name an origin for one. Use `list: true` to enumerate the connected Chrome's domains.",
+			"The escape hatch, kept out of the default tool set: it is unconstrained, browser-level calls reach every tab at once, and a policy cannot name an origin for one. " +
+			"It appears only when the server was started with `--tools full` — or with this tool named explicitly in `--tools` — AND with `--allow-eval`, since MCP mode denies the `raw` verb by default. " +
+			"Use `list: true` to enumerate the connected Chrome's domains.",
 		verbs: []string{"raw"},
 		full:  true,
 		args: concat([]arg{

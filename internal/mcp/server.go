@@ -44,6 +44,12 @@ type Options struct {
 	// Tools is "default", "full", or a comma-separated list of tool names
 	// (with or without the chrome_cdp_ prefix).
 	Tools string
+	// DenyVerbs lists the CLI verbs the effective policy refuses everywhere —
+	// the configured `verbs_denied`, plus MCP mode's own eval/raw default. A
+	// tool whose every verb is denied is not exposed: it would answer every
+	// call with permission_denied, and an agent pays for its description
+	// either way.
+	DenyVerbs []string
 	// Target pins every call to one tab. With it set, a call that names a
 	// different tab is refused rather than silently redirected.
 	Target string
@@ -169,16 +175,58 @@ func (o Options) selection() ([]*tool, error) {
 		// stable and reviewable.
 		sort.SliceStable(chosen, func(i, j int) bool { return indexOf(all, chosen[i]) < indexOf(all, chosen[j]) })
 	}
-	if !o.ReadOnly {
-		return chosen, nil
+	if o.ReadOnly {
+		var ro []*tool
+		for _, t := range chosen {
+			if len(o.allowedActions(t)) > 0 || !t.mutates() {
+				ro = append(ro, t)
+			}
+		}
+		chosen = ro
 	}
-	var ro []*tool
-	for _, t := range chosen {
-		if len(o.allowedActions(t)) > 0 || !t.mutates() {
-			ro = append(ro, t)
+	return o.dropDenied(chosen)
+}
+
+// dropDenied removes the tools the effective policy has already refused.
+//
+// A tool whose every verb is in `verbs_denied` can only answer
+// permission_denied, so listing it spends an agent's context to teach it a
+// refusal it will discover by trying. A grouped tool keeps its other actions;
+// only one with nothing left disappears.
+func (o Options) dropDenied(ts []*tool) ([]*tool, error) {
+	if len(o.DenyVerbs) == 0 {
+		return ts, nil
+	}
+	var out []*tool
+	for _, t := range ts {
+		if len(t.actions) > 0 && len(o.allowedActions(t)) == 0 {
+			continue
+		}
+		keep := false
+		for _, v := range t.verbs {
+			if !o.denies(v) {
+				keep = true
+			}
+		}
+		if keep {
+			out = append(out, t)
 		}
 	}
-	return ro, nil
+	if len(out) == 0 {
+		return nil, fmt.Errorf("the policy's verbs_denied refuses every verb the selected tools wrap, so there is nothing to serve (denied: %s)",
+			strings.Join(o.DenyVerbs, ", "))
+	}
+	return out, nil
+}
+
+// denies reports whether the effective policy refuses a verb everywhere.
+func (o Options) denies(verb string) bool {
+	for _, v := range o.DenyVerbs {
+		if v == verb {
+			return true
+		}
+	}
+	return false
 }
 
 // allowedActions returns the discriminator values a grouped tool still accepts.
@@ -192,6 +240,9 @@ func (o Options) allowedActions(t *tool) []string {
 	out := make([]string, 0, len(t.actions))
 	for value, verb := range t.actions {
 		if o.ReadOnly && refusedByReadOnly(verb) {
+			continue
+		}
+		if o.denies(verb) {
 			continue
 		}
 		out = append(out, value)
@@ -302,6 +353,10 @@ func (s *Server) hiddenToolMiddleware(next sdk.MethodHandler) sdk.MethodHandler 
 		reason := fmt.Sprintf("tool %q is not exposed by this server", params.Name)
 		if known(params.Name) {
 			switch {
+			case s.deniedByPolicy(params.Name):
+				// Naming the policy matters: a --tools message would send the
+				// user to the wrong file to fix it.
+				reason = fmt.Sprintf("%s: the configured policy denies the verb it wraps", reason)
 			case s.opts.ReadOnly:
 				reason = fmt.Sprintf("%s: it is running --read-only, which exposes only tools that cannot modify a page", reason)
 			default:
@@ -311,6 +366,23 @@ func (s *Server) hiddenToolMiddleware(next sdk.MethodHandler) sdk.MethodHandler 
 		reason += ". Exposed tools: " + strings.Join(toolNames(s.order), ", ")
 		return errorResult(result.CodeUsage, reason, nil), nil
 	}
+}
+
+// deniedByPolicy reports whether every verb a known tool wraps is refused by
+// the effective policy, which is why it was not exposed.
+func (s *Server) deniedByPolicy(name string) bool {
+	for _, t := range registry() {
+		if t.name != name {
+			continue
+		}
+		for _, v := range t.verbs {
+			if !s.opts.denies(v) {
+				return false
+			}
+		}
+		return len(t.verbs) > 0
+	}
+	return false
 }
 
 func known(name string) bool {

@@ -94,7 +94,8 @@ It exposes a deliberately small set of tools (grouped, `chrome_cdp_`-prefixed, w
 
 **It requires a policy allow-list and refuses to start without one.**
 Run `chrome-cdp policy init` on the tab you want it to drive first: at a shell you decided to run each command, but an assistant holding this connection can act as you on every site you are signed into, and that deserves an explicit boundary.
-`chrome-cdp mcp --read-only` is a good way to try it — it exposes only verbs that cannot change a page.
+`eval` and `raw` are denied in this mode unless you pass `--allow-eval` — they can navigate the tab out of the allow-list themselves, which would make the boundary decorative.
+`chrome-cdp mcp --read-only` is a good way to try it — it exposes only verbs that cannot change a page or close a tab.
 See the [MCP section of the CLI reference](docs/cli-reference.md#mcp-server).
 
 ## Configure

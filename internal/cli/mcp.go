@@ -43,6 +43,7 @@ import (
 
 func (a *App) cmdMCP() *cobra.Command {
 	var readOnly bool
+	var allowEval bool
 	var tools string
 	c := &cobra.Command{
 		Use:   "mcp",
@@ -56,6 +57,9 @@ func (a *App) cmdMCP() *cobra.Command {
 			"`chrome-cdp policy init` on the tab you want it to drive, then start the\n" +
 			"server. --read-only exposes only verbs that cannot modify a page, and\n" +
 			"--target pins the server to one tab.\n\n" +
+			"`eval` and `raw` are DENIED in this mode unless --allow-eval is passed:\n" +
+			"they can navigate the tab out of the allow-list themselves, so an origin\n" +
+			"boundary only means something while they are off.\n\n" +
 			"stdout carries the protocol; diagnostics go to stderr.",
 		Args: cobra.NoArgs,
 		RunE: func(*cobra.Command, []string) error {
@@ -67,13 +71,15 @@ func (a *App) cmdMCP() *cobra.Command {
 				a.emitErr("mcp", perr.Code, perr.Message, perr.Details)
 				return nil
 			}
+			denied := a.denyEscapeHatchVerbs(allowEval)
 			runner := a.newMCPRunner()
 			srv, err := mcp.New(runner, mcp.Options{
-				ReadOnly: readOnly,
-				Tools:    tools,
-				Target:   a.targetFlag,
-				Version:  Version,
-				Log:      a.err,
+				ReadOnly:  readOnly,
+				Tools:     tools,
+				DenyVerbs: denied,
+				Target:    a.targetFlag,
+				Version:   Version,
+				Log:       a.err,
 			})
 			if err != nil {
 				a.emitErr("mcp", result.CodeUsage, err.Error(), nil)
@@ -88,7 +94,7 @@ func (a *App) cmdMCP() *cobra.Command {
 				in = os.Stdin
 			}
 			if a.verbose {
-				fmt.Fprintf(a.err, "chrome-cdp mcp: serving %d tool(s) on stdio\n", len(mustSpecs(readOnly, tools)))
+				fmt.Fprintf(a.err, "chrome-cdp mcp: serving %d tool(s) on stdio\n", len(mustSpecs(readOnly, tools, denied)))
 			}
 			if err := srv.Run(context.Background(), in, out); err != nil && err != io.EOF {
 				fmt.Fprintf(a.err, "chrome-cdp mcp: %v\n", err)
@@ -100,12 +106,62 @@ func (a *App) cmdMCP() *cobra.Command {
 		},
 	}
 	c.Flags().BoolVar(&readOnly, "read-only", false, "expose only tools that cannot modify page state")
+	c.Flags().BoolVar(&allowEval, "allow-eval", false,
+		"expose `eval` and `raw`, which can navigate the tab out of the allow-list (denied by default in this mode)")
 	c.Flags().StringVar(&tools, "tools", mcp.SetDefault, "tool set: default | full | a comma-separated list of tool names")
 	return c
 }
 
-func mustSpecs(readOnly bool, tools string) []mcp.ToolSpec {
-	specs, _ := mcp.Specs(mcp.Options{ReadOnly: readOnly, Tools: tools})
+// escapeHatchVerbs are the verbs an origin allow-list cannot bound.
+//
+// `eval "location='https://elsewhere/'"` on an allowed tab is an authenticated
+// GET to an origin the allow-list would have refused, and no check in front of
+// `nav` can see it coming; `raw` reaches the browser level, where no rule can
+// name an origin at all. RFC-0012's own documentation says destination checking
+// is only meaningful while these two are denied, and `policy init` writes
+// verbs_denied = ["eval", "raw"] for exactly that reason.
+var escapeHatchVerbs = []string{"eval", "raw"}
+
+// denyEscapeHatchVerbs folds eval and raw into the effective policy for the
+// life of the server, unless the user opted in, and returns the full denied
+// set so the tool surface can match it.
+//
+// The gate offered two ways to satisfy it: the printed config block, which
+// includes verbs_denied, or `chrome-cdp mcp --allow '*.example.com'`, which
+// writes no policy file and so set none. The one-liner is the one people paste,
+// and it left `evaluate` — a DEFAULT tool — able to run arbitrary script in an
+// authenticated origin and walk the tab out of the boundary. A gate whose
+// recommended answer produces an unsafe configuration is not a gate.
+//
+// Denying by default rather than moving `evaluate` to --tools full keeps the
+// RFC's judgement that eval is genuinely useful: --allow-eval is one flag, and
+// it is a decision the user makes rather than one they inherit.
+func (a *App) denyEscapeHatchVerbs(allowEval bool) []string {
+	denied := append([]string(nil), a.defaults.Policy.VerbsDenied...)
+	if !allowEval {
+		for _, v := range escapeHatchVerbs {
+			if !containsString(denied, v) {
+				denied = append(denied, v)
+			}
+		}
+		// The policy is rebuilt per tool call from a.defaults, so this is where
+		// the denial has to land for the CHECK to see it as well as the schema.
+		a.defaults.Policy.VerbsDenied = denied
+	}
+	return denied
+}
+
+func containsString(list []string, s string) bool {
+	for _, v := range list {
+		if v == s {
+			return true
+		}
+	}
+	return false
+}
+
+func mustSpecs(readOnly bool, tools string, denied []string) []mcp.ToolSpec {
+	specs, _ := mcp.Specs(mcp.Options{ReadOnly: readOnly, Tools: tools, DenyVerbs: denied})
 	return specs
 }
 
@@ -160,7 +216,10 @@ func (a *App) printPolicyRequirement() {
 		"  allow = [\"*.example.com\"]      # the origins the assistant may drive\n"+
 		"  verbs_denied = [\"eval\", \"raw\"] # they can navigate out of the allow-list\n"+
 		"  on_violation = \"error\"\n\n"+
-		"…or start the server with a one-off list: chrome-cdp mcp --allow '*.example.com'\n\n")
+		"…or start the server with a one-off list: chrome-cdp mcp --allow '*.example.com'\n\n"+
+		"Either way `eval` and `raw` are denied in this mode — they can navigate the\n"+
+		"tab out of the allow-list, so destination checking only means something while\n"+
+		"they are off. Pass --allow-eval if you need them.\n\n")
 }
 
 // protectStdout claims the process's stdout for the protocol and points every

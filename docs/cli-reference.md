@@ -626,6 +626,7 @@ It is a front end, not a fork: a tool call becomes the same argv you would type,
 |------|---------|---------|
 | `--read-only` | off | expose only tools that cannot modify page state |
 | `--tools <set>` | `default` | `default`, `full`, or a comma-separated list of tool names |
+| `--allow-eval` | off | expose `eval` and `raw`, which are denied in this mode by default |
 | `--target <spec>` | — | pin the server to one tab; otherwise each tool takes a `target` |
 
 Global flags (`--timeout`, `--no-daemon`, `--port`, `--profile-dir`, `--allow`, config file) apply unchanged, and the daemon still holds the connection — a long-lived server over one shared connection is exactly what it is for.
@@ -635,7 +636,13 @@ Transport is stdio only; there is no HTTP or SSE mode, because a network-reachab
 `chrome-cdp mcp` refuses to start unless a `[policy]` table with a non-empty `allow` is configured (or `--allow` is passed): it exits 2 and prints the block it needs.
 The CLI's unrestricted default is right for a person who typed a command; handing an assistant a browser that is signed in to everything is a different question, and it should be answered on purpose.
 Run [`chrome-cdp policy init`](#policy) on the tab you want it to drive.
-`--policy-off` is refused in this mode.
+`--policy-off` is refused in this mode, and an injected one cannot reach the parser: the server freezes its own policy flags, and every tool argument is passed after a `--` terminator so a value that looks like a flag is data.
+
+**`eval` and `raw` are denied here unless you pass `--allow-eval`.**
+They can [navigate the tab themselves](#destination-checking-needs-verbs_denied), so an origin allow-list only means something while they are off — and the one-liner form of the gate (`chrome-cdp mcp --allow '*.example.com'`) writes no config file and so set no `verbs_denied` at all, which left the recommended setup with a decorative boundary.
+The mode now supplies that default itself.
+A denied verb's tool is not listed either: it could only answer `permission_denied`, and an agent pays for the description.
+`--allow-eval` opts back in to the mode's default only — a `verbs_denied` you configured yourself still stands.
 
 **The tool surface is bounded** — an agent pays for every tool description in its context window — so related verbs are grouped behind an `action` or `kind` argument.
 Names are prefixed `chrome_cdp_` so they stay unambiguous in clients that flatten every server into one namespace.
@@ -657,9 +664,9 @@ Names are prefixed `chrome_cdp_` so they stay unambiguous in clients that flatte
 | `chrome_cdp_screenshot` | `screenshot` | returns an image content block |
 | `chrome_cdp_console` | `console` | |
 | `chrome_cdp_network` | `net` | |
-| `chrome_cdp_evaluate` | `eval` | powerful and unconstrained; its description says so |
+| `chrome_cdp_evaluate` | `eval` | powerful and unconstrained; needs `--allow-eval` |
 | `chrome_cdp_batch` | `session` | several tools over one round trip |
-| `chrome_cdp_raw_cdp` | `raw` | `--tools full` only |
+| `chrome_cdp_raw_cdp` | `raw` | `--tools full` (or named in `--tools`), plus `--allow-eval` |
 
 Each tool's arguments mirror the CLI flags they wrap, in `snake_case` (`in_row` for `--in-row`), and the element-addressing arguments (`by`, `role`, `nth`, `match`, `in_row`, `wait`, `pierce`) are documented in every schema that takes them — the accessible-name addressing is this tool's advantage on real applications, and an agent only gets it if the schema says so.
 The streaming forms (`console --follow`, `net --follow`) are not exposed: they would break the one-result-per-call contract.
@@ -979,7 +986,7 @@ Redirects are the honest limitation: a `nav` to an allowed origin that redirects
 What the policy still gives you is that the tab is then off-limits: the next command is refused on the settled origin, so nothing is read back.
 But the request happened.
 
-**So an origin allow-list is only meaningful alongside `verbs_denied = ["eval", "raw"]`**, and that is what `chrome-cdp policy init` writes.
+**So an origin allow-list is only meaningful alongside `verbs_denied = ["eval", "raw"]`**, and that is what `chrome-cdp policy init` writes — and what [MCP mode](#mcp-server) applies by default, whether or not a config file says so.
 If you need `eval`, understand that you have kept a verb that can walk out of the boundary and come back — the boundary still bounds what you can *read*, not what you can *reach*.
 
 ### A refusal

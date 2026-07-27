@@ -743,3 +743,79 @@ func containsSeq(argv []string, want ...string) bool {
 	}
 	return false
 }
+
+// `--tools raw_cdp` names the escape hatch explicitly, and the named-list
+// branch honours that — so the description has to say so.
+//
+// It used to claim "exposed only under --tools full" while the named branch
+// built its map from the whole registry without consulting `full`, which made
+// the sentence false. Naming a tool is an explicit act by the user at a shell,
+// not something an agent can reach, so the behaviour is right and the sentence
+// was wrong. What actually bounds it now is that MCP mode denies the `raw` verb
+// unless --allow-eval is passed.
+func TestNamedToolListCanIncludeRawCDP(t *testing.T) {
+	t.Parallel()
+	specs, err := Specs(Options{Tools: "raw_cdp"})
+	if err != nil {
+		t.Fatalf("Specs: %v", err)
+	}
+	if len(specs) != 1 || specs[0].Name != prefix+"raw_cdp" {
+		t.Fatalf("--tools raw_cdp selected %v", toolSpecNames(specs))
+	}
+	var desc string
+	for _, tl := range registry() {
+		if tl.name == prefix+"raw_cdp" {
+			desc = tl.desc
+		}
+	}
+	if strings.Contains(desc, "exposed only under --tools full") {
+		t.Error("the description still claims --tools full is the only way in, which the named list disproves")
+	}
+	for _, want := range []string{"--tools full", "--tools`", "--allow-eval"} {
+		if !strings.Contains(desc, want) {
+			t.Errorf("the description does not mention %q:\n%s", want, desc)
+		}
+	}
+}
+
+// The effective policy's denied verbs take a tool off the list entirely: it
+// could only answer permission_denied, and an agent pays for the description.
+func TestDeniedVerbsAreNotExposed(t *testing.T) {
+	t.Parallel()
+	r := &fakeRunner{}
+	sess := connect(t, r, Options{Tools: SetFull, DenyVerbs: []string{"eval", "raw"}})
+	res, err := sess.ListTools(ctxT(t), nil)
+	if err != nil {
+		t.Fatalf("tools/list: %v", err)
+	}
+	for _, gone := range []string{"evaluate", "raw_cdp"} {
+		if hasTool(res.Tools, prefix+gone) {
+			t.Errorf("%s is listed although its verb is denied", gone)
+		}
+	}
+	if !hasTool(res.Tools, prefix+"snapshot") {
+		t.Error("denying eval dropped an unrelated tool")
+	}
+	out := callTool(t, sess, prefix+"evaluate", map[string]any{"expression": "1+1"})
+	if !out.IsError {
+		t.Fatal("a denied tool was invocable")
+	}
+	got := structured(t, out)
+	if got["code"] != "usage" {
+		t.Errorf("code = %v, want usage", got["code"])
+	}
+	if msg, _ := got["message"].(string); !strings.Contains(msg, "policy") {
+		t.Errorf("message = %q, want it to name the policy rather than --tools", msg)
+	}
+	if r.count() != 0 {
+		t.Errorf("a denied tool reached the CLI: %v", r.calls)
+	}
+}
+
+func toolSpecNames(specs []ToolSpec) []string {
+	out := make([]string, 0, len(specs))
+	for _, s := range specs {
+		out = append(out, s.Name)
+	}
+	return out
+}
