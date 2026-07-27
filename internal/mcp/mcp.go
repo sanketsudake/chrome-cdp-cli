@@ -126,6 +126,13 @@ func (c *call) str(name string) string {
 	return strings.TrimSpace(s)
 }
 
+// num renders a numeric argument as the CLI's positional string. JSON numbers
+// decode to float64, so str's string type assertion would silently yield "" —
+// which is how window_size shipped unable to receive its own declared type.
+func (c *call) num(name string) string {
+	return scalarString(c.args[name])
+}
+
 func (c *call) bool(name string) bool {
 	b, _ := c.args[name].(bool)
 	return b

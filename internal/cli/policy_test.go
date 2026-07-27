@@ -1295,3 +1295,41 @@ func TestVerbsDeniedReachesSession(t *testing.T) {
 		t.Errorf("session was not refused by verbs_denied; output:\n%s", out.String())
 	}
 }
+
+// `window size` resizes the OS window every tab shares, so an allow-list that
+// names one origin must not authorize it — the same fail-closed reasoning
+// `raw --browser` gets. `window info` only reads the window's geometry and
+// stays per-target.
+func TestWindowSizeIsCheckedAtBrowserLevel(t *testing.T) {
+	t.Parallel()
+	tab := target.Info{ID: "aa11", Title: "App", URL: "https://app.example.com/"}
+	pol := allowOnly("*.example.com")
+
+	t.Run("an origin allow-list does not authorize a resize", func(t *testing.T) {
+		t.Parallel()
+		env, _, code := runPolicy(t, &fakeBrowser{tabs: []target.Info{tab}}, pol,
+			"window", "size", "1280", "800", "--target", "aa11", "--json")
+		if code != result.ExitPermission {
+			t.Fatalf("exit = %d, want %d — a resize reflows every tab in the window, not just the allowed one", code, result.ExitPermission)
+		}
+		if got := env["error"].(map[string]any)["code"]; got != "permission_denied" {
+			t.Errorf("error.code = %v, want permission_denied", got)
+		}
+	})
+
+	t.Run("window info stays per-target", func(t *testing.T) {
+		t.Parallel()
+		if _, _, code := runPolicy(t, &fakeBrowser{tabs: []target.Info{tab}}, pol,
+			"window", "info", "--target", "aa11", "--json"); code != 0 {
+			t.Errorf("window info exit = %d, want 0 — reading the window's own geometry touches no page content", code)
+		}
+	})
+
+	t.Run("--policy-off still permits it", func(t *testing.T) {
+		t.Parallel()
+		if _, _, code := runPolicy(t, &fakeBrowser{tabs: []target.Info{tab}}, pol,
+			"window", "size", "1280", "800", "--policy-off", "--target", "aa11", "--json"); code != 0 {
+			t.Errorf("exit = %d, want 0 — --policy-off is the deliberate escape hatch", code)
+		}
+	})
+}

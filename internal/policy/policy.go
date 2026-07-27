@@ -143,26 +143,32 @@ var verbClass = map[string]Class{
 	"cookie list":   Reading,
 
 	// Mutating.
-	"open":             Mutating, // checked against the DESTINATION origin
-	"nav":              Mutating, // ditto, when given a url
-	"eval":             Mutating,
-	"raw":              Mutating,
-	"click":            Mutating,
-	"hover":            Mutating,
-	"dblclick":         Mutating,
-	"rclick":           Mutating,
-	"drag":             Mutating,
-	"key":              Mutating,
-	"type":             Mutating,
-	"fill":             Mutating,
-	"select":           Mutating,
-	"scroll":           Mutating,
-	"attr set":         Mutating,
-	"attr rm":          Mutating,
-	"cookie set":       Mutating,
-	"cookie rm":        Mutating,
-	"cookie clear":     Mutating,
-	"headers set":      Mutating,
+	"open":         Mutating, // checked against the DESTINATION origin
+	"nav":          Mutating, // ditto, when given a url
+	"eval":         Mutating,
+	"raw":          Mutating,
+	"click":        Mutating,
+	"hover":        Mutating,
+	"dblclick":     Mutating,
+	"rclick":       Mutating,
+	"tripleclick":  Mutating,
+	"drag":         Mutating,
+	"key":          Mutating,
+	"type":         Mutating,
+	"fill":         Mutating,
+	"select":       Mutating,
+	"scroll":       Mutating,
+	"attr set":     Mutating,
+	"attr rm":      Mutating,
+	"cookie set":   Mutating,
+	"cookie rm":    Mutating,
+	"cookie clear": Mutating,
+	"headers set":  Mutating,
+	// `window size` changes the browser window, not the page — but it changes
+	// what a screenshot of any origin shows and what a coordinate means, so it
+	// is checked rather than exempt.
+	"window size":      Mutating,
+	"window info":      Reading,
 	"emulate viewport": Mutating,
 	"emulate geo":      Mutating,
 	"emulate reset":    Mutating,

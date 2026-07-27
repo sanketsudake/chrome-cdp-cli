@@ -116,6 +116,12 @@ func (b boundBrowser) Snapshot(ctx context.Context, targetID string, opts chrome
 	return b.Browser.Snapshot(ctx, targetID, opts)
 }
 
+func (b boundBrowser) Window(ctx context.Context, targetID string, opts chrome.WindowOpts) (chrome.WindowBounds, error) {
+	ctx, cancel := b.bind(ctx)
+	defer cancel()
+	return b.Browser.Window(ctx, targetID, opts)
+}
+
 func (b boundBrowser) Find(ctx context.Context, targetID string, query string, opts chrome.FindOpts) (map[string]any, error) {
 	ctx, cancel := b.bind(ctx)
 	defer cancel()

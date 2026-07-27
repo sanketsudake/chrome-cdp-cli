@@ -1,6 +1,6 @@
 # RFC-0014: Coordinate-space interaction — `--at` addressing, `tripleclick`, drop-zone upload, and real window sizing
 
-- **Status:** Draft
+- **Status:** Accepted (in part) — `--at`, `tripleclick`, and `window` implemented in [#22](https://github.com/sanketsudake/chrome-cdp-cli/pull/22); `upload --drop` still outstanding
 - **Priority:** P0 (coordinate addressing, `tripleclick`) · P1 (drop-zone upload, `window`)
 - **Area:** input
 - **Depends on:** RFC-0005 (extends its `Pointer` primitive), RFC-0006 (extends `upload`)
@@ -124,11 +124,12 @@ Coordinate actions report the point and what was under it:
 ```json
 { "ok": true, "command": "click",
   "target": {"id":"…","title":"…","url":"…"},
-  "result": { "x": 512, "y": 340,
-              "hit": {"tag": "canvas", "role": "img", "name": "Floor plan"},
-              "modifiers": [] },
+  "result": { "clicked": "512,340", "x": 512, "y": 340,
+              "hit": {"tag": "CANVAS", "id": "board", "role": "img", "name": "Floor plan"} },
   "elapsed_ms": 74 }
 ```
+
+`click` keeps its long-standing `clicked` key — the Agent Skill and the human formatter both read it — and gains the coordinate evidence beside it rather than swapping shapes.
 
 `hit` is best-effort observability (`document.elementFromPoint` plus a11y lookup), not a precondition — a canvas hit is still a valid click.
 Selector-form results keep their existing shape from RFC-0005, so `--at` adds a field but never changes an existing one.
@@ -160,7 +161,8 @@ Selector-form results keep their existing shape from RFC-0005, so `--at` adds a 
 | Drop file path outside the policy upload allow-list | `policy_denied` | existing policy exit |
 | `Input.dispatchMouseEvent` / `Browser.setWindowBounds` rejected | `cdp_error` | 5 |
 
-`coordinate_out_of_bounds` carries `{"x":…, "y":…, "viewport": {"width":…, "height":…}}` in `error.details` so an agent can immediately re-screenshot instead of guessing.
+`coordinate_out_of_bounds` reports the measured `viewport` on the error object (`{"viewport": {"width":…, "height":…}}`), so an agent can immediately re-screenshot at the right size instead of guessing.
+It rides on the error object rather than a nested `details`, matching how `occluded` and `tab_hidden` are already reported.
 All usage errors are rejected before connecting to Chrome, per the standing convention.
 
 ## Design notes
@@ -175,10 +177,16 @@ All usage errors are rejected before connecting to Chrome, per the standing conv
 - **`tripleclick` reuses `fill`'s primitive.**
   `fill` already performs triple-click-select-all; factor that sequence out and expose it, exactly as RFC-0005 factored out `click`'s centre resolution.
   `Pointer` gains `Action: "tripleclick"` rather than a new interface method.
+  **As implemented** it routes through `pointerClickSeq` — the primitive `dblclick` already uses — rather than `fill`'s single `clickCount: 3` event, because that dispatches the escalating 1-then-2-then-3 sequence a human triple-click actually puts on the wire, which is what Blink selects a paragraph on.
+  `fill` is left as it is: it works, and changing a shipped write path to share this was not worth the risk.
 - **Drop-zone mechanism: real files, synthetic events.**
   Primary approach: inject a temporary hidden `<input type=file>`, attach the files with `DOM.setFileInputFiles` (real CDP file attachment, same as RFC-0006), then in page JS move `input.files` into a `DataTransfer` and dispatch `dragenter` → `dragover` → `drop` on the target, then remove the input.
   The events are untrusted but the `File` objects are real, and drop handlers read `dataTransfer.files` — this is the approach known to work with the common drop-zone libraries.
   `Input.dispatchDragEvent` is the trusted-event alternative; see Open Questions.
+- **`window size` is authorized at the BROWSER level, not per tab.**
+  **Added during implementation.** A resize acts on the OS window every tab in it shares, so checking it against the one resolved tab's origin would let a permission granted for one origin reflow another origin's page.
+  It is checked with no origin — the same fail-closed treatment `raw --browser` already gets — so an active allow-list refuses it and `--policy-off` remains the deliberate escape hatch.
+  `window info` only reads the window's own geometry, touches no page content, and stays per-target.
 - **Drop-zone paths obey RFC-0012.**
   `--drop` is still a file *upload*; the policy upload-path allow-list applies identically to both modes, checked before any page interaction.
 - **`window` needs `windowState: normal` first.**
@@ -190,7 +198,9 @@ All usage errors are rejected before connecting to Chrome, per the standing conv
   `chrome.Browser` gains `Window(ctx, targetID string, opts WindowOpts) (WindowBounds, error)` (info when `opts` is zero, resize otherwise); `UploadOpts` gains `Drop string` / `DropAt *Point`; `PointerOpts` gains the two points and the `tripleclick` action.
   Each needs its stub default in `chrometest.StubBrowser`, the daemon `remoteBrowser` forwarder, and the `dispatch` case — `TestDispatchCoversBrowser` enforces the last two.
 - **MCP surface.**
-  `click`, `pointer`, and `scroll` tools gain an optional `at` argument; `upload` gains `drop`; a new `window` tool (info/resize) joins the default set — it carries no surprising capability.
+  `click`, `pointer`, and `scroll` tools gain an optional `at` argument, and `pointer` gains `to_at` plus the `tripleclick` action; `upload` gains `drop`.
+  **As implemented**, window sizing did NOT become its own tool: the default set is capped at 18 (RFC-0004 US-4), and a 19th would have broken a shipped, tested invariant.
+  It is folded into the existing `tabs` tool as `action: "window_info"` / `"window_size"`, which is the same family — the browser surface being driven — and keeps the CLI's own `window` verb unchanged.
 - **Stub defaults:** `Pointer` with `At` returns `{"x": at.X, "y": at.Y, "hit": null}`; `Window` returns `{0, 0, 1280, 800, "normal"}`; `Upload` with `Drop` returns `{"mode": "drop"}`.
 
 ## Verification scenarios

@@ -178,7 +178,7 @@ func (c *CDP) Scroll(ctx context.Context, id, selector string, opts ScrollOpts) 
 
 	if opts.Wheel {
 		err := c.run(ctx, id, chromedp.ActionFunc(func(actx context.Context) error {
-			x, y, err := wheelPoint(actx, selector, opts.Query)
+			x, y, err := wheelOrigin(actx, selector, opts)
 			if err != nil {
 				return err
 			}
@@ -232,4 +232,18 @@ func wheelPoint(ctx context.Context, selector string, q QueryOpts) (float64, flo
 		return 0, 0, fmt.Errorf("selector %q not found", selector)
 	}
 	return nodeCenter(ctx, nodes[0].NodeID)
+}
+
+// wheelOrigin decides where a wheel is delivered: an explicit coordinate, or
+// the element/viewport centre wheelPoint computes. Anchoring at a point is
+// what lets a map or canvas zoom around the cursor rather than its middle.
+func wheelOrigin(ctx context.Context, selector string, opts ScrollOpts) (float64, float64, error) {
+	if opts.At != nil {
+		// scroll's envelope carries no `hit`, so the probe skips the element walk.
+		if err := (&viewportGate{}).check(ctx, *opts.At); err != nil {
+			return 0, 0, err
+		}
+		return opts.At.X, opts.At.Y, nil
+	}
+	return wheelPoint(ctx, selector, opts.Query)
 }

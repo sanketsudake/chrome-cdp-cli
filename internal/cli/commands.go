@@ -85,11 +85,11 @@ func (a *App) newRoot() *cobra.Command {
 		a.cmdList(), a.cmdOpen(), a.cmdUse(), a.cmdNav(), a.cmdActivate(), a.cmdClose(), a.cmdEval(), a.cmdSnap(), a.cmdFind(),
 		a.cmdHTML(), a.cmdText(), a.cmdValue(),
 		a.cmdClick(), a.cmdHover(), a.cmdDblClick(), a.cmdRClick(), a.cmdDrag(), a.cmdKey(),
-		a.cmdType(), a.cmdFill(), a.cmdSelect(), a.cmdUpload(), a.cmdGrid(), a.cmdScroll(), a.cmdAttr(),
+		a.cmdTripleClick(), a.cmdType(), a.cmdFill(), a.cmdSelect(), a.cmdUpload(), a.cmdGrid(), a.cmdScroll(), a.cmdAttr(),
 		a.cmdScreenshot(), a.cmdPDF(),
 		a.cmdCookie(), a.cmdHeaders(), a.cmdEmulate(), a.cmdFrame(), a.cmdWait(),
 		a.cmdConsole(), a.cmdNet(), a.cmdRecord(), a.cmdRaw(),
-		a.cmdSession(), a.cmdRecipe(), a.cmdMCP(), a.cmdDoctor(), a.cmdDaemon(), a.cmdPolicy(), a.cmdExitCodes(), a.cmdVersion(),
+		a.cmdWindow(), a.cmdSession(), a.cmdRecipe(), a.cmdMCP(), a.cmdDoctor(), a.cmdDaemon(), a.cmdPolicy(), a.cmdExitCodes(), a.cmdVersion(),
 	)
 	return root
 }
@@ -106,6 +106,21 @@ func (a *App) classifyWithTabHint(b chrome.Browser, id string, err error) (strin
 	// on top rather than to fix a selector that was already correct.
 	if chrome.IsOccluded(err) {
 		return result.CodeTargetTimeout, err.Error(), map[string]any{"occluded": true}
+	}
+	// A coordinate outside the viewport is its own failure: the caller named a
+	// PLACE that does not exist on this page, which is a different fix from a
+	// selector that did not resolve. The viewport goes in the details so an
+	// agent can re-screenshot at the right size instead of guessing.
+	if chrome.IsCoordinateOOB(err) {
+		details := map[string]any{}
+		vctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		if v, verr := b.Eval(vctx, id, "({w: window.innerWidth, h: window.innerHeight})", chrome.EvalOpts{}); verr == nil {
+			if m, ok := v.(map[string]any)["value"].(map[string]any); ok {
+				details["viewport"] = map[string]any{"width": m["w"], "height": m["h"]}
+			}
+		}
+		return result.CodeCoordinateOOB, err.Error(), details
 	}
 	// "no entry in that direction" is a missing target, not a generic CDP
 	// failure — checking the history before moving exists precisely so `nav
@@ -617,6 +632,7 @@ func (a *App) cmdGrid() *cobra.Command {
 func (a *App) cmdScroll() *cobra.Command {
 	var dx, dy float64
 	var into, wheel bool
+	var at string
 	c := &cobra.Command{
 		Use:   "scroll [selector]",
 		Short: "Scroll by --dx/--dy (a selector's box or the window), --to a selector into view, or --wheel",
@@ -626,7 +642,29 @@ func (a *App) cmdScroll() *cobra.Command {
 			if len(args) == 1 {
 				sel = args[0]
 			}
-			opts := chrome.ScrollOpts{Dx: dx, Dy: dy, Into: into, Wheel: wheel, Query: a.queryOpts()}
+			// --at anchors the WHEEL at a point; it means nothing for a JS
+			// scrollBy or a scroll-into-view, so pairing it with those is a
+			// usage error rather than a silently ignored flag.
+			var anchor *chrome.Point
+			if at != "" {
+				if !wheel {
+					a.emitErr("scroll", result.CodeUsage, "--at anchors a wheel dispatch and needs --wheel", nil)
+					return nil
+				}
+				// The wheel goes to the coordinate OR the selector's centre, not
+				// both — accepting a selector here would silently discard it.
+				if sel != "" {
+					a.emitErr("scroll", result.CodeUsage, "--at anchors the wheel at a coordinate and takes no selector; drop one or the other", nil)
+					return nil
+				}
+				p, err := parsePoint(at)
+				if err != nil {
+					a.emitErr("scroll", result.CodeUsage, err.Error(), nil)
+					return nil
+				}
+				anchor = &p
+			}
+			opts := chrome.ScrollOpts{Dx: dx, Dy: dy, Into: into, Wheel: wheel, At: anchor, Query: a.queryOpts()}
 			a.runResolved("scroll", func(ctx context.Context, b chrome.Browser, id string) (any, error) {
 				return b.Scroll(ctx, id, sel, opts)
 			})
@@ -637,6 +675,7 @@ func (a *App) cmdScroll() *cobra.Command {
 	c.Flags().Float64Var(&dy, "dy", 0, "vertical scroll delta in pixels (positive scrolls down)")
 	c.Flags().BoolVar(&into, "to", false, "scroll the selector into view instead of by a delta")
 	c.Flags().BoolVar(&wheel, "wheel", false, "dispatch a real mouse wheel (for grids that render on wheel, not scroll)")
+	c.Flags().StringVar(&at, "at", "", "with --wheel: anchor the wheel at this viewport coordinate \"x,y\" (for maps/canvases that zoom around the pointer)")
 	return c
 }
 

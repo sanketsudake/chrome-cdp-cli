@@ -348,6 +348,8 @@ func (s *server) dispatch(ctx context.Context, method string, args []json.RawMes
 		return b.EmulateGeo(ctx, argStr(args, 0), argF64(args, 1), argF64(args, 2))
 	case "EmulateReset":
 		return b.EmulateReset(ctx, argStr(args, 0))
+	case "Window":
+		return b.Window(ctx, argStr(args, 0), argWindow(args, 1))
 	case "Frames":
 		return b.Frames(ctx, argStr(args, 0))
 	case "Wait":
@@ -455,6 +457,7 @@ func argSel(a []json.RawMessage, i int) chrome.SelectOpts      { return arg[chro
 func argScroll(a []json.RawMessage, i int) chrome.ScrollOpts   { return arg[chrome.ScrollOpts](a, i) }
 func argSnap(a []json.RawMessage, i int) chrome.SnapOpts       { return arg[chrome.SnapOpts](a, i) }
 func argFind(a []json.RawMessage, i int) chrome.FindOpts       { return arg[chrome.FindOpts](a, i) }
+func argWindow(a []json.RawMessage, i int) chrome.WindowOpts   { return arg[chrome.WindowOpts](a, i) }
 func argKeys(a []json.RawMessage, i int) []chrome.KeyStroke    { return arg[[]chrome.KeyStroke](a, i) }
 func argKeyOpts(a []json.RawMessage, i int) chrome.KeyOpts     { return arg[chrome.KeyOpts](a, i) }
 func argPointer(a []json.RawMessage, i int) chrome.PointerOpts { return arg[chrome.PointerOpts](a, i) }
@@ -736,6 +739,10 @@ func (r *remoteBrowser) EmulateViewport(ctx context.Context, id string, w, h int
 func (r *remoteBrowser) EmulateGeo(ctx context.Context, id string, lat, lon float64) (map[string]any, error) {
 	var out map[string]any
 	return out, r.c.call(ctx, "EmulateGeo", &out, id, lat, lon)
+}
+func (r *remoteBrowser) Window(ctx context.Context, id string, opts chrome.WindowOpts) (chrome.WindowBounds, error) {
+	var out chrome.WindowBounds
+	return out, r.c.call(ctx, "Window", &out, id, opts)
 }
 func (r *remoteBrowser) EmulateReset(ctx context.Context, id string) (map[string]any, error) {
 	var out map[string]any

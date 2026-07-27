@@ -18,6 +18,8 @@ package chrome
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 
 	"github.com/chromedp/cdproto/runtime"
 )
@@ -80,4 +82,51 @@ func measureNode(ctx context.Context, objID runtime.RemoteObjectID, fnJS string)
 		return b, nil
 	}
 	return b, json.Unmarshal(raw, &b)
+}
+
+// pointProbe answers everything a coordinate gesture needs to know before it
+// dispatches, in ONE round trip: how big the viewport is (to reject a point
+// outside it) and what sits under the point (the evidence a caller gets
+// instead of an occlusion check).
+//
+// It lives here, beside the element-geometry primitive, because both answer
+// "where is this, in the page's coordinate space" — the contract this file
+// exists to keep single-valued.
+type pointProbe struct {
+	VW  float64        `json:"vw"`
+	VH  float64        `json:"vh"`
+	Hit map[string]any `json:"hit"`
+}
+
+// probePoint measures the viewport and, when wantHit is set, describes the
+// topmost element at p.
+//
+// The hit description is observability, never a precondition: a canvas app's
+// every coordinate resolves to the same <canvas>, which is exactly the case
+// coordinate addressing exists to serve. Skipping it when the caller has
+// nowhere to report it (a drag) saves the page-side walk entirely.
+func probePoint(ctx context.Context, p Point, wantHit bool) (pointProbe, error) {
+	expr := fmt.Sprintf(`(() => {
+  const want = %t, px = %g, py = %g;
+  const out = {vw: window.innerWidth, vh: window.innerHeight, hit: null};
+  if (!want) return out;
+  const el = document.elementFromPoint(px, py);
+  if (!el) return out;`+axNameHelpersJS+`
+  out.hit = {tag: el.tagName, id: el.id || undefined,
+             role: roleOf(el) || undefined, name: norm(accName(el)) || undefined};
+  return out;
+})()`, wantHit, p.X, p.Y)
+
+	var out pointProbe
+	res, exc, err := runtime.Evaluate(expr).WithReturnByValue(true).Do(ctx)
+	if err != nil {
+		return out, err
+	}
+	if exc != nil {
+		return out, fmt.Errorf("coordinate probe: %s", exc.Text)
+	}
+	if res == nil || len(res.Value) == 0 {
+		return out, errors.New("coordinate probe returned no value")
+	}
+	return out, json.Unmarshal([]byte(res.Value), &out)
 }

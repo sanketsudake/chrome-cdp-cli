@@ -250,17 +250,9 @@ func classifyCaptureErr(err error) (string, string, map[string]any) {
 // parseRegion parses `x,y,w,h` in page coordinates. Every rejection here is a
 // caller's typo, so the message names the expected shape.
 func parseRegion(s string) (*chrome.Rect, error) {
-	parts := strings.Split(strings.TrimSpace(s), ",")
-	if len(parts) != 4 {
-		return nil, fmt.Errorf("--region %q must be x,y,w,h (four numbers), got %d value(s)", s, len(parts))
-	}
-	var v [4]float64
-	for i, p := range parts {
-		f, err := strconv.ParseFloat(strings.TrimSpace(p), 64)
-		if err != nil || math.IsNaN(f) || math.IsInf(f, 0) {
-			return nil, fmt.Errorf("--region %q: %q is not a number", s, strings.TrimSpace(p))
-		}
-		v[i] = f
+	v, ok := parseFloats(s, 4)
+	if !ok {
+		return nil, fmt.Errorf("--region %q must be x,y,w,h — four numbers in page pixels", s)
 	}
 	if v[0] < 0 || v[1] < 0 {
 		return nil, fmt.Errorf("--region %q: x and y must not be negative", s)

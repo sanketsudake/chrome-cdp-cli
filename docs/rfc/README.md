@@ -54,7 +54,7 @@ The reproduction then contradicted the first diagnosis, which is why it is writt
 | [0011](0011-session-recording.md) | Session recording: `record` and GIF export | P2 | capture | Accepted — [#14](https://github.com/sanketsudake/chrome-cdp-cli/pull/14) |
 | [0012](0012-domain-allowlist.md) | Domain allow-list: bounding what the CLI may drive | P2 | safety | Accepted — [#12](https://github.com/sanketsudake/chrome-cdp-cli/pull/12) |
 | [0013](0013-consent-prompt-lifecycle.md) | Surviving Chrome's consent prompt | P0 | connection | Accepted — [#18](https://github.com/sanketsudake/chrome-cdp-cli/pull/18) |
-| [0014](0014-coordinate-space-interaction.md) | Coordinate-space interaction: `--at`, `tripleclick`, drop-zone upload, `window` | P0/P1 | input | Draft |
+| [0014](0014-coordinate-space-interaction.md) | Coordinate-space interaction: `--at`, `tripleclick`, drop-zone upload, `window` | P0/P1 | input | Partly accepted — [#22](https://github.com/sanketsudake/chrome-cdp-cli/pull/22) (`upload --drop` outstanding) |
 | [0015](0015-find-element-search.md) | `find`: ranked element search from a plain-language query | P0 | reading | Accepted — [#21](https://github.com/sanketsudake/chrome-cdp-cli/pull/21) |
 
 ## Dependency graph

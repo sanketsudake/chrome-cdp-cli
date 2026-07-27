@@ -52,14 +52,14 @@ func (c *CDP) Pointer(ctx context.Context, id, selector string, opts PointerOpts
 	// annotation needs no geometry of its own.
 	var markX, markY float64
 	core := chromedp.ActionFunc(func(actx context.Context) error {
-		nid, err := resolveNodeReady(actx, selector, opts.Query)
+		// One viewport reading per gesture: a drag validates two points, and
+		// nothing between them can resize the window.
+		gate := &viewportGate{}
+		x, y, hit, err := pointerOrigin(actx, selector, opts, gate)
 		if err != nil {
 			return err
 		}
-		x, y, err := settledNodePoint(actx, nid)
-		if err != nil {
-			return err
-		}
+		markX, markY = x, y
 		mods := input.Modifier(opts.Modifiers)
 
 		switch opts.Action {
@@ -71,7 +71,7 @@ func (c *CDP) Pointer(ctx context.Context, id, selector string, opts PointerOpts
 			// Agent Skill and the human formatter both read `clicked`. Routing the
 			// verb through this method must not change what it emits, so it keeps
 			// its own shape instead of adopting the x/y/name one.
-			out = map[string]any{"clicked": selector}
+			out = addHitEvidence(map[string]any{"clicked": pointerLabel(selector, opts)}, opts, x, y, hit)
 			return nil
 		case PointerHover:
 			// Dispatch the move and return. Whether the app rendered a tooltip is
@@ -88,12 +88,19 @@ func (c *CDP) Pointer(ctx context.Context, id, selector string, opts PointerOpts
 			if err := pointerClickSeq(actx, x, y, input.Left, 2, mods); err != nil {
 				return err
 			}
+		case PointerTripleClick:
+			// Three escalating press/release pairs — clickCount 1, then 2, then
+			// 3 — which is what a human triple-click puts on the wire and what
+			// Blink selects a paragraph on.
+			if err := pointerClickSeq(actx, x, y, input.Left, 3, mods); err != nil {
+				return err
+			}
 		case PointerRClick:
 			if err := pointerClickSeq(actx, x, y, input.Right, 1, mods); err != nil {
 				return err
 			}
 		case PointerDrag:
-			tx, ty, err := dragDestination(actx, x, y, opts)
+			tx, ty, err := dragDestination(actx, x, y, opts, gate)
 			if err != nil {
 				return err
 			}
@@ -104,18 +111,18 @@ func (c *CDP) Pointer(ctx context.Context, id, selector string, opts PointerOpts
 			if err := pointerDrag(actx, x, y, tx, ty, steps, opts.Hold, mods); err != nil {
 				return err
 			}
-			out = dragResult(selector, x, y, tx, ty, steps, opts)
+			out = dragResult(pointerLabel(selector, opts), x, y, tx, ty, steps, opts)
 			return nil
 		default:
 			return fmt.Errorf("unknown pointer action %q", opts.Action)
 		}
-		out = map[string]any{
+		out = addHitEvidence(map[string]any{
 			"action":    string(opts.Action),
 			"x":         x,
 			"y":         y,
-			"name":      selector,
+			"name":      pointerLabel(selector, opts),
 			"modifiers": modifierNames(opts.Modifiers),
-		}
+		}, opts, x, y, hit)
 		return nil
 	})
 	action, sink := withOptionalDialog(opts.Query, core)
@@ -132,7 +139,13 @@ func (c *CDP) Pointer(ctx context.Context, id, selector string, opts PointerOpts
 // dragDestination resolves where a drag ends: the centre of the --to element
 // (addressed with ToQuery, so --to-by works), or the (Dx, Dy) offset from the
 // source centre. The CLI guarantees exactly one form is set.
-func dragDestination(ctx context.Context, x, y float64, opts PointerOpts) (float64, float64, error) {
+func dragDestination(ctx context.Context, x, y float64, opts PointerOpts, gate *viewportGate) (float64, float64, error) {
+	if opts.ToAt != nil {
+		if err := gate.check(ctx, *opts.ToAt); err != nil {
+			return 0, 0, err
+		}
+		return opts.ToAt.X, opts.ToAt.Y, nil
+	}
 	if opts.To == "" {
 		return x + opts.Dx, y + opts.Dy, nil
 	}
@@ -149,6 +162,9 @@ func dragResult(selector string, fx, fy, tx, ty float64, steps int, opts Pointer
 	to := map[string]any{"x": tx, "y": ty}
 	if opts.To != "" {
 		to["name"] = opts.To
+	}
+	if opts.ToAt != nil {
+		to["at"] = true
 	}
 	return map[string]any{
 		"action":    string(opts.Action),
@@ -245,4 +261,63 @@ func pointerHold(ctx context.Context, d time.Duration) error {
 	case <-t.C:
 		return nil
 	}
+}
+
+// pointerOrigin decides where a gesture starts: an explicit coordinate, or an
+// element's settled, occlusion-verified centre.
+//
+// The two paths differ in more than resolution. An element centre is checked
+// for occlusion because the caller named a THING and expects to hit it; a
+// coordinate is checked only for being inside the viewport, because the
+// caller named a PLACE — second-guessing that would make every canvas app
+// unreachable, since elementFromPoint there always answers "the canvas".
+func pointerOrigin(ctx context.Context, selector string, opts PointerOpts, gate *viewportGate) (x, y float64, hit map[string]any, err error) {
+	if opts.At != nil {
+		// A drag reports both endpoints, not a hit, so it does not pay for the
+		// page-side element walk its envelope has nowhere to put.
+		if opts.Action == PointerDrag {
+			if err := gate.check(ctx, *opts.At); err != nil {
+				return 0, 0, nil, err
+			}
+			return opts.At.X, opts.At.Y, nil, nil
+		}
+		hit, err := gate.checkAndDescribe(ctx, *opts.At)
+		if err != nil {
+			return 0, 0, nil, err
+		}
+		return opts.At.X, opts.At.Y, hit, nil
+	}
+	nid, err := resolveNodeReady(ctx, selector, opts.Query)
+	if err != nil {
+		return 0, 0, nil, err
+	}
+	x, y, err = settledNodePoint(ctx, nid)
+	return x, y, nil, err
+}
+
+// pointerLabel is what the envelope calls the gesture's target: the selector,
+// or the coordinate when there was no selector.
+func pointerLabel(selector string, opts PointerOpts) string {
+	if opts.At != nil {
+		return fmt.Sprintf("%g,%g", opts.At.X, opts.At.Y)
+	}
+	return selector
+}
+
+// addHitEvidence attaches the coordinate form's evidence — the point acted on
+// and what sat under it — to an envelope. A no-op for the selector form, which
+// already names its target.
+//
+// The coordinate form needs it because it is deliberately NOT occlusion-checked:
+// the coordinate is the intent, so the caller gets the evidence to verify where
+// it landed rather than a refusal it did not ask for.
+func addHitEvidence(out map[string]any, opts PointerOpts, x, y float64, hit map[string]any) map[string]any {
+	if opts.At == nil {
+		return out
+	}
+	out["hit"] = hit
+	if _, ok := out["x"]; !ok {
+		out["x"], out["y"] = x, y
+	}
+	return out
 }

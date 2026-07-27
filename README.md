@@ -14,6 +14,7 @@ chrome-cdp open https://example.com     # open a tab, get its id
 chrome-cdp snap --role button           # see what's clickable — by accessible name
 chrome-cdp find "login button"          # or describe it and get ranked matches
 chrome-cdp click --by name "Sign in"    # act by meaning, not a brittle CSS id
+chrome-cdp click --at 512,340           # or at a pixel, for canvas/WebGL surfaces
 ```
 
 Because it attaches to the browser you're already using, an app you're signed into loads **authenticated** — no headless browser, no second login, no credential ever typed.

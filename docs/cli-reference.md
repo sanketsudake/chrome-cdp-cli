@@ -275,17 +275,19 @@ A never-settling promise is bounded by `--timeout` (exit 4), and the connection 
 
 | Command | Does |
 |---------|------|
-| `click <selector>` | click at the element's occlusion-verified centre |
-| `hover <selector>` | move the pointer there without pressing — reveals hover-only menus and tooltips |
-| `dblclick <selector>` | double-click (one `dblclick` event, `detail: 2`) — grid cells that edit on double-click |
-| `rclick <selector>` | right-click, opening the context menu |
-| `drag <selector> (--to <sel> \| --dx <p> --dy <p>)` | press, move, release — reordering, kanban, sliders |
+| `click (<selector> \| --at <x,y>)` | click at the element's occlusion-verified centre, or at a viewport coordinate |
+| `hover (<selector> \| --at <x,y>)` | move the pointer there without pressing — reveals hover-only menus and tooltips |
+| `dblclick (<selector> \| --at <x,y>)` | double-click (one `dblclick` event, `detail: 2`) — grid cells that edit on double-click |
+| `tripleclick (<selector> \| --at <x,y>)` | triple-click to select a whole text block (the prelude to copy or overwrite) |
+| `rclick (<selector> \| --at <x,y>)` | right-click, opening the context menu |
+| `drag (<selector> \| --at <x,y>) (--to <sel> \| --to-at <x,y> \| --dx <p> --dy <p>)` | press, move, release — reordering, kanban, sliders, canvas strokes |
 | `key [selector] <keyspec>` | press keys that aren't literal text (`Escape`, `Tab`, `cmd+a`, `ArrowDown`) |
 | `type <selector> <text>` | type via real keystrokes (**appends**; end with `\n` to press Enter) |
 | `fill <selector> <value>` | set a field, **replacing** its content (clears, then types) |
 | `select <field> <option>` | choose an option in a prompt / combobox / cascade / native `<select>` |
 | `upload <selector> <path> [<path>...]` | attach local files to an `<input type=file>` |
-| `scroll [selector] [--dx <p>] [--dy <p>] [--to] [--wheel]` | scroll by a delta, `--to` a selector into view, or a real `--wheel` |
+| `scroll [selector] [--dx <p>] [--dy <p>] [--to] [--wheel] [--at <x,y>]` | scroll by a delta, `--to` a selector into view, or a real `--wheel` (anchored with `--at`) |
+| `window size <w> <h>` / `window info` | resize or report the **real** Chrome window (not viewport emulation) |
 | `attr get\|list\|set\|rm <selector> [name] [value]` | read/write element attributes |
 
 `click`, `hover`, `dblclick`, `rclick` and `drag` are one driver method behind five names: they resolve the identical occlusion-verified centre and all take `--modifiers` (`ctrl`/`shift`/`alt`/`cmd`, joined with `+`) — `click --modifiers cmd` is the multi-select in a table.
@@ -380,6 +382,58 @@ chrome-cdp upload --by label "Receipt" ./receipt.pdf
 chrome-cdp upload "#attachments" a.pdf b.png c.csv         # a `multiple` input
 chrome-cdp upload "input[type=file]" ~/docs/report.pdf --wait-text "Uploaded"
 ```
+
+#### Acting at a coordinate — `--at x,y`
+
+Every addressing mode answers "where is the thing I named". `--at` takes the answer as given:
+
+```sh
+chrome-cdp screenshot --scale 1 -o look.png   # look
+chrome-cdp click --at 512,340                 # act on what you saw
+chrome-cdp drag --at 120,400 --to-at 620,400 --steps 30
+chrome-cdp scroll --wheel --at 512,340 --dy -240
+```
+
+This is the only way to reach a **canvas or WebGL surface** — a drawing tool, a map, a chart, a PDF viewer, a game.
+The accessibility tree sees one node there, so no selector can address anything inside it.
+It is also the shape a screenshot-reading agent already thinks in: look at pixels, act at pixels.
+
+**The coordinate contract.**
+Coordinates are CSS pixels, origin at the top-left of the layout viewport, x right, y down — the same space `snap` geometry, `find`'s `center`, and the pointer verbs' own centre resolution use.
+A `screenshot --scale 1` capture maps onto that space 1:1, which is what makes the look-then-act loop work; capture at `--scale 1` for coordinate work, because the default capture is device pixels and a HiDPI display makes those differ.
+
+A coordinate outside the viewport is an **error** (`coordinate_out_of_bounds`, exit 4) carrying the measured `viewport`, not a silent clamp.
+A wrong-sized window is the usual cause, and clamping would turn a detectable mistake into a click on whatever sits at the edge.
+`scroll` first, then act, when the target is off-screen.
+
+`--at` bypasses element addressing entirely, so it cannot combine with a selector or with `--by`/`--role`/`--nth`/`--match`/`--in-row` — that pairing is a usage error (exit 2), rejected before Chrome is contacted.
+Mixed forms are fine where they make sense: `drag "#card" --to-at 900,300` and `drag --at 100,100 --to "Trash" --to-by name` both work.
+
+Unlike an element click, a coordinate click is **not** occlusion-checked: the coordinate *is* the intent, and second-guessing it would break every canvas app, where `elementFromPoint` always answers "the canvas".
+The result reports a `hit` — the tag, id, role, and accessible name of whatever sat under the point — so you can verify where it landed instead:
+
+```json
+{ "ok": true, "command": "click",
+  "result": { "clicked": "512,340", "x": 512, "y": 340,
+              "hit": {"tag": "CANVAS", "id": "board", "role": "img", "name": "Floor plan"} } }
+```
+
+#### `window` — the real window, not the emulated viewport
+
+`emulate viewport` tells the page it is a different size; the window on screen never moves, so a screenshot still shows the old one.
+`window size` moves the window you can actually see:
+
+```sh
+chrome-cdp window size 1280 800    # make coordinates reproducible
+chrome-cdp window info             # {left, top, width, height, state}
+```
+
+Use `window size` before a coordinate workflow so the pixels you read stay valid on the next run, and `emulate viewport` when you are testing responsive breakpoints.
+
+`window size` is checked at the **browser** level under a policy: it resizes the window every tab shares, so an allow-list naming one origin does not authorize it (the same rule `raw --browser` follows), and `--policy-off` is the explicit way through.
+`window info` reads only the window's own geometry and stays per-target.
+The reported bounds are read back **after** the change, because the window manager may clamp a request to the screen — a clamped resize should not look like a successful one.
+A maximized or fullscreen window is returned to `normal` first, since Chrome refuses a size change otherwise.
 
 ### Waiting
 
