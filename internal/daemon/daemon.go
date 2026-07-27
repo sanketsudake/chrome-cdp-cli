@@ -284,6 +284,8 @@ func (s *server) dispatch(ctx context.Context, method string, args []json.RawMes
 			return nil, err
 		}
 		return recordResult{Frames: frames, Meta: meta}, nil
+	case "RecordRestore":
+		return nil, b.RecordRestore(ctx, argStr(args, 0), argFrames(args, 1), argAnyMap(args, 2))
 	case "RecordStatus":
 		return b.RecordStatus(ctx, argStr(args, 0))
 	case "RecordCancel":
@@ -367,6 +369,8 @@ func argShot(a []json.RawMessage, i int) chrome.ShotOpts       { return arg[chro
 func argPDF(a []json.RawMessage, i int) chrome.PDFOpts         { return arg[chrome.PDFOpts](a, i) }
 func argUpload(a []json.RawMessage, i int) chrome.UploadOpts   { return arg[chrome.UploadOpts](a, i) }
 func argRecord(a []json.RawMessage, i int) chrome.RecordOpts   { return arg[chrome.RecordOpts](a, i) }
+func argFrames(a []json.RawMessage, i int) []chrome.Frame      { return arg[[]chrome.Frame](a, i) }
+func argAnyMap(a []json.RawMessage, i int) map[string]any      { return arg[map[string]any](a, i) }
 func argMap(a []json.RawMessage, i int) map[string]string      { return arg[map[string]string](a, i) }
 func argConsole(a []json.RawMessage, i int) chrome.ConsoleOpts { return arg[chrome.ConsoleOpts](a, i) }
 func argNet(a []json.RawMessage, i int) chrome.NetOpts         { return arg[chrome.NetOpts](a, i) }
@@ -637,6 +641,10 @@ func (r *remoteBrowser) RecordStop(ctx context.Context, id string) ([]chrome.Fra
 	var out recordResult
 	err := r.c.call(ctx, "RecordStop", &out, id)
 	return out.Frames, out.Meta, err
+}
+func (r *remoteBrowser) RecordRestore(ctx context.Context, id string, frames []chrome.Frame, meta map[string]any) error {
+	var out any
+	return r.c.call(ctx, "RecordRestore", &out, id, frames, meta)
 }
 func (r *remoteBrowser) RecordStatus(ctx context.Context, id string) (map[string]any, error) {
 	var out map[string]any

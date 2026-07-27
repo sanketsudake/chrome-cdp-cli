@@ -166,6 +166,60 @@ func TestCadenceThrottleIsNotLoss(t *testing.T) {
 	}
 }
 
+// TestRecordRestoreMakesTheExportRetryable is the driver half of "a failed
+// export must not cost the recording": RecordStop is destructive, so the CLI
+// hands the frames back when the write fails, and the next `record stop` gets
+// them.
+func TestRecordRestoreMakesTheExportRetryable(t *testing.T) {
+	t.Parallel()
+	c := &CDP{rec: map[string]*recorder{}}
+	base := time.Unix(1700000000, 0).UTC()
+	frames := []Frame{
+		{Data: []byte("one"), TS: base},
+		{Data: []byte("two"), TS: base.Add(250 * time.Millisecond)},
+	}
+	meta := map[string]any{"dropped_frames": 40, "truncated": true, "reason": recordReasonFrames, "fps": 4.0}
+
+	if err := c.RecordRestore(t.Context(), "aa11", frames, meta); err != nil {
+		t.Fatalf("RecordRestore: %v", err)
+	}
+	got, gotMeta, err := c.RecordStop(t.Context(), "aa11")
+	if err != nil {
+		t.Fatalf("RecordStop after a restore: %v", err)
+	}
+	if len(got) != 2 || !bytes.Equal(got[0].Data, []byte("one")) || !bytes.Equal(got[1].Data, []byte("two")) {
+		t.Fatalf("got %d frames back: %v", len(got), got)
+	}
+	// The CAPTURE's accounting survives: a restored recording that reported a
+	// clean run would erase the fact that the ring evicted 40 frames.
+	if gotMeta["dropped_frames"] != 40 || gotMeta["truncated"] != true || gotMeta["reason"] != recordReasonFrames {
+		t.Errorf("meta = %v, want the original capture's accounting", gotMeta)
+	}
+	if gotMeta["restored"] != true || gotMeta["frames"] != 2 {
+		t.Errorf("meta = %v, want restored:true and frames:2", gotMeta)
+	}
+	// And it is gone again, so a second retry is the ordinary "nothing to stop".
+	if _, _, err := c.RecordStop(t.Context(), "aa11"); !IsNotRecording(err) {
+		t.Errorf("second stop = %v, want ErrNotRecording", err)
+	}
+}
+
+// TestRecordRestoreDoesNotClobberALiveRecording: a new recording started while
+// the export was failing wins. Overwriting a live capture with a dead one to
+// make room for a retry is the worse trade.
+func TestRecordRestoreDoesNotClobberALiveRecording(t *testing.T) {
+	t.Parallel()
+	live := testRecorder(t, RecordOpts{FPS: 4, MaxFrames: 10}, 0)
+	c := &CDP{rec: map[string]*recorder{"aa11": live}}
+	err := c.RecordRestore(t.Context(), "aa11", []Frame{{Data: []byte("x")}}, nil)
+	if !IsAlreadyRecording(err) {
+		t.Errorf("RecordRestore over a live recording = %v, want ErrAlreadyRecording", err)
+	}
+	if c.recorder("aa11") != live {
+		t.Error("the live recording was replaced")
+	}
+}
+
 // TestAttachMarks is the correlation half of annotation: which frames an action
 // lands on. Drawing is internal/encode's job; deciding WHERE is this one's.
 func TestAttachMarks(t *testing.T) {

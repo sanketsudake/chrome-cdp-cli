@@ -702,7 +702,12 @@ chrome-cdp record stop -o demo.gif
 | `--loop <n>` | `0` (forever) | how many times the GIF plays; `--loop 3` plays three times |
 | `--annotate` | from `record start` | draw the action markers |
 
-The result reports `path`, `format`, `frames`, `fps`, `duration_ms`, `width`, `height`, `bytes`, `annotated`, and the capture's own `dropped_frames` / `truncated` / `reason`.
+The result reports `path`, `format`, `frames`, `fps`, `duration_ms`, `width`, `height`, `bytes`, `annotated`, `decode_failures`, and the capture's own `dropped_frames` / `truncated` / `reason`.
+
+**A failed export does not cost you the recording.**
+Everything that can be checked before the frames are handed over is: the encoder's availability, and whether the output path can actually be written — a missing directory, a path that is itself a directory, or a directory you have no permission to write to are all errors with the recording untouched, so `record stop` can be retried at a different path.
+If the write fails anyway (a full disk, an `ffmpeg` that dies) the frames are handed back to the daemon and the error says so, so the retry still works.
+A frame the encoder cannot read is skipped and counted in `decode_failures` rather than failing the export; only a recording with no decodable frame at all is an error.
 
 **Frames live in the daemon, not in the command that started the recording.**
 That is what makes a run which crashed half way still have a recording of the failure: `record stop` afterwards writes it, and it writes it even when the tab itself has since closed (the result then says `tab_closed: true`).

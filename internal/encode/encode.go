@@ -163,6 +163,11 @@ type Result struct {
 	Annotated  bool
 	Reduced    bool // --max-size changed the scale and/or the frame count
 
+	// DecodeFailures counts captured frames that did not decode as an image and
+	// were therefore left out. They are reported rather than fatal: see
+	// decodeAll.
+	DecodeFailures int
+
 	// WithinMaxSize reports whether the ceiling was actually met. False means
 	// the reduction ladder bottomed out first — a best-effort bound, reported
 	// rather than silently missed.
@@ -233,11 +238,16 @@ func Encode(frames []Frame, opts Options) (Result, error) {
 	if opts.FPS <= 0 {
 		opts.FPS = 4
 	}
-	imgs, err := decodeAll(frames)
+	frames, imgs, failures, err := decodeAll(frames)
 	if err != nil {
 		return Result{}, err
 	}
-	return reduce(frames, imgs, opts)
+	res, err := reduce(frames, imgs, opts)
+	if err != nil {
+		return Result{}, err
+	}
+	res.DecodeFailures = failures
+	return res, nil
 }
 
 // reduce runs the export, re-running it at a smaller scale (and then a lower
@@ -415,16 +425,36 @@ func stride(frames []Frame, imgs []image.Image, n int) ([]Frame, []image.Image) 
 
 // decodeAll decodes every captured frame once, so a re-encode at a smaller
 // scale costs no second decode.
-func decodeAll(frames []Frame) ([]image.Image, error) {
-	out := make([]image.Image, 0, len(frames))
+//
+// A frame that does not decode is SKIPPED, and the count is returned so the
+// envelope can report it. Aborting on the first failure — as this once did — was
+// the wrong trade twice over: the capture path deliberately retains frames whose
+// header it could not read, so an undecodable frame is a normal occurrence
+// rather than a corruption signal; and by the time Encode runs the recording has
+// already been handed over, so refusing costs the user 599 good frames because
+// of frame 342. Losing one frame is acceptable; losing the recording is not.
+//
+// Nothing decodable at all is still an error: there is no recording to save.
+func decodeAll(frames []Frame) ([]Frame, []image.Image, int, error) {
+	kept := make([]Frame, 0, len(frames))
+	imgs := make([]image.Image, 0, len(frames))
+	failures, first := 0, error(nil)
 	for i, f := range frames {
 		img, _, err := image.Decode(bytes.NewReader(f.Data))
 		if err != nil {
-			return nil, fmt.Errorf("frame %d does not decode as an image: %w", i, err)
+			failures++
+			if first == nil {
+				first = fmt.Errorf("frame %d does not decode as an image: %w", i, err)
+			}
+			continue
 		}
-		out = append(out, img)
+		kept = append(kept, f)
+		imgs = append(imgs, img)
 	}
-	return out, nil
+	if len(imgs) == 0 {
+		return nil, nil, failures, fmt.Errorf("none of the %d captured frames decoded as an image: %w", len(frames), first)
+	}
+	return kept, imgs, failures, nil
 }
 
 // scaledSize is the canvas size at a scale, never smaller than one pixel.

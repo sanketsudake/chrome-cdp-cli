@@ -32,6 +32,11 @@ type recordBrowser struct {
 	frames    int            // frames RecordStop hands back
 	meta      map[string]any // extra fields the driver would report
 	lastOpts  chrome.RecordOpts
+	// corruptFrame, when > 0, makes that 1-based frame undecodable — the case
+	// the capture path deliberately admits.
+	corruptFrame int
+	// restored counts the frames a failed export handed back.
+	restored int
 }
 
 func newRecordBrowser(t *testing.T) *recordBrowser {
@@ -62,8 +67,12 @@ func (b *recordBrowser) RecordStop(context.Context, string) ([]chrome.Frame, map
 	base := time.Unix(1700000000, 0)
 	out := make([]chrome.Frame, 0, b.frames)
 	for i := range b.frames {
+		data := testFramePNG(uint8(40 * i))
+		if b.corruptFrame == i+1 {
+			data = []byte("\xff\xd8\xff not an image")
+		}
 		out = append(out, chrome.Frame{
-			Data:      testFramePNG(uint8(40 * i)),
+			Data:      data,
 			TS:        base.Add(time.Duration(i) * 250 * time.Millisecond),
 			Width:     20,
 			Height:    16,
@@ -77,6 +86,16 @@ func (b *recordBrowser) RecordStop(context.Context, string) ([]chrome.Frame, map
 		meta[k] = v
 	}
 	return out, meta, nil
+}
+
+func (b *recordBrowser) RecordRestore(_ context.Context, _ string, frames []chrome.Frame, _ map[string]any) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.recording {
+		return chrome.ErrAlreadyRecording
+	}
+	b.recording, b.restored = true, len(frames)
+	return nil
 }
 
 func (b *recordBrowser) RecordStatus(context.Context, string) (map[string]any, error) {
@@ -386,6 +405,113 @@ func TestRecordMissingEncoderKeepsTheFrames(t *testing.T) {
 	}
 	if _, err := os.Stat(out); err != nil {
 		t.Errorf("no file written: %v", err)
+	}
+}
+
+// TestRecordUnwritableOutputKeepsTheFrames: a path that cannot be written is
+// caught BEFORE the recording is drained, exactly as a missing ffmpeg is.
+//
+// Draining first and discovering the directory does not exist afterwards
+// destroys the recording for a typo, with no retry available — `record stop`
+// then answers "no recording is active on this tab".
+func TestRecordUnwritableOutputKeepsTheFrames(t *testing.T) {
+	t.Parallel()
+	tmp := t.TempDir()
+	cases := map[string][]string{
+		"a directory that does not exist": {"-o", filepath.Join(tmp, "nope", "demo.gif")},
+		"an output path that is a dir":    {"-o", tmp},
+		"a frames dir whose parent is a file": {
+			"--format", "frames", "-o", filepath.Join(tmp, "blocker", "out"),
+		},
+	}
+	if err := os.WriteFile(filepath.Join(tmp, "blocker"), []byte("not a directory"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for name, extra := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			b := newRecordBrowser(t)
+			run(t, b, "record", "start", "--target", "aa11", "--json")
+			args := append([]string{"record", "stop", "--target", "aa11", "--json"}, extra...)
+			env, _, code := run(t, b, args...)
+			if code == 0 {
+				t.Fatalf("%v reported success", args)
+			}
+			if b.stops != 0 {
+				t.Fatalf("the recording was drained before the output path was checked — the frames are gone")
+			}
+			if env["error"] == nil {
+				t.Fatalf("no error envelope: %v", env)
+			}
+			// And the recording is still there to export somewhere writable.
+			out := filepath.Join(t.TempDir(), "retry.gif")
+			if _, _, code := run(t, b, "record", "stop", "-o", out, "--target", "aa11", "--json"); code != 0 {
+				t.Fatalf("the retry after a bad path failed: exit %d", code)
+			}
+			if _, err := os.Stat(out); err != nil {
+				t.Errorf("the retry wrote no file: %v", err)
+			}
+		})
+	}
+}
+
+// TestRecordFailedWriteRestoresTheRecording is the residual case the path check
+// cannot cover: the directory was writable when it was checked and the write
+// failed anyway (a full disk, a race, an ffmpeg that died).
+//
+// The frames were already drained by then, so they are handed back to the daemon
+// rather than dropped — otherwise one transient failure ends the recording with
+// no retry.
+func TestRecordFailedWriteRestoresTheRecording(t *testing.T) {
+	t.Parallel()
+	b := newRecordBrowser(t)
+	dir := t.TempDir()
+	// A directory where the first PNG has to go: os.WriteFile cannot overwrite a
+	// directory, and the export path itself is perfectly writable, so this fails
+	// only after the recording has been drained.
+	if err := os.Mkdir(filepath.Join(dir, "frame-00001.png"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	run(t, b, "record", "start", "--target", "aa11", "--json")
+
+	env, _, code := run(t, b, "record", "stop", "--format", "frames", "-o", dir, "--target", "aa11", "--json")
+	if code == 0 {
+		t.Fatalf("the blocked write reported success: %v", env)
+	}
+	if b.stops != 1 {
+		t.Fatalf("the recording was not drained; this test proves nothing (stops = %d)", b.stops)
+	}
+	if b.restored != 3 {
+		t.Fatalf("the driver got %d frames back, want the 3 it handed over — a failed export must not destroy the recording", b.restored)
+	}
+
+	// The whole point: the export can be retried.
+	out := filepath.Join(t.TempDir(), "retry.gif")
+	if env, _, code := run(t, b, "record", "stop", "-o", out, "--target", "aa11", "--json"); code != 0 {
+		t.Fatalf("the retry after a failed write failed: exit %d, %v", code, env["error"])
+	}
+	if _, err := os.Stat(out); err != nil {
+		t.Errorf("the retry wrote no file: %v", err)
+	}
+}
+
+// TestRecordReportsDecodeFailures: a frame the encoder could not read is counted
+// in the envelope rather than costing the export.
+func TestRecordReportsDecodeFailures(t *testing.T) {
+	t.Parallel()
+	b := newRecordBrowser(t)
+	b.corruptFrame = 1
+	run(t, b, "record", "start", "--target", "aa11", "--json")
+	env, _, code := run(t, b, "record", "stop", "-o", filepath.Join(t.TempDir(), "x.gif"), "--target", "aa11", "--json")
+	if code != 0 {
+		t.Fatalf("one undecodable frame failed the export: exit %d, %v", code, env["error"])
+	}
+	res := resultOf(t, env)
+	if n, _ := res["decode_failures"].(float64); n != 1 {
+		t.Errorf("decode_failures = %v, want 1", res["decode_failures"])
+	}
+	if res["frames"].(float64) != 2 {
+		t.Errorf("frames = %v, want the 2 that decoded", res["frames"])
 	}
 }
 

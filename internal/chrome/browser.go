@@ -411,6 +411,16 @@ type Browser interface {
 	// Encoding happens in the CLI, via internal/encode, so one capture can be
 	// exported in more than one format and annotation stays an export decision.
 	RecordStop(ctx context.Context, targetID string) ([]Frame, map[string]any, error)
+	// RecordRestore hands a drained recording back, so an export that failed
+	// after RecordStop can be retried instead of costing the user the frames.
+	//
+	// It exists because RecordStop is destructive and encoding is not free of
+	// failure modes the CLI cannot rule out in advance (a full disk, an ffmpeg
+	// that dies). Everything that CAN be checked first is — the encoder's
+	// availability and the output path both are — and this covers the rest. The
+	// restored recording is not capturing: it holds the frames for a retry, and
+	// `record cancel` discards it like any other.
+	RecordRestore(ctx context.Context, targetID string, frames []Frame, meta map[string]any) error
 	// RecordStatus reports whether a recording is active and how much it holds.
 	RecordStatus(ctx context.Context, targetID string) (map[string]any, error)
 	// RecordCancel discards a recording without exporting anything.

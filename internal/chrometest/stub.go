@@ -110,6 +110,12 @@ func (StubBrowser) RecordStop(context.Context, string) ([]chrome.Frame, map[stri
 		}, nil
 }
 
+// RecordRestore accepts a re-seated recording and forgets it: a stub has nowhere
+// to hold one, and every test that cares about the retry overrides this.
+func (StubBrowser) RecordRestore(context.Context, string, []chrome.Frame, map[string]any) error {
+	return nil
+}
+
 func (StubBrowser) RecordStatus(context.Context, string) (map[string]any, error) {
 	return map[string]any{"action": "status", "recording": false, "frames": 0}, nil
 }

@@ -265,7 +265,62 @@ func recordExportOpts(cmd *cobra.Command, out, format, maxSize string, loop int,
 	if f == encode.FormatFrames && out == "-" {
 		return exportOpts{}, usageErr("--format frames writes a directory of PNGs, which cannot go to stdout — give -o a directory")
 	}
+	if err := checkExportTarget(o); err != nil {
+		// Also before RecordStop, and for the same reason the encoder probe is:
+		// a typo'd directory must cost the user an error, not their recording.
+		return exportOpts{}, &result.Err{Code: result.CodeGeneric, Message: err.Error()}
+	}
 	return o, nil
+}
+
+// checkExportTarget reports whether the artifact could actually be written,
+// BEFORE the recording is drained.
+//
+// This is the same guarantee VS-10 gives the missing-encoder case, extended to
+// the failure that is far likelier to happen: `record stop -o /nonexistent/demo.gif`
+// used to drain the recording, discover the directory at write time, and leave
+// the user with exit 1 and nothing to retry with. Writability is probed by
+// actually creating a file, because the permission bits alone do not answer the
+// question on every platform or filesystem.
+func checkExportTarget(o exportOpts) error {
+	if o.out == "-" {
+		return nil
+	}
+	dir := "."
+	switch {
+	case o.format == encode.FormatFrames:
+		// The directory itself is created at write time, so the nearest existing
+		// ancestor is what has to be writable.
+		if o.out != "" {
+			dir = o.out
+			for {
+				if fi, err := os.Stat(dir); err == nil {
+					if !fi.IsDir() {
+						return fmt.Errorf("cannot write the frames to %q: it is a file, not a directory", dir)
+					}
+					break
+				}
+				parent := filepath.Dir(dir)
+				if parent == dir {
+					break
+				}
+				dir = parent
+			}
+		}
+	case o.out != "":
+		if fi, err := os.Stat(o.out); err == nil && fi.IsDir() {
+			return fmt.Errorf("cannot write the recording to %q: it is a directory", o.out)
+		}
+		dir = filepath.Dir(o.out)
+	}
+	f, err := os.CreateTemp(dir, ".chrome-cdp-record-*")
+	if err != nil {
+		return fmt.Errorf("cannot write the recording to %q: %w (the recording is untouched — retry with a writable path)", dir, err)
+	}
+	name := f.Name()
+	_ = f.Close()
+	_ = os.Remove(name)
+	return nil
 }
 
 // resolveExportFormat decides the export format from --format and the output
@@ -352,7 +407,7 @@ func (a *App) runRecordStop(opts exportOpts) {
 		a.emitErr("record", code, msg, details)
 		return
 	}
-	a.exportRecording("record", tgt, frames, meta, opts)
+	a.exportRecording(ctx, b, "record", tgt, frames, meta, opts)
 }
 
 // strandedRecordingID reports the concrete target id to try anyway when target
@@ -408,11 +463,15 @@ func (a *App) stopStrandedRecording(ctx context.Context, id string, opts exportO
 	}
 	// Say what happened: the recording is complete, the tab is not.
 	meta["tab_closed"] = true
-	a.exportRecording("record", &result.TargetInfo{ID: id}, frames, meta, opts)
+	a.exportRecording(ctx, b, "record", &result.TargetInfo{ID: id}, frames, meta, opts)
 }
 
 // exportRecording encodes the frames, writes them, and emits the envelope.
-func (a *App) exportRecording(command string, tgt *result.TargetInfo, frames []chrome.Frame, meta map[string]any, opts exportOpts) {
+//
+// Everything after this point is operating on a recording the daemon has already
+// let go of, so every failure below hands the frames back (see restoreRecording)
+// rather than ending the recording over a full disk.
+func (a *App) exportRecording(ctx context.Context, b chrome.Browser, command string, tgt *result.TargetInfo, frames []chrome.Frame, meta map[string]any, opts exportOpts) {
 	if len(frames) == 0 {
 		a.emitErr(command, result.CodeGeneric,
 			"the recording captured no frames — a screencast only produces them while the tab is rendering, "+
@@ -437,14 +496,14 @@ func (a *App) exportRecording(command string, tgt *result.TargetInfo, frames []c
 		if encode.IsNoEncoder(err) {
 			code = result.CodeUsage
 		}
-		a.emitErr(command, code, err.Error(), nil)
+		a.emitErr(command, code, a.restoreRecording(ctx, b, tgt, frames, meta, err), nil)
 		return
 	}
 
-	payload := recordResultPayload(meta, res)
+	payload := recordResultPayload(meta, res, opts)
 	path, werr := a.writeExport(res, opts)
 	if werr != nil {
-		a.emitErr(command, result.CodeGeneric, werr.Error(), nil)
+		a.emitErr(command, result.CodeGeneric, a.restoreRecording(ctx, b, tgt, frames, meta, werr), nil)
 		return
 	}
 	if path != "" {
@@ -458,9 +517,26 @@ func (a *App) exportRecording(command string, tgt *result.TargetInfo, frames []c
 	a.emitOK(command, tgt, payload)
 }
 
+// restoreRecording hands the frames back to the daemon after a failed export and
+// returns the message to report.
+//
+// The recording was drained by RecordStop and the export then failed, so without
+// this the user's answer to a full disk is a lost recording and a `record stop`
+// that says there is nothing to stop. A restore that itself fails is worth
+// saying out loud — it is the difference between "try again" and "it is gone".
+func (a *App) restoreRecording(ctx context.Context, b chrome.Browser, tgt *result.TargetInfo, frames []chrome.Frame, meta map[string]any, cause error) string {
+	if b == nil || tgt == nil || tgt.ID == "" {
+		return cause.Error()
+	}
+	if err := b.RecordRestore(ctx, tgt.ID, frames, meta); err != nil {
+		return fmt.Sprintf("%s (and the %d captured frames could not be handed back: %s)", cause.Error(), len(frames), err.Error())
+	}
+	return fmt.Sprintf("%s — the %d captured frames are still held, so `record stop` can be retried", cause.Error(), len(frames))
+}
+
 // recordResultPayload merges what the driver knows (how much was captured, what
 // the bounds discarded) with what the encoder knows (what was produced).
-func recordResultPayload(meta map[string]any, res encode.Result) map[string]any {
+func recordResultPayload(meta map[string]any, res encode.Result, opts exportOpts) map[string]any {
 	out := map[string]any{
 		"action":      "stop",
 		"format":      string(res.Format),
@@ -471,6 +547,10 @@ func recordResultPayload(meta map[string]any, res encode.Result) map[string]any 
 		"height":      res.Height,
 		"bytes":       res.Bytes,
 		"annotated":   res.Annotated,
+		// Frames the encoder could not read. Always present, because "how much of
+		// the capture reached the file" is not a question a caller should have to
+		// infer from a missing key.
+		"decode_failures": res.DecodeFailures,
 	}
 	// The capture's own accounting travels with the export: a caller has to be
 	// able to see that the ring evicted frames even though the file it got looks
@@ -661,7 +741,7 @@ func (r *sessionRecorder) finish() {
 		r.fail(code, msg, details)
 		return
 	}
-	r.a.exportRecording("record", r.tgt, frames, meta, r.export)
+	r.a.exportRecording(ctx, b, "record", r.tgt, frames, meta, r.export)
 }
 
 // fail reports a recording problem as its own envelope and stops trying.

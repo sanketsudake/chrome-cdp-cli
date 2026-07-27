@@ -170,6 +170,11 @@ type recorder struct {
 	truncated bool
 	reason    string
 
+	// restored is the accounting a re-seated recording carries (see
+	// RecordRestore). Non-nil means this recorder never captured anything itself
+	// and must report the original capture's numbers rather than its own.
+	restored map[string]any
+
 	queue     []pendingFrame
 	lastFrame time.Time // when a frame last ARRIVED, retained or not
 	lastData  []byte    // the last retained frame's bytes, for duplicate rejection
@@ -321,6 +326,60 @@ func (c *CDP) RecordStop(ctx context.Context, id string) ([]Frame, map[string]an
 	frames, meta := r.drain()
 	meta["action"] = "stop"
 	return frames, meta, nil
+}
+
+// RecordRestore re-seats a drained recording so a failed export can be retried.
+//
+// RecordStop is destructive by design — the frames are handed over in full, so
+// nothing is lost by the daemon forgetting them — but that is only true when the
+// caller succeeds in writing them. Everything the CLI can check before draining
+// it does check (the encoder's availability, the output path), and this covers
+// what is left: a full disk, an ffmpeg that dies, a frame that will not encode.
+// Without it, one transient failure ends the recording and the retry answers
+// "no recording is active on this tab".
+//
+// The restored recording is stopped: it holds frames for an export, it is not
+// capturing. A recording that started on the tab meanwhile wins — clobbering a
+// live capture to make room for a dead one would be the worse trade.
+func (c *CDP) RecordRestore(_ context.Context, id string, frames []Frame, meta map[string]any) error {
+	if len(frames) == 0 {
+		return ErrNotRecording
+	}
+	r := restoredRecorder(frames, meta)
+	c.recMu.Lock()
+	defer c.recMu.Unlock()
+	if _, ok := c.rec[id]; ok {
+		return ErrAlreadyRecording
+	}
+	c.rec[id] = r
+	return nil
+}
+
+// restoredRecorder builds a recorder that only holds frames.
+//
+// It has no tab context and no pump, so stopCapture must never reach Chrome:
+// consuming stopOnce here is what guarantees that, and it also makes finish()
+// return at once since exited is already closed.
+func restoredRecorder(frames []Frame, meta map[string]any) *recorder {
+	r := &recorder{
+		started:  time.Now(),
+		buf:      eventbuf.New[Frame](len(frames)),
+		max:      len(frames),
+		stopped:  true,
+		restored: meta,
+		wake:     make(chan struct{}, 1),
+		done:     make(chan struct{}),
+		exited:   make(chan struct{}),
+	}
+	r.stopOnce.Do(func() {})
+	close(r.done)
+	close(r.exited)
+	for _, f := range frames {
+		r.buf.Add(f)
+		r.size = append(r.size, len(f.Data))
+		r.bytes += len(f.Data)
+	}
+	return r
 }
 
 // RecordStatus reports the live state of a recording.
@@ -694,6 +753,19 @@ func (r *recorder) stat() map[string]any {
 }
 
 func (r *recorder) statLocked() map[string]any {
+	if r.restored != nil {
+		// A re-seated recording reports the CAPTURE's accounting: how much the
+		// ring evicted is a fact about the run, and recomputing it from a buffer
+		// that was filled by a restore would report a clean recording that was
+		// not one.
+		out := make(map[string]any, len(r.restored)+1)
+		for k, v := range r.restored {
+			out[k] = v
+		}
+		out["capturing"] = false
+		out["restored"] = true
+		return out
+	}
 	dropped := r.evicted + r.buf.Dropped()
 	return map[string]any{
 		"frames":         r.buf.Len(),

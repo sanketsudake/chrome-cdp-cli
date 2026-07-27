@@ -669,6 +669,45 @@ func TestEncodeRejectsNoFrames(t *testing.T) {
 	}
 }
 
+// TestUndecodableFrameIsSkippedNotFatal: one bad frame must not cost the whole
+// recording.
+//
+// The capture path deliberately admits frames whose header it could not read, so
+// this is reachable in normal use — and by the time Encode runs the recording has
+// already been drained, which made a single truncated JPEG the difference
+// between 599 usable frames and none.
+func TestUndecodableFrameIsSkippedNotFatal(t *testing.T) {
+	t.Parallel()
+	base := time.Unix(1700000000, 0)
+	frames := []Frame{
+		{Data: solidPNG(t, 12, 8, red), TS: base},
+		{Data: []byte("\xff\xd8\xff not a jpeg"), TS: base.Add(250 * time.Millisecond)},
+		{Data: solidPNG(t, 12, 8, blue), TS: base.Add(500 * time.Millisecond)},
+	}
+	res, err := Encode(frames, Options{Format: FormatGIF, FPS: 4})
+	if err != nil {
+		t.Fatalf("one undecodable frame killed the export: %v", err)
+	}
+	if res.Frames != 2 {
+		t.Errorf("frames = %d, want the 2 that decoded", res.Frames)
+	}
+	if res.DecodeFailures != 1 {
+		t.Errorf("DecodeFailures = %d, want 1 — the loss has to be reported, not hidden", res.DecodeFailures)
+	}
+	g, err := gif.DecodeAll(bytes.NewReader(res.Data))
+	if err != nil {
+		t.Fatalf("the export does not decode as a GIF: %v", err)
+	}
+	if len(g.Image) != 2 {
+		t.Errorf("decoded %d frames, want 2", len(g.Image))
+	}
+
+	// Nothing decodable at all is still an error: there is no recording to save.
+	if _, err := Encode([]Frame{{Data: []byte("junk")}}, Options{Format: FormatGIF, FPS: 4}); err == nil {
+		t.Error("an export with no decodable frame at all reported success")
+	}
+}
+
 func TestParseFormat(t *testing.T) {
 	t.Parallel()
 	cases := map[string]struct {
