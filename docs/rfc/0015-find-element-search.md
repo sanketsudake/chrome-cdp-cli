@@ -1,6 +1,6 @@
 # RFC-0015: `find` — ranked element search from a plain-language query
 
-- **Status:** Draft
+- **Status:** Accepted — implemented in [#21](https://github.com/sanketsudake/chrome-cdp-cli/pull/21)
 - **Priority:** P0
 - **Area:** reading
 - **Depends on:** — (builds on `snap`'s a11y-tree primitive and `e<id>` refs)
