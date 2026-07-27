@@ -243,6 +243,32 @@ func TestVerbsDenied(t *testing.T) {
 	}
 }
 
+// verbs_denied is the FIRST rule in the documented order, so it beats the
+// Exempt class too. An operator who writes `verbs_denied = ["recipe run"]` gets
+// a refusal, not silence: accepting a verb name in the config and then ignoring
+// it is a fail-open policy, which is worse than no policy at all.
+func TestVerbsDeniedBeatsExemptClass(t *testing.T) {
+	t.Parallel()
+	for _, verb := range []string{"recipe run", "session", "use", "daemon start"} {
+		if class, _ := Classify(verb); class != Exempt {
+			t.Fatalf("%s classifies as %s; this test is about the Exempt short-circuit", verb, class)
+		}
+		c := mustChecker(t, Config{VerbsDenied: []string{verb}})
+		d := c.Check("https://anything.test/", verb)
+		if d.Allowed {
+			t.Errorf("Check(%q) allowed via %q; an explicitly denied verb must be refused whatever its class", verb, d.Rule)
+		}
+		if d.Rule != "verbs_denied: "+verb {
+			t.Errorf("rule = %q, want %q so the refusal points at the line to edit", d.Rule, "verbs_denied: "+verb)
+		}
+	}
+	// An Exempt verb nobody denied is still not origin-checked.
+	c := mustChecker(t, Config{Allow: []string{"nothing.matches"}, VerbsDenied: []string{"recipe run"}})
+	if !c.Check("https://anything.test/", "use").Allowed {
+		t.Error("an undenied Exempt verb must stay exempt from the origin rules")
+	}
+}
+
 // TestExemptVerbsAreNotOriginChecked keeps tab lifecycle and meta commands
 // usable under a policy that refuses everything else.
 func TestExemptVerbsAreNotOriginChecked(t *testing.T) {

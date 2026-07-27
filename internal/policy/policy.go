@@ -358,16 +358,22 @@ func (c *Checker) Check(rawURL, verb string) Decision {
 	if !c.Active() {
 		return allowed("")
 	}
-	class, _ := Classify(verb)
-	if class == Exempt {
-		return allowed("exempt: " + verb)
-	}
-
+	// verbs_denied is first, ahead of the Exempt short-circuit: it names a verb
+	// rather than an origin, so there is no class it should not reach. The
+	// config validator already refuses a name that is not a known verb, so
+	// `verbs_denied = ["recipe run"]` accepted at load and then ignored here
+	// would be a policy that fails OPEN on exactly the verb the operator most
+	// wanted gone — and silently, which is worse than no policy.
 	if c.verbsDenied[verb] {
 		return Decision{
 			Rule:   "verbs_denied: " + verb,
 			Reason: fmt.Sprintf("verb %s is denied everywhere by policy", verb),
 		}
+	}
+
+	class, _ := Classify(verb)
+	if class == Exempt {
+		return allowed("exempt: " + verb)
 	}
 
 	// An origin we cannot pin down (about:blank, a data: URL, a chrome:// page,

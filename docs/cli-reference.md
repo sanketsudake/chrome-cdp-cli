@@ -720,6 +720,7 @@ One recording can therefore be exported both ways.
 `gif` and `frames` need nothing installed, and `gif` is the default because the dependency-free path should be the one that works out of the box.
 `mp4` and `webm` need `ffmpeg` on `PATH`, and its absence is a `usage` error naming the requirement — checked **before** the recording is drained, so the frames survive to be exported as a GIF instead.
 `--format` conflicting with the output extension is an error rather than a guess, since a WebM in a file called `demo.gif` plays nowhere.
+For `mp4` and `webm` the reported `width`/`height`/`fps`/`duration_ms` are what ffmpeg actually wrote: the canvas is rounded down to even dimensions (yuv420p requires them) and the frame rate is floored at 1, which any recording containing a pause reaches.
 
 **A window resized mid-recording is letterboxed, not stretched.**
 The canvas comes from the first frame; a later frame with a different shape is scaled to fit and padded, so the export never shows a page at an aspect ratio it never had.

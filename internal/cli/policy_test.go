@@ -1190,6 +1190,39 @@ func TestListRedactsHostlessTabs(t *testing.T) {
 	}
 }
 
+// `verbs_denied` beats the Exempt class, end to end.
+//
+// `recipe run` is Exempt, and both the checker and the CLI's enforcement hook
+// short-circuited on that before looking at verbs_denied — so an operator who
+// denied the one verb they most wanted gone (a file someone else wrote, driving
+// their authenticated browser) got silence. A policy that accepts an entry and
+// then ignores it fails open, which is worse than no policy.
+func TestVerbsDeniedRefusesAnExemptRecipeRun(t *testing.T) {
+	dir := t.TempDir()
+	recipes := filepath.Join(dir, ".chrome-cdp", "recipes")
+	if err := os.MkdirAll(recipes, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// The step targets an ALLOWED origin, so nothing but verbs_denied can stop
+	// it — and refusalBrowser fails the test if it runs anyway.
+	body := "name: probe\nsteps:\n  - run: [\"eval\", \"1\", \"--target\", \"aa11\"]\n"
+	if err := os.WriteFile(filepath.Join(recipes, "probe.yaml"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(dir)
+
+	b := refusing(t, target.Info{ID: "aa11", Title: "App", URL: "https://app.example.com/x"})
+	pol := config.Policy{Present: true, Enabled: true, Allow: []string{"*.example.com"}, VerbsDenied: []string{"recipe run"}}
+	app, out, errb := appWithPolicy(b, pol)
+
+	if code := app.Execute("recipe", "run", "probe"); code != result.ExitPermission {
+		t.Fatalf("exit = %d, want %d (permission denied)\nstdout: %s\nstderr: %s", code, result.ExitPermission, out.String(), errb.String())
+	}
+	if !strings.Contains(out.String()+errb.String(), "verb recipe run is denied everywhere by policy") {
+		t.Errorf("refusal does not name the rule:\nstdout: %s\nstderr: %s", out.String(), errb.String())
+	}
+}
+
 // A recipe is a file someone else wrote, run against your authenticated
 // browser. `recipe run` is classified Exempt because it touches no tab itself —
 // which is only safe if each STEP is checked on its own. This pins that.

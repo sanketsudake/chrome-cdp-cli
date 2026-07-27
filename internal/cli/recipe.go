@@ -356,6 +356,16 @@ func (a *App) runPlan(plan *recipe.Plan) {
 			"a recipe cannot run another recipe: "+plan.Recipe.Name+" was invoked from inside a running recipe (recursion is not part of this format)", nil)
 		return
 	}
+	// `recipe run` is Exempt from the origin rules — each step is checked on its
+	// own instead — but it is still a verb an operator can name in
+	// verbs_denied, and denying "run files other people wrote" is the most
+	// obvious thing to want from that list. Checking here rather than in the
+	// cobra RunE leaves `--dry-run` and `recipe show` available for reading an
+	// untrusted recipe, which is the point of both.
+	if perr := a.checkPolicy(a.policyVerb(), ""); perr != nil {
+		a.emitErr("recipe", perr.Code, perr.Message, perr.Details)
+		return
+	}
 	a.inRecipe = true
 	defer func() { a.inRecipe = false }()
 

@@ -9,6 +9,10 @@ import (
 	"image/gif"
 	"image/png"
 	"math/rand"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -566,6 +570,95 @@ func TestManyColoursStillEncodes(t *testing.T) {
 	}
 	if b := g.Image[0].Bounds(); b.Dx() != 64 || b.Dy() != 48 {
 		t.Errorf("frame bounds = %v, want 64x48", b)
+	}
+}
+
+// TestVideoGeometryReportsWhatFFmpegProduces is the pure half of "the envelope
+// must describe the file, not the request".
+//
+// Two things ffmpeg imposes and the result used to ignore: yuv420p needs even
+// dimensions (encodeVideo passes -vf scale=trunc(iw/2)*2:trunc(ih/2)*2, and
+// --max-size lands on an odd canvas about half the time), and -framerate is
+// floored at 1 — which any recording with pauses in it hits, since that is the
+// normal shape of a screencast.
+func TestVideoGeometryReportsWhatFFmpegProduces(t *testing.T) {
+	t.Parallel()
+	cases := map[string]struct {
+		w, h      int
+		fps       float64
+		frames    int
+		wantW     int
+		wantH     int
+		wantFPS   float64
+		wantDurMs int64
+	}{
+		"even canvas is unchanged": {100, 60, 4, 8, 100, 60, 4, 2000},
+		"odd canvas rounds down":   {101, 61, 4, 8, 100, 60, 4, 2000},
+		"a slow recording clamps":  {100, 60, 0.25, 5, 100, 60, 1, 5000},
+		"exactly 1fps":             {100, 60, 1, 3, 100, 60, 1, 3000},
+	}
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			w, h, fps, dur := videoGeometry(c.w, c.h, c.fps, c.frames)
+			if w != c.wantW || h != c.wantH || fps != c.wantFPS || dur != c.wantDurMs {
+				t.Errorf("videoGeometry(%d,%d,%v,%d) = %d,%d,%v,%d; want %d,%d,%v,%d",
+					c.w, c.h, c.fps, c.frames, w, h, fps, dur, c.wantW, c.wantH, c.wantFPS, c.wantDurMs)
+			}
+		})
+	}
+}
+
+// TestVideoResultMatchesTheFile is the same claim checked against ffprobe, which
+// is the only authority on what was written. Skipped where ffmpeg is absent —
+// the geometry itself is covered above without it.
+func TestVideoResultMatchesTheFile(t *testing.T) {
+	t.Parallel()
+	if err := Available(FormatMP4); err != nil {
+		t.Skipf("no ffmpeg: %v", err)
+	}
+	if _, err := exec.LookPath("ffprobe"); err != nil {
+		t.Skip("no ffprobe to check the file with")
+	}
+	// An odd canvas, and frames 5s apart so the average rate is well under 1fps.
+	base := time.Unix(1700000000, 0)
+	frames := make([]Frame, 0, 5)
+	for i := range 5 {
+		frames = append(frames, Frame{
+			Data: solidPNG(t, 101, 61, color.RGBA{R: uint8(30 * i), G: 0x40, B: 0x80, A: 0xFF}),
+			TS:   base.Add(time.Duration(i) * 5 * time.Second),
+		})
+	}
+	res, err := Encode(frames, Options{Format: FormatMP4, FPS: 4})
+	if err != nil {
+		t.Fatalf("Encode: %v", err)
+	}
+	path := filepath.Join(t.TempDir(), "out.mp4")
+	if err := os.WriteFile(path, res.Data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	out, err := exec.Command("ffprobe", "-v", "error", "-select_streams", "v:0",
+		"-show_entries", "stream=width,height,r_frame_rate,nb_frames",
+		"-of", "default=noprint_wrappers=1:nokey=1", path).Output()
+	if err != nil {
+		t.Fatalf("ffprobe: %v", err)
+	}
+	fields := strings.Fields(string(out))
+	if len(fields) < 3 {
+		t.Fatalf("ffprobe said %q", out)
+	}
+	gotW, gotH := fields[0], fields[1]
+	if gotW != strconv.Itoa(res.Width) || gotH != strconv.Itoa(res.Height) {
+		t.Errorf("the file is %sx%s, the envelope says %dx%d", gotW, gotH, res.Width, res.Height)
+	}
+	if fields[2] != "1/1" {
+		t.Errorf("ffprobe frame rate = %s, want 1/1 (the -framerate floor)", fields[2])
+	}
+	if res.FPS != 1 {
+		t.Errorf("Result.FPS = %v, want the 1 the file was written at", res.FPS)
+	}
+	if res.DurationMs != 5000 {
+		t.Errorf("Result.DurationMs = %d, want 5000 (5 frames at 1fps)", res.DurationMs)
 	}
 }
 

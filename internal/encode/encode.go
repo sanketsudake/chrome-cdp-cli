@@ -368,6 +368,9 @@ func encodeAt(frames []Frame, imgs []image.Image, opts Options, p plan) (Result,
 			res.Bytes += len(f.Data)
 		}
 	case FormatMP4, FormatWebM:
+		// Adopt ffmpeg's numbers BEFORE encoding, so the file and the envelope
+		// come from the same values rather than from the request and a guess.
+		res.Width, res.Height, res.FPS, res.DurationMs = videoGeometry(w, h, res.FPS, len(canvas))
 		data, err := encodeVideo(canvas, opts.Format, res.FPS)
 		if err != nil {
 			return Result{}, err
@@ -515,11 +518,29 @@ func encodePNGs(canvas []*image.RGBA) ([]File, error) {
 // error message, the availability probe, and the invocation cannot drift.
 const ffmpegBin = "ffmpeg"
 
+// videoGeometry is what ffmpeg will actually produce from a w×h canvas at fps,
+// and therefore what the envelope has to report.
+//
+// ffmpeg imposes two things the pre-encode numbers do not know about. yuv420p
+// requires even dimensions, which is why encodeVideo passes
+// -vf scale=trunc(iw/2)*2:trunc(ih/2)*2 — and a --max-size reduction lands on an
+// odd canvas about half the time, so a 100x60 file was being reported as
+// 101x61. And -framerate is floored at 1, which any recording containing a pause
+// hits: five frames five seconds apart were reported as fps 0.25 over 20250ms
+// for a file that is 1fps and five seconds long.
+func videoGeometry(w, h int, fps float64, frames int) (int, int, float64, int64) {
+	vfps := math.Max(fps, 1)
+	return w / 2 * 2, h / 2 * 2, vfps, int64(math.Round(float64(frames) / vfps * 1000))
+}
+
 // encodeVideo shells out to ffmpeg over a temporary PNG sequence.
 //
 // The frames go through the filesystem rather than a pipe because a PNG
 // sequence is the one input every ffmpeg build reads identically, and the
 // temporary directory is removed whatever happens.
+//
+// fps is expected to have been through videoGeometry already: clamping it here
+// instead is how the reported rate and the written rate came to disagree.
 func encodeVideo(canvas []*image.RGBA, f Format, fps float64) ([]byte, error) {
 	if err := Available(f); err != nil {
 		return nil, err
@@ -542,7 +563,7 @@ func encodeVideo(canvas []*image.RGBA, f Format, fps float64) ([]byte, error) {
 	out := filepath.Join(dir, "out."+string(f))
 	args := []string{
 		"-y", "-loglevel", "error",
-		"-framerate", fmt.Sprintf("%g", math.Max(fps, 1)),
+		"-framerate", fmt.Sprintf("%g", fps),
 		"-i", filepath.Join(dir, "frame-%05d.png"),
 		// H.264/VP9 in yuv420p require even dimensions, and a capture scaled by
 		// an arbitrary factor is odd about half the time.
