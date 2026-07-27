@@ -8,6 +8,9 @@
 # local wayfinder planning tracker
 /.scratch/
 
+# macOS finder metadata
+.DS_Store
+
 # never commit secrets
 .env
 .env.*

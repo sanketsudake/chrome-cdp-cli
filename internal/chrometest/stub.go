@@ -28,8 +28,25 @@ func (StubBrowser) Eval(context.Context, string, string) (any, error) {
 func (StubBrowser) Snapshot(context.Context, string, chrome.SnapOpts) (any, error) {
 	return map[string]any{}, nil
 }
-func (StubBrowser) Click(context.Context, string, string, chrome.QueryOpts) (map[string]any, error) {
-	return map[string]any{"clicked": true}, nil
+func (StubBrowser) CloseTabs(_ context.Context, ids []string) (map[string]any, error) {
+	return map[string]any{"closed": []any{}, "count": len(ids)}, nil
+}
+func (StubBrowser) Activate(context.Context, string) (map[string]any, error) {
+	return map[string]any{"activated": true, "was_active": false}, nil
+}
+func (StubBrowser) History(context.Context, string, int) (map[string]any, error) {
+	// No `status`: a history move has no HTTP response of its own, so the real
+	// driver reports none either.
+	return map[string]any{"url": "https://example.com/"}, nil
+}
+func (StubBrowser) Reload(context.Context, string, bool) (map[string]any, error) {
+	return map[string]any{"url": "https://example.com/", "status": 200}, nil
+}
+func (StubBrowser) Key(_ context.Context, _, _ string, keys []chrome.KeyStroke, opts chrome.KeyOpts) (map[string]any, error) {
+	return map[string]any{"keys": chrome.KeyNames(keys), "repeat": max(opts.Repeat, 1)}, nil
+}
+func (StubBrowser) Pointer(_ context.Context, _ string, _ string, opts chrome.PointerOpts) (map[string]any, error) {
+	return map[string]any{"action": string(opts.Action), "x": 0.0, "y": 0.0}, nil
 }
 func (StubBrowser) Type(context.Context, string, string, string, chrome.QueryOpts) (map[string]any, error) {
 	return map[string]any{"typed": true}, nil

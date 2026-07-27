@@ -3,6 +3,7 @@ package chrome
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -251,32 +252,68 @@ func coordClickNode(ctx context.Context, nid cdp.NodeID) error {
 // coordClickNodeN is coordClickNode with a click count (3 = triple-click to
 // select all text in an input).
 func coordClickNodeN(ctx context.Context, nid cdp.NodeID, count int64) error {
-	obj, err := dom.ResolveNode().WithNodeID(nid).Do(ctx)
+	x, y, err := settledNodePoint(ctx, nid)
 	if err != nil {
 		return err
 	}
+	return coordClickN(ctx, x, y, count)
+}
+
+// settledNodePoint waits for a node's centre to settle on the node itself (or a
+// descendant) and returns that viewport point. It is the geometry half of
+// coordClickNode, factored out so every pointer verb — click, hover, dblclick,
+// right-click, and both ends of a drag — targets the identical, occlusion-
+// verified point rather than each recomputing its own.
+//
+// The centre is computed in JS (getBoundingClientRect / elementFromPoint), which
+// works on a hidden tab where the box model isn't laid out; an occluding overlay
+// or a mid-animation element is waited out rather than mis-targeted.
+func settledNodePoint(ctx context.Context, nid cdp.NodeID) (float64, float64, error) {
+	obj, err := dom.ResolveNode().WithNodeID(nid).Do(ctx)
+	if err != nil {
+		return 0, 0, err
+	}
 	if obj == nil || obj.ObjectID == "" {
-		return fmt.Errorf("node has no remote object")
+		return 0, 0, fmt.Errorf("node has no remote object")
 	}
 	t := time.NewTicker(100 * time.Millisecond)
 	defer t.Stop()
+	// sawOccluded records that at least one CLEAN geometry read reported the
+	// centre covered. That is the diagnosis, and it must outlive whatever error
+	// the final poll returns: once the deadline expires, the in-flight
+	// nodeCoord fails with a context error, and reporting THAT would tell the
+	// caller "protocol/timeout problem" for an element we successfully measured
+	// and found under an overlay. Preferring the diagnosis is also what keeps
+	// the classification stable under load rather than only on an idle machine.
+	var sawOccluded bool
 	var lastErr error
 	for {
 		x, y, ok, err := nodeCoord(ctx, obj.ObjectID)
-		if err == nil && ok {
-			return coordClickN(ctx, x, y, count)
+		switch {
+		case err == nil && ok:
+			return x, y, nil
+		case err == nil:
+			sawOccluded = true
+		default:
+			lastErr = err
 		}
-		lastErr = err
 		select {
 		case <-ctx.Done():
-			if lastErr != nil {
-				return lastErr
+			if sawOccluded || lastErr == nil {
+				return 0, 0, ErrOccluded
 			}
-			return fmt.Errorf("element has no settled, unoccluded clickable centre")
+			return 0, 0, lastErr
 		case <-t.C:
 		}
 	}
 }
+
+// ErrOccluded reports that an element resolved but never presented an unoccluded
+// centre — it is covered by an overlay, or it never stopped animating. Pointer
+// verbs surface it as `occluded: true` in the error details, so a caller can tell
+// "covered by an overlay" from "not found"; match it with IsOccluded rather than
+// errors.Is at call sites.
+var ErrOccluded = errors.New("element has no settled, unoccluded clickable centre")
 
 // nodeCoord returns the element's clamped centre and whether that point is
 // hit-testable on the element (or a descendant) — i.e. not occluded.

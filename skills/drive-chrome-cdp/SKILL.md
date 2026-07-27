@@ -1,6 +1,6 @@
 ---
 name: drive-chrome-cdp
-description: Use to drive the user's real, already-running local Chrome from the command line via the `chrome-cdp` (alias `cdp`) CLI — list/select tabs, read the page via an accessibility snapshot (with element refs, alerts, and widget state), click/type/`fill` (clear-and-set) form and grid-cell fields by CSS or ARIA accessible name, drive prompt/combobox/cascade widgets with `select`, read tables with `grid`, `scroll` virtualized grids, `wait` for redirects/text/settle, batch commands over one connection with `session`, evaluate JS, screenshot, or call any raw CDP method. Triggers include "click X in my browser", "read what's on my screen", "fill in this form in Chrome", "select the project in this Workday prompt", "automate this web app in my logged-in session". The building block for automating logged-in web apps (Workday, Outlook, internal tools) in the user's own Chrome session; other automation skills follow this to get a driven, logged-in tab. Reuses Chrome's live logins, so it types no credentials.
+description: Use to drive the user's real, already-running local Chrome from the command line via the `chrome-cdp` (alias `cdp`) CLI — list/select/`close` tabs and `activate` (foreground) one, read the page via an accessibility snapshot (with element refs, alerts, and widget state), click/type/`fill` (clear-and-set) form and grid-cell fields by CSS or ARIA accessible name, press keys and chords with `key` (Escape to dismiss a modal, Tab to move focus, cmd+a, ArrowDown), `hover`/`dblclick`/`rclick`/`drag` for hover-only menus, grid-cell editing, context menus and reordering, drive prompt/combobox/cascade widgets with `select`, read tables with `grid`, `scroll` virtualized grids, `wait` for redirects/text/settle, batch commands over one connection with `session`, evaluate JS, screenshot, or call any raw CDP method. Triggers include "click X in my browser", "read what's on my screen", "fill in this form in Chrome", "press Escape / dismiss this dialog", "select the project in this Workday prompt", "automate this web app in my logged-in session". The building block for automating logged-in web apps (Workday, Outlook, internal tools) in the user's own Chrome session; other automation skills follow this to get a driven, logged-in tab. Reuses Chrome's live logins, so it types no credentials.
 ---
 
 # Drive local Chrome via chrome-cdp
@@ -42,8 +42,10 @@ list ─▶ use ─▶ snap ─▶ act ─▶ verify
    Target grammar: `idprefix | url:<substr> | title:<substr> | @N`.
 3. **`snap`** — accessibility-tree snapshot: the reliable way to *see* actionable controls by role + accessible name (it crosses shadow DOM and iframes).
    Orient here before acting.
-4. **`act`** — click / type / select / nav (below).
+4. **`act`** — click / type / select / key / hover / nav (below).
 5. **`verify`** — re-`snap`, `wait`, or read `snap.alerts` to confirm the effect before the next step.
+
+Clean up after yourself: **`close`** the tabs you opened, since this is the user's real browser and a long run otherwise leaves debris in the window they work in.
 
 ## Reading the page
 
@@ -66,6 +68,20 @@ list ─▶ use ─▶ snap ─▶ act ─▶ verify
 - `eval "<js>"` — run JS in the top frame (e.g. `eval "location.href"` to read the URL).
 
 ## Acting & addressing
+
+The action verbs, beyond `click`/`type`/`fill`/`select`:
+
+- **`key [selector] <keyspec>`** — press what isn't literal text: `Escape` to dismiss a modal or autocomplete, `Tab` to move focus when the next field has no stable selector, `ArrowDown`/`Enter` to drive a keyboard-only listbox, `cmd+a` to select all before retyping in an editor `fill` can't clear.
+  Works with **no selector at all**, which is what makes it usable when nothing is addressable.
+  A sequence runs left to right: `key "End shift+Home Backspace"` empties the focused field.
+  `--repeat N` (1–100) and `--delay` for apps that debounce.
+  An unknown key name is a usage error, never typed out letter by letter — use `type` for literal text.
+- **`hover <selector>`** — reveal a row's action buttons, a nav flyout, or a tooltip that only renders on `mouseover`.
+  Clicking where the button *will* appear fails; hover first, then click.
+- **`dblclick <selector>`** — grids and spreadsheet-like UIs that enter edit mode on double-click.
+- **`rclick <selector>`** — open a context menu (follow with `key Escape` to dismiss it).
+- **`drag <selector> (--to <sel> | --dx <px> --dy <px>)`** — reorder a list, move a kanban card, set a slider.
+- **`--modifiers cmd|ctrl|shift|alt`** on any click verb — `click --modifiers cmd` is the multi-select in a table.
 
 Selector syntax is chosen with `--by`:
 
@@ -102,8 +118,17 @@ Two consequences worth knowing:
 - They only fire when the centre pixel resolves to the target (or a descendant); a control hidden under an overlay fails fast instead of a click landing on the overlay.
 - Chrome drops synthetic input on a background/inactive tab; the built-in bring-to-front handles the normal "switched to another tab" case.
   But `--by name`/`--by ref`/`--by cell` resolve via the accessibility tree, which Chrome **throttles on a tab it can't foreground** — so on a tab that can't be brought forward (e.g. Chrome isn't the frontmost app), those resolutions can stall.
-  When that happens the command returns **`tab_hidden: true`** in the error (with an actionable message) rather than a bare timeout — foreground Chrome/the tab, or use `--by css` (it resolves via `querySelector`, which isn't throttled).
-  `--by name` also falls back to a DOM accessible-name match on a hidden tab, so it often still works — but **`--by css` is the reliable choice when driving a background tab.**
+  When that happens the command returns **`tab_hidden: true`** in the error (with an actionable message) rather than a bare timeout.
+  **Recover with `chrome-cdp activate`, then retry the same command** — that foregrounds the tab and raises its window, so you don't have to ask the user to switch tabs:
+
+  ```sh
+  chrome-cdp snap --by name … || { chrome-cdp activate && chrome-cdp snap --by name …; }
+  ```
+
+`activate` reports `was_active`: if it was already `true`, foregrounding wasn't the problem and you should fall back to `--by css` (it resolves via `querySelector`, which isn't throttled).
+`--by name` also falls back to a DOM accessible-name match on a hidden tab, so it often still works — but **`--by css` is the reliable choice when driving a background tab you can't foreground.**
+
+An element that resolves but is covered by an overlay now fails as `target_timeout` with **`occluded: true`**, distinct from "no such element" — dismiss whatever is on top (often `chrome-cdp key Escape`) rather than rewriting a selector that was already correct.
 
 ### `select` — prompt / combobox / cascade widgets
 

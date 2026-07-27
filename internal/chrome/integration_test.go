@@ -140,7 +140,7 @@ func TestAccessibleNameAddressing(t *testing.T) {
 	}
 
 	// Clicking by name activates the visible control (window.__ra becomes 1).
-	if _, err := b.Click(ctx, id, "Request Absence", QueryOpts{By: "name", Role: "button"}); err != nil {
+	if _, err := clickVia(ctx, b, id, "Request Absence", QueryOpts{By: "name", Role: "button"}); err != nil {
 		t.Fatalf("Click --by name --role button: %v", err)
 	}
 	clicked, err := b.Eval(ctx, id, "window.__ra")

@@ -44,7 +44,7 @@ func TestInRowAddressing(t *testing.T) {
 
 	// Click the Delete button in the Bravo row (name "Delete" is ambiguous across
 	// three rows; --in-row "Bravo" scopes it).
-	if _, err := b.Click(ctx, id, "Delete", QueryOpts{By: "name", Role: "button", InRow: "Bravo"}); err != nil {
+	if _, err := clickVia(ctx, b, id, "Delete", QueryOpts{By: "name", Role: "button", InRow: "Bravo"}); err != nil {
 		t.Fatalf("Click --by name Delete --in-row Bravo: %v", err)
 	}
 	if v := evalString(ctx, t, b, id, "document.getElementById('clicked').textContent"); v != "bravo" {
@@ -55,7 +55,7 @@ func TestInRowAddressing(t *testing.T) {
 	// under the tight ctx below), never a wrong click.
 	nctx, ncancel := context.WithTimeout(ctx, 3*time.Second)
 	defer ncancel()
-	if _, err := b.Click(nctx, id, "Delete", QueryOpts{By: "name", Role: "button", InRow: "Zeta"}); err == nil {
+	if _, err := clickVia(nctx, b, id, "Delete", QueryOpts{By: "name", Role: "button", InRow: "Zeta"}); err == nil {
 		t.Errorf("Click --in-row Zeta (no such row) should not have matched")
 	}
 	if v := evalString(ctx, t, b, id, "document.getElementById('clicked').textContent"); v != "bravo" {
@@ -65,7 +65,7 @@ func TestInRowAddressing(t *testing.T) {
 	// --in-row can't combine with a structured --by mode (ref/cell/label).
 	ictx, icancel := context.WithTimeout(ctx, 3*time.Second)
 	defer icancel()
-	if _, err := b.Click(ictx, id, "Delete", QueryOpts{By: "label", InRow: "Bravo"}); err == nil {
+	if _, err := clickVia(ictx, b, id, "Delete", QueryOpts{By: "label", InRow: "Bravo"}); err == nil {
 		t.Errorf("Click --by label --in-row should error (incompatible)")
 	}
 }

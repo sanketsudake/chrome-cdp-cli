@@ -12,15 +12,16 @@ import (
 	"github.com/sanketsudake/chrome-cdp-cli/internal/target"
 )
 
-// queryCapture records the QueryOpts passed to Click.
+// queryCapture records the QueryOpts `click` resolved, which reach the driver
+// inside PointerOpts now that click is a pointer verb.
 type queryCapture struct {
 	fakeBrowser
 	gotQ chrome.QueryOpts
 }
 
-func (q *queryCapture) Click(_ context.Context, _, _ string, opts chrome.QueryOpts) (map[string]any, error) {
-	q.gotQ = opts
-	return map[string]any{"clicked": true}, nil
+func (q *queryCapture) Pointer(_ context.Context, _, selector string, opts chrome.PointerOpts) (map[string]any, error) {
+	q.gotQ = opts.Query
+	return map[string]any{"clicked": selector}, nil
 }
 
 // --by and --wait thread through to the selector verb.

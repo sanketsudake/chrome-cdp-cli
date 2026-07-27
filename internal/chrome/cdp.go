@@ -1080,25 +1080,6 @@ func withDialogResult(res map[string]any, sink *dialogSink) map[string]any {
 	return res
 }
 
-// Click resolves the selector and clicks it at its live, occlusion-verified
-// centre via a coordinate pointer sequence (the same primitive as `select`), so
-// it lands on a background/inactive tab where chromedp's box-model node-click
-// would poll until timeout. bringToFront reactivates the tab first.
-func (c *CDP) Click(ctx context.Context, id, selector string, q QueryOpts) (map[string]any, error) {
-	core := chromedp.ActionFunc(func(actx context.Context) error {
-		nid, err := resolveNodeReady(actx, selector, q)
-		if err != nil {
-			return err
-		}
-		return coordClickNode(actx, nid)
-	})
-	action, sink := withOptionalDialog(q, core)
-	if err := c.run(ctx, id, bringToFront(), action); err != nil {
-		return nil, err
-	}
-	return withDialogResult(map[string]any{"clicked": selector}, sink), nil
-}
-
 // Type coordinate-clicks the selector to focus it (robust on a background tab),
 // then sends the text as real keystrokes to the focused element.
 func (c *CDP) Type(ctx context.Context, id, selector, text string, q QueryOpts) (map[string]any, error) {

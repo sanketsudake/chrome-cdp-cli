@@ -51,7 +51,7 @@ func TestClickAndTypeCoordinate(t *testing.T) {
 	}
 
 	// Click drives the button (which snapshots the typed value).
-	if _, err := b.Click(ctx, id, "Go", QueryOpts{By: "name", Role: "button"}); err != nil {
+	if _, err := clickVia(ctx, b, id, "Go", QueryOpts{By: "name", Role: "button"}); err != nil {
 		t.Fatalf("Click: %v", err)
 	}
 	got, err = b.Eval(ctx, id, "window.__q")
@@ -68,7 +68,7 @@ func TestClickAndTypeCoordinate(t *testing.T) {
 	}
 	occCtx, occCancel := context.WithTimeout(ctx, 3*time.Second)
 	defer occCancel()
-	if _, err := b.Click(occCtx, id, "Go", QueryOpts{By: "name", Role: "button"}); err == nil {
+	if _, err := clickVia(occCtx, b, id, "Go", QueryOpts{By: "name", Role: "button"}); err == nil {
 		t.Error("Click on a fully-occluded button returned nil error, want a not-clickable failure")
 	}
 }
