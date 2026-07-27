@@ -1,6 +1,6 @@
 ---
 name: drive-chrome-cdp
-description: Use to drive the user's real, already-running local Chrome from the command line via the `chrome-cdp` (alias `cdp`) CLI — list/select/`close` tabs and `activate` (foreground) one, read the page via an accessibility snapshot (with element refs, alerts, and widget state), click/type/`fill` (clear-and-set) form and grid-cell fields by CSS or ARIA accessible name, press keys and chords with `key` (Escape to dismiss a modal, Tab to move focus, cmd+a, ArrowDown), `hover`/`dblclick`/`rclick`/`drag` for hover-only menus, grid-cell editing, context menus and reordering, drive prompt/combobox/cascade widgets with `select`, read tables with `grid`, `scroll` virtualized grids, `wait` for redirects/text/settle, batch commands over one connection with `session`, evaluate JS, screenshot, or call any raw CDP method. Triggers include "click X in my browser", "read what's on my screen", "fill in this form in Chrome", "press Escape / dismiss this dialog", "select the project in this Workday prompt", "automate this web app in my logged-in session". The building block for automating logged-in web apps (Workday, Outlook, internal tools) in the user's own Chrome session; other automation skills follow this to get a driven, logged-in tab. Reuses Chrome's live logins, so it types no credentials.
+description: Use to drive the user's real, already-running local Chrome from the command line via the `chrome-cdp` (alias `cdp`) CLI — list/select/`close` tabs and `activate` (foreground) one, read the page via an accessibility snapshot (with element refs, alerts, and widget state), click/type/`fill` (clear-and-set) form and grid-cell fields by CSS or ARIA accessible name, press keys and chords with `key` (Escape to dismiss a modal, Tab to move focus, cmd+a, ArrowDown), `hover`/`dblclick`/`rclick`/`drag` for hover-only menus, grid-cell editing, context menus and reordering, drive prompt/combobox/cascade widgets with `select`, read tables with `grid`, `scroll` virtualized grids, `wait` for redirects/text/settle or an API request to complete, read the tab's console errors and failed HTTP requests with `console`/`net` when an action "did nothing", extract an article's readable text (`text --article`), capture element/full-page screenshots, `upload` files without the OS file dialog, batch commands over one connection with `session`, save and replay parameterised `recipe` flows, `record` a run as a GIF, evaluate JS, or call any raw CDP method. Triggers include "click X in my browser", "read what's on my screen", "fill in this form in Chrome", "press Escape / dismiss this dialog", "select the project in this Workday prompt", "check the console/network errors on this page", "automate this web app in my logged-in session". The building block for automating logged-in web apps (Workday, Outlook, internal tools) in the user's own Chrome session; other automation skills follow this to get a driven, logged-in tab. Reuses Chrome's live logins, so it types no credentials.
 ---
 
 # Drive local Chrome via chrome-cdp
@@ -27,7 +27,7 @@ Because it drives the real profile, live logins are reused: **type no credential
 
    `doctor` reports the endpoint it looked at and, on the daemon path, a `target_count`.
    It does not report open tab titles or URLs, so this step tells you whether you can connect and nothing about what the user has open.
-   Use `tabs --json` when you actually need the tab list.
+   Use `list --json` when you actually need the tab list.
 2. A background daemon holds the connection, so the consent prompt appears once per session, not per command.
    It starts on first use.
    `chrome-cdp daemon status --json` shows it; `--no-daemon` bypasses it.
@@ -56,8 +56,10 @@ list ─▶ use ─▶ snap ─▶ act ─▶ verify
    Orient here before acting.
 4. **`act`** — click / type / select / key / hover / nav (below).
 5. **`verify`** — re-`snap`, `wait`, or read `snap.alerts` to confirm the effect before the next step.
+   An action that "did nothing" usually left evidence — read `console --only-errors` and `net --failed` before re-clicking (see [Debugging](#debugging-console--network)).
 
 Clean up after yourself: **`close`** the tabs you opened, since this is the user's real browser and a long run otherwise leaves debris in the window they work in.
+`close --url <substr> --all` sweeps several at once; a filter matching more than one tab *without* `--all` is an error and closes nothing, so a fuzzy match can't guess.
 
 ## Reading the page
 
@@ -76,23 +78,20 @@ Clean up after yourself: **`close`** the tabs you opened, since this is the user
   Prefer this over parsing a big `snap` when you already know what you're looking for — one call replaces the snap→scan→guess-the-name loop, and it's the cure for verbose accessible names ("Review" vs `"Review Approval: Awaiting Action by …"`): `find "review"` hands you the real name for `--by name`, or the `ref` for `--by ref`.
   Filters: `--role` (hard), `--region`, `--limit`, `--dedupe`, `--min-score`, `--all` (include hidden).
   `count: 0` at exit 0 means "not on this page" — that's an answer, not an error.
-- **`--at x,y` on any pointer verb** (`click`/`hover`/`dblclick`/`tripleclick`/`rclick`/`drag`, plus `scroll --wheel --at`) — act at a viewport coordinate with NO element resolution.
-  This is the only way into a canvas/WebGL surface (drawing tools, maps, charts, PDF viewers): the a11y tree sees one node there, so no selector reaches inside it.
-  Coordinates are CSS pixels and match a `screenshot --scale 1` capture 1:1, so the loop is: `screenshot --scale 1` → read the pixel → `click --at x,y`.
-  Outside the viewport is an error (`coordinate_out_of_bounds`, exit 4) with the measured viewport, never a silent clamp — `scroll` first, then act.
-  The result carries `hit` (what sat under the point), because a coordinate click is deliberately not occlusion-checked.
-- **`upload --drop "<sel>" <path>`** (or `--drop-at x,y`) — for a drop zone with NO `<input type=file>` behind it.
-  Prefer plain `upload "<sel>" <path>` whenever an input exists (including the hidden one behind most styled drop zones); `--drop` is for the apps that have none.
-  Check `drop_handled` in the result: `false` means nothing consumed the drop (you addressed the wrong element) even though the command succeeded.
-  The page is never modified by this — no element is added and no attribute written — and it composes with every addressing mode, including `--by name`.
-- **`window size <w> <h>` / `window info`** — the REAL Chrome window, unlike `emulate viewport` which only lies to the page.
-  Set it before a coordinate workflow so pixel coordinates are reproducible across runs.
 - **`value --all "<css>"`** — the value/text of every match as a list (a whole row of hour cells, a set of pills) in one call.
 - **`grid [selector]`** — read a table/grid as `{headers, rows, count}` from the accessibility structure.
   Use this for the calendar / task-list / timesheet grids instead of hand-parsing `snap` or screenshotting.
   `selector` optionally picks the grid by accessible name; empty = the first grid.
 - `text "<sel>"` / `html "<sel>"` — text / outer-HTML of a selector (or the page).
+- **`text --article`** (add `--markdown` to keep headings/lists/links) — the page's main readable content, Reader-Mode style: navigation, footers, and cookie banners dropped.
+  Use it to *read* a documentation page, article, or long confluence/wiki page instead of dumping `html` or a full `snap`.
+  It is honest about the heuristic: below `--min-chars` it returns the FULL page text with `extracted: false` and a `reason`, never a plausible-looking fragment.
+- **`screenshot`** — with no flags, the viewport; `--selector "<sel>"` captures one element's box (honours `--by name`/`--role`/`--in-row`, plus `--padding`), `--full-page` the whole scrollable page, `--region x,y,w,h` an explicit rectangle; `--format jpeg --quality 60 --scale 0.5` shrinks the file.
+  The envelope reports `mode` and the resolved `clip`, so a wrong capture is debuggable without opening the image.
+  `--full-page` does not force lazy-loaded content — `scroll` through and `wait --idle` first when below-the-fold images matter.
 - `eval "<js>"` — run JS in the top frame (e.g. `eval "location.href"` to read the URL).
+  `--await` gives DevTools-console semantics: top-level `await` resolves and the last expression is the value without a `return` — `eval --await 'await fetch("/api/me").then(r => r.json())'`.
+  A rejected promise is an error (exit 5), never a value.
 
 ## Acting & addressing
 
@@ -106,6 +105,7 @@ The action verbs, beyond `click`/`type`/`fill`/`select`:
 - **`hover <selector>`** — reveal a row's action buttons, a nav flyout, or a tooltip that only renders on `mouseover`.
   Clicking where the button *will* appear fails; hover first, then click.
 - **`dblclick <selector>`** — grids and spreadsheet-like UIs that enter edit mode on double-click.
+- **`tripleclick <selector>`** — select an element's whole text block (what `fill` uses internally to clear).
 - **`rclick <selector>`** — open a context menu (follow with `key Escape` to dismiss it).
 - **`drag <selector> (--to <sel> | --dx <px> --dy <px>)`** — reorder a list, move a kanban card, set a slider.
 - **`--modifiers cmd|ctrl|shift|alt`** on any click verb — `click --modifiers cmd` is the multi-select in a table.
@@ -132,7 +132,7 @@ Selector syntax is chosen with `--by`:
 - `--wait visible` (default) `| ready | enabled`; `--no-wait` to fail fast.
   If a read stalls waiting for visibility, retry with `--wait ready`.
 
-Verbs: `open <url>` (new tab → navigate → current), `click`, `type "<sel>" "<text>"` (real keystrokes; **append `\n` to submit** — it presses Enter), `fill "<sel>" "<value>"` (**sets a field, replacing its content** — triple-click-selects then types, so a pre-filled cell showing `0` becomes `8`, not `80`; use this for form/grid fields, `type` only when you mean to append), `select` (see below), `nav <url>` (waits for load), `scroll`, `grid`, `screenshot`, `pdf`, `attr get/list/set/rm`, `cookie …`, `raw <domain.method> [json]` (any CDP method — the escape hatch).
+Verbs: `open <url>` (new tab → navigate → current), `click`, `type "<sel>" "<text>"` (real keystrokes; **append `\n` to submit** — it presses Enter), `fill "<sel>" "<value>"` (**sets a field, replacing its content** — triple-click-selects then types, so a pre-filled cell showing `0` becomes `8`, not `80`; use this for form/grid fields, `type` only when you mean to append), `select` (see below), `upload` (see below), `nav <url>` (waits for load; `nav --back` / `--forward` / `--reload [--hard]` move through history without re-deriving the URL), `scroll`, `grid`, `screenshot`, `pdf`, `attr get/list/set/rm`, `cookie …`, `raw <domain.method> [json]` (any CDP method — the escape hatch).
 
 `click`/`type`/`fill`/`select` accept **`--wait-text "<substr>"`**: after the action, block until the page contains the text (a `Saved` toast) — folds act + confirm into one call, e.g. `click --by name "Save and Close" --role button --wait-text "saved"`.
 
@@ -176,6 +176,27 @@ chrome-cdp select "Actions" "Enter Time by Type" --role button --json
 - A native `<select>` is a sub-mode (set by option text).
 - Workday's Actions menu anchors inconsistently — `select "Actions" "…"` may return a safe `did not render / settle` (no wrong click); just re-run.
 
+### Coordinates — `--at x,y` (canvas, maps, PDF viewers)
+
+**`--at x,y` on any pointer verb** (`click`/`hover`/`dblclick`/`tripleclick`/`rclick`/`drag`, plus `scroll --wheel --at`) acts at a viewport coordinate with NO element resolution.
+This is the only way into a canvas/WebGL surface (drawing tools, maps, charts, PDF viewers): the a11y tree sees one node there, so no selector reaches inside it.
+Coordinates are CSS pixels and match a `screenshot --scale 1` capture 1:1, so the loop is: `screenshot --scale 1` → read the pixel → `click --at x,y`.
+Outside the viewport is an error (`coordinate_out_of_bounds`, exit 4) with the measured viewport, never a silent clamp — `scroll` first, then act.
+The result carries `hit` (what sat under the point), because a coordinate click is deliberately not occlusion-checked.
+
+**`window size <w> <h>` / `window info`** — the REAL Chrome window, unlike `emulate viewport` which only lies to the page.
+Set it before a coordinate workflow so pixel coordinates are reproducible across runs.
+
+### `upload` — attach files without the OS dialog
+
+`upload "<sel>" <path> [<path>…]` sets the files directly on an `<input type=file>` (firing `change`) — it never clicks the input, because the native OS file picker is invisible to CDP and can't be dismissed.
+Paths are checked before Chrome is contacted (a missing file is exit 2, no connection), `--wait` defaults to `ready` because the real input behind a styled drop zone is usually hidden, `--append` adds to files this session already set, and `--wait-text "Uploaded"` folds in the confirm.
+
+**`upload --drop "<sel>" <path>`** (or `--drop-at x,y`) is for a drop zone with NO `<input type=file>` behind it.
+Prefer plain `upload` whenever an input exists (including the hidden one behind most styled drop zones); `--drop` is for the apps that have none.
+Check `drop_handled` in the result: `false` means nothing consumed the drop (you addressed the wrong element) even though the command succeeded.
+The page is never modified by this — no element is added and no attribute written — and it composes with every addressing mode, including `--by name`.
+
 ## Waiting
 
 Beyond per-selector auto-wait:
@@ -185,7 +206,10 @@ Beyond per-selector auto-wait:
 - **`wait --text "<substr>"`** — until the page (accessibility tree, incl. alerts) contains the text, e.g. `wait --text "Success"` right after a write.
 - **`wait --stable`** — until the accessibility tree stops changing (the page settled); use it instead of guessing a fixed sleep after an action.
 - **`wait --idle`** — until network activity settles (no in-flight requests); for SPA loads (Outlook, Workday) where the load event fires long before the content is fetched — prefer this over a fixed sleep after `nav`/`open`.
-- `wait --for 3s` — fixed fallback; **prefer a condition** (`--text`/`--stable`/`--idle`) — guessing seconds is slower and flakier.
+- **`wait --request "<url-substr>"`** (`re:<pattern>` for a regex; qualify with `--method`/`--status`/`--failed`) — until a matching HTTP request *completes*.
+  This is the confirm for a write that shows no toast: `wait --request "/api/save" --method POST --status 2xx` proves the save landed, where `--text` has nothing to wait on.
+  (`net wait` is an alias.)
+- `wait --for 3s` — fixed fallback; **prefer a condition** (`--text`/`--stable`/`--idle`/`--request`) — guessing seconds is slower and flakier.
 
 The command's `--timeout` bounds the wait; a wait that never resolves returns a clean `target/timeout` (exit 4).
 
@@ -194,6 +218,20 @@ The command's `--timeout` bounds the wait; a wait that never resolves returns a 
 - `scroll --dy <px>` (and `--dx`) — scroll the window (or a selector's scroll box) by a delta; deterministic, and it fires the scroll events virtualized grids render on.
 - `scroll "<sel>" --to` — scroll a selector into view.
 - `scroll "<sel>" --dy <px> --wheel` — dispatch a real mouse wheel for grids that render on wheel specifically (e.g. Outlook's virtualized calendar).
+
+## Debugging (console & network)
+
+When an action "did nothing", the page usually said why — read that instead of re-clicking or screenshotting:
+
+- **`console`** — the tab's `console.*` output and uncaught exceptions, with stacks.
+  Capture is buffered from the moment the connection attached to the tab, not from when you ask — so the error behind a click that already failed is there.
+  `--only-errors` for what broke; `--grep "<regex>"` / `--level` / `--since 30s` / `--limit` filter server-side; `--follow` streams NDJSON while you act.
+  A nonzero `dropped` in the result means the bounded buffer evicted messages before you read.
+- **`net`** — every HTTP request the tab made: method, URL, status, timing, sizes.
+  `--xhr` for API calls, `--failed` for non-2xx and network-level failures (the 401 behind an empty screen), `net --url /api/save --method POST --body` to inspect a payload.
+  Headers/bodies appear only with `--headers`/`--body`, and credential-shaped values are redacted unless `--no-redact` — leave redaction on.
+- **The reset → act → read pattern**: `console --clear` and `net --clear` before the action, act, then `console --only-errors` / `net --failed` — whatever is left is what the action caused.
+- With `--no-daemon` no process was alive to buffer earlier events, so the history is partial (the envelope carries a note saying so).
 
 ## Batch mode & refs
 
@@ -222,6 +260,17 @@ printf '%s\n' \
   | chrome-cdp session
 ```
 
+## Saved flows (`recipe`) & recording (`record`)
+
+- **`recipe`** — a saved, parameterised flow: a YAML file whose steps are the same argv arrays `session` reads, with declared inputs substituted into argv elements.
+  There is no shell in the format, so a recipe is reviewable by reading it: `recipe show <name>` prints the source, `recipe run <name> --dry-run` prints the exact commands it would run — read before running one you didn't write.
+  Resolution order: `./.chrome-cdp/recipes` (a recipe committed to a repo wins) → `$XDG_CONFIG_HOME/chrome-cdp/recipes` → `--dir`; scaffold with `recipe new`.
+  A flow a skill repeats every run (a timesheet fill, an approval sweep) belongs in a shipped recipe, not re-derived from `snap` each time.
+- **`record start` … drive … `record stop -o demo.gif`** — record the tab while other commands drive it; export a GIF (or MP4/WebM, or PNG frames).
+  The daemon holds the frames, not the starting command, so a run that crashed half-way still has the failure on film — `record stop` afterwards still writes it.
+  Per-tab (a batch that opens new tabs records the one it started on); `--annotate` marks action positions; `record status`/`record cancel` manage it; `session --record out.gif` wraps a whole batch in one flag.
+  It records the user's real logged-in browser — look at the file before attaching it anywhere public.
+
 ## Session & passkeys
 
 `chrome-cdp` drives the real profile, so an app the user is already signed into loads **authenticated** — no credentials typed.
@@ -243,8 +292,9 @@ Failures: same shape with `"ok": false` and `error{code,message,…}`, plus a no
 Exit `3` carries three codes; `consent_pending` is the one that needs a human, not a fix (see [Setup](#setup-once) step 1).
 Branch on these, not on message text (`chrome-cdp exit-codes` prints the table).
 Exit `7` means a policy forbids this — do not retry, tell the user (see the Policy section of the CLI reference).
+Policy is how a run is bounded to the app it's meant to drive: a configured `[policy]` table (`policy init` scaffolds one from the current tab's origin) or a per-invocation `--allow '*.example.com'`; `chrome-cdp mcp` (serving these verbs to an MCP client) refuses to start without one.
 
-## Recipes
+## Worked examples
 
 ```sh
 # See a page, then click a control by a fragment of its verbose name
@@ -265,6 +315,14 @@ chrome-cdp grid --json
 # Navigate and wait for the redirect chain to settle
 chrome-cdp nav "$APP_URL" --json
 chrome-cdp wait --url "/home" --timeout 15s --json
+
+# A click "did nothing" — read what the page said instead of re-clicking
+chrome-cdp console --only-errors --json
+chrome-cdp net --failed --json
+
+# Confirm a write by its API call when there is no toast to wait on
+chrome-cdp click --by name "Save" --role button --json
+chrome-cdp wait --request "/api/save" --method POST --status 2xx --json
 ```
 
 ## Safety
@@ -274,4 +332,6 @@ chrome-cdp wait --url "/home" --timeout 15s --json
 - **Verify after acting** — re-`snap`/`grid`/`list`, or `wait --text`, to confirm; don't assume.
 - **Avoid native dialogs** (`alert`/`confirm`/`prompt`): they block CDP.
   In-page app modals are fine.
+- **What you capture is the user's real data.**
+  `record` exports, screenshots, and `net --headers`/`--body` output show their logged-in session; `net` redacts credential-shaped values by default — leave `--no-redact` alone, and review any capture before it leaves the machine.
 - A live debug endpoint is full control of that Chrome — loopback-only, and the consent dialog/banner are never suppressed.
