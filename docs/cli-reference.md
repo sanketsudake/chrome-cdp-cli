@@ -207,7 +207,8 @@ The result records `awaited: true`, so a caller can tell which path ran.
 A rejected promise is an **error**, never a value: exit 5 with `error.code: cdp_error`, the rejection's message in `error.message`, and its stack in `error.stack`.
 A never-settling promise is bounded by `--timeout` (exit 4), and the connection stays usable afterwards.
 
-`--await` is opt-in. `replMode` changes how bare object literals and `let`/`const` re-declaration behave, so plain `eval` keeps its existing semantics rather than changing silently under scripts that already work.
+`--await` is opt-in.
+`replMode` changes how bare object literals and `let`/`const` re-declaration behave, so plain `eval` keeps its existing semantics rather than changing silently under scripts that already work.
 
 ### Acting
 
@@ -611,6 +612,79 @@ Conditionals, loops, retries, branching, and reading one step's output into a la
 Recipes cannot invoke recipes, and a recipe is capped at 200 steps.
 If an automation needs control flow, write a program that calls `session` — that is the supported answer, not a bigger recipe format.
 
+### MCP server
+
+`mcp` runs the CLI as a [Model Context Protocol](https://modelcontextprotocol.io) server over stdio, exposing the verbs as MCP tools.
+It is a front end, not a fork: a tool call becomes the same argv you would type, runs through the same command tree against the same connection, and comes back as the same envelope — so a flow you debug at the shell behaves identically when an assistant runs it.
+
+```jsonc
+// claude_desktop_config.json, .mcp.json, or your client's equivalent
+{ "mcpServers": { "chrome-cdp": { "command": "chrome-cdp", "args": ["mcp"] } } }
+```
+
+| Flag | Default | Purpose |
+|------|---------|---------|
+| `--read-only` | off | expose only tools that cannot modify page state |
+| `--tools <set>` | `default` | `default`, `full`, or a comma-separated list of tool names |
+| `--allow-eval` | off | expose `eval` and `raw`, which are denied in this mode by default |
+| `--target <spec>` | — | pin the server to one tab; otherwise each tool takes a `target` |
+
+Global flags (`--timeout`, `--no-daemon`, `--port`, `--profile-dir`, `--allow`, config file) apply unchanged, and the daemon still holds the connection — a long-lived server over one shared connection is exactly what it is for.
+Transport is stdio only; there is no HTTP or SSE mode, because a network-reachable server driving your authenticated browser is a different security posture.
+
+**A policy allow-list is required.**
+`chrome-cdp mcp` refuses to start unless a `[policy]` table with a non-empty `allow` is configured (or `--allow` is passed): it exits 2 and prints the block it needs.
+The CLI's unrestricted default is right for a person who typed a command; handing an assistant a browser that is signed in to everything is a different question, and it should be answered on purpose.
+Run [`chrome-cdp policy init`](#policy) on the tab you want it to drive.
+`--policy-off` is refused in this mode, and an injected one cannot reach the parser: the server freezes its own policy flags, and every tool argument is passed after a `--` terminator so a value that looks like a flag is data.
+
+**`eval` and `raw` are denied here unless you pass `--allow-eval`.**
+They can [navigate the tab themselves](#destination-checking-needs-verbs_denied), so an origin allow-list only means something while they are off — and the one-liner form of the gate (`chrome-cdp mcp --allow '*.example.com'`) writes no config file and so set no `verbs_denied` at all, which left the recommended setup with a decorative boundary.
+The mode now supplies that default itself.
+A denied verb's tool is not listed either: it could only answer `permission_denied`, and an agent pays for the description.
+`--allow-eval` opts back in to the mode's default only — a `verbs_denied` you configured yourself still stands.
+
+**The tool surface is bounded** — an agent pays for every tool description in its context window — so related verbs are grouped behind an `action` or `kind` argument.
+Names are prefixed `chrome_cdp_` so they stay unambiguous in clients that flatten every server into one namespace.
+
+| Tool | Wraps | Notes |
+|------|-------|-------|
+| `chrome_cdp_tabs` | `list`, `open`, `use`, `close`, `activate` | one `action` argument |
+| `chrome_cdp_navigate` | `nav`, including back/forward/reload | |
+| `chrome_cdp_snapshot` | `snap` | the primary read |
+| `chrome_cdp_read` | `text`, `html`, `value`, `grid` | one `kind` argument |
+| `chrome_cdp_click` | `click` | |
+| `chrome_cdp_type_text` | `type`, `fill` | `replace: true` picks `fill` |
+| `chrome_cdp_key` | `key` | |
+| `chrome_cdp_pointer` | `hover`, `dblclick`, `rclick`, `drag` | one `action` argument |
+| `chrome_cdp_select_option` | `select` | cascade paths included |
+| `chrome_cdp_scroll` | `scroll` | |
+| `chrome_cdp_upload` | `upload` | `upload_roots` still applies |
+| `chrome_cdp_wait_for` | `wait` | every condition, `--request` included |
+| `chrome_cdp_screenshot` | `screenshot` | returns an image content block |
+| `chrome_cdp_console` | `console` | |
+| `chrome_cdp_network` | `net` | |
+| `chrome_cdp_evaluate` | `eval` | powerful and unconstrained; needs `--allow-eval` |
+| `chrome_cdp_batch` | `session` | several tools over one round trip |
+| `chrome_cdp_raw_cdp` | `raw` | `--tools full` (or named in `--tools`), plus `--allow-eval` |
+
+Each tool's arguments mirror the CLI flags they wrap, in `snake_case` (`in_row` for `--in-row`), and the element-addressing arguments (`by`, `role`, `nth`, `match`, `in_row`, `wait`, `pierce`) are documented in every schema that takes them — the accessible-name addressing is this tool's advantage on real applications, and an agent only gets it if the schema says so.
+The streaming forms (`console --follow`, `net --follow`) are not exposed: they would break the one-result-per-call contract.
+`recipe` is not either — a recipe is authored and reviewed at the shell.
+
+`--read-only` reuses the [policy layer's verb classification](#what-is-checked) rather than a second table, so it can never disagree with a `read_only` origin.
+It exposes `tabs` (without `open` or `close`), `snapshot`, `read`, `wait_for`, `screenshot`, `console`, `network` and `batch`; invoking anything else by name returns a typed `usage` error rather than a protocol error.
+`close` is withheld even though the classification table calls it exempt — it touches no page content, but it does change the browser, and a server that says it cannot modify anything should not close your tabs.
+
+**`close` is bounded by the allow-list here**, unlike at a shell: an MCP client may close a tab only on an origin the policy permits, per tab, and a bulk close closes the permitted ones and reports the rest under `refused`.
+
+**Results keep the contract.**
+A success carries the envelope's `result` object as `structuredContent`, plus a one-line text summary.
+A failure is `isError: true` with `structuredContent` carrying `code` and `exit` — and the recoverable details (`tab_hidden`, `occluded`, `zero_area`) — so an agent branches on the same values a shell script does rather than on prose.
+
+**stdout is the protocol; diagnostics go to stderr.**
+Nothing else may write to stdout while the server runs, and the process enforces that rather than trusting it.
+
 ### Capture
 
 | Command | Writes |
@@ -898,6 +972,11 @@ A verb that is not classified is treated as **acting**, so a new verb over-restr
 `verbs_denied` is checked **first**, ahead of the class, so it reaches every verb including the tab and meta ones.
 `verbs_denied = ["recipe run"]` therefore refuses running a saved recipe — a file someone else wrote, driving your authenticated browser — while leaving `recipe show` and `recipe run --dry-run` available for reading one.
 
+`close` is the one exception to the last row, and only under [MCP mode](#mcp-server): there it is checked against `allow`/`deny` per tab.
+At a shell you decided to close your own tab, and refusing it would produce an error a long way from its cause.
+An assistant driving the browser under a boundary you wrote is a different caller, and a server that enforced the allow-list for reads but not for destruction would be enforcing half a boundary.
+A bulk close under MCP closes the tabs the policy permits and reports the rest under `refused`.
+
 Redirects are the honest limitation: a `nav` to an allowed origin that redirects elsewhere cannot be stopped, so the policy is re-evaluated on the **settled** URL and the *next* command is refused.
 
 ### Destination checking needs `verbs_denied`
@@ -907,7 +986,7 @@ Redirects are the honest limitation: a `nav` to an allowed origin that redirects
 What the policy still gives you is that the tab is then off-limits: the next command is refused on the settled origin, so nothing is read back.
 But the request happened.
 
-**So an origin allow-list is only meaningful alongside `verbs_denied = ["eval", "raw"]`**, and that is what `chrome-cdp policy init` writes.
+**So an origin allow-list is only meaningful alongside `verbs_denied = ["eval", "raw"]`**, and that is what `chrome-cdp policy init` writes — and what [MCP mode](#mcp-server) applies by default, whether or not a config file says so.
 If you need `eval`, understand that you have kept a verb that can walk out of the boundary and come back — the boundary still bounds what you can *read*, not what you can *reach*.
 
 ### A refusal

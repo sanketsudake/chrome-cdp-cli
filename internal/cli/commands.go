@@ -44,6 +44,10 @@ func (a *App) newRoot() *cobra.Command {
 			// makes it reset between `session` lines.
 			a.verbPath = strings.TrimPrefix(cmd.CommandPath(), cmd.Root().Name()+" ")
 			a.policyOffNoted = false
+			// An MCP server's policy flags are not per-call arguments. This
+			// runs AFTER parsing, so whatever the argv said about --policy-off
+			// or --allow, the server's own frozen values win. See mcpLock.
+			a.mcpLock.restore(a)
 		},
 	}
 	// d holds the effective flag defaults (built-in, overlaid by the config
@@ -85,7 +89,7 @@ func (a *App) newRoot() *cobra.Command {
 		a.cmdScreenshot(), a.cmdPDF(),
 		a.cmdCookie(), a.cmdHeaders(), a.cmdEmulate(), a.cmdFrame(), a.cmdWait(),
 		a.cmdConsole(), a.cmdNet(), a.cmdRecord(), a.cmdRaw(),
-		a.cmdSession(), a.cmdRecipe(), a.cmdDoctor(), a.cmdDaemon(), a.cmdPolicy(), a.cmdExitCodes(), a.cmdVersion(),
+		a.cmdSession(), a.cmdRecipe(), a.cmdMCP(), a.cmdDoctor(), a.cmdDaemon(), a.cmdPolicy(), a.cmdExitCodes(), a.cmdVersion(),
 	)
 	return root
 }
@@ -855,6 +859,16 @@ func (a *App) cmdSession() *cobra.Command {
 			"worth the most. It emits one extra result line describing the file.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			// `session` is Exempt — it touches no tab itself and every line it
+			// re-enters is checked on its own — but verbs_denied is checked
+			// ahead of the class precisely so an operator can name it, and
+			// "read commands from stdin and run them" is an obvious thing to
+			// want off. Without this call site the checker refused it correctly
+			// and nothing ever asked, so the rule was accepted and inert.
+			if perr := a.checkPolicy(a.policyVerb(), ""); perr != nil {
+				a.emitErr("session", perr.Code, perr.Message, perr.Details)
+				return nil
+			}
 			// Validated before anything connects, so a misspelled --record path
 			// is exit 2 with Chrome untouched and stdin unread.
 			rec, rerr := a.newSessionRecorder(cmd, rf)

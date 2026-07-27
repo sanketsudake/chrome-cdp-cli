@@ -59,6 +59,11 @@ type App struct {
 	// verbPath.
 	policyOffNoted bool
 
+	// mcpLock is set for the life of an MCP server and freezes the flags its
+	// boundary is made of. Nil everywhere else, so a shell invocation is
+	// unaffected. See internal/cli/mcp.go.
+	mcpLock *mcpLock
+
 	// policy test seams: the interactive check and the question itself. Real
 	// runs leave both nil, so an unconfigured CLI carries no policy state at
 	// all; a test sets them to drive the on_violation = "prompt" path without a

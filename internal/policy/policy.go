@@ -85,11 +85,17 @@ var verbClass = map[string]Class{
 	// would refuse a recipe made entirely of reads on a read_only origin, while
 	// classifying it as Reading would be a lie — so the wrapper abstains and the
 	// steps decide. list/show/new never reach a browser at all.
-	"recipe list":   Exempt,
-	"recipe show":   Exempt,
-	"recipe new":    Exempt,
-	"recipe run":    Exempt,
-	"session":       Exempt,
+	"recipe list": Exempt,
+	"recipe show": Exempt,
+	"recipe new":  Exempt,
+	"recipe run":  Exempt,
+	"session":     Exempt,
+	// `mcp` is Exempt for the same reason `session` is: the server itself
+	// touches no tab, it re-enters the command tree per tool call, and each of
+	// those calls is classified and checked on its own. It is also the one mode
+	// that REFUSES TO START without an allow-list (RFC-0004 US-5), so the
+	// wrapper being unchecked never means the calls are.
+	"mcp":           Exempt,
 	"doctor":        Exempt,
 	"daemon start":  Exempt,
 	"daemon stop":   Exempt,

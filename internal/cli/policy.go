@@ -197,6 +197,66 @@ func (a *App) checkPolicy(verb, rawURL string) *result.Err {
 	}
 }
 
+// closeRule is the rule name a refused close reports and audits. `close` is
+// checked against the allow/deny lists alone — no verb question is being asked —
+// so it names that rather than borrowing Check's more specific wording.
+const closeRule = "allow: origin not permitted for close"
+
+// boundClose applies the origin allow-list to `close`, but only when an MCP
+// server is driving.
+//
+// `close` is Exempt in the classification table and stays that way for a person
+// at a shell: closing a tab touches no page content, and origin-checking it
+// would produce refusals far from their cause (RFC-0012 open question 3). An
+// agent is a different caller. It reads page content under a boundary the user
+// wrote, and a server that enforced the allow-list for reads and not for
+// destruction would be enforcing half a boundary — the reviewer's case was a
+// --read-only server, advertising that it could not change anything, closing a
+// tab on a denied origin.
+//
+// So the rule is per tab rather than per command: a named tab outside the list
+// is refused, and a bulk close closes the tabs the policy permits and reports
+// the rest under `refused` rather than silently doing less than it was asked.
+// The CLI's own behaviour is unchanged — a.mcpLock is nil there.
+func (a *App) boundClose(victims []result.TargetInfo) ([]result.TargetInfo, []any, *result.Err) {
+	c := a.policyChecker()
+	if a.mcpLock == nil || !c.Active() {
+		return victims, nil, nil
+	}
+	var kept []result.TargetInfo
+	var refused []any
+	for _, v := range victims {
+		if c.OriginAllowed(v.URL) {
+			kept = append(kept, v)
+			continue
+		}
+		origin := originOf(v.URL)
+		a.auditAppend(c.AuditLog(), auditRecord{Origin: origin, Verb: "close", Decision: "refused", Rule: closeRule})
+		if !a.quiet {
+			fmt.Fprintf(a.err, "policy: refused close on %s (%s)\n", origin, closeRule)
+		}
+		refused = append(refused, map[string]any{"id": v.ID, "origin": origin})
+	}
+	if len(kept) > 0 {
+		return kept, refused, nil
+	}
+	origins := make([]string, 0, len(refused))
+	for _, r := range refused {
+		origins = append(origins, r.(map[string]any)["origin"].(string))
+	}
+	return nil, nil, &result.Err{
+		Code: result.CodePermissionDenied,
+		Message: fmt.Sprintf("close is bounded by the policy allow-list when an MCP client is driving, and %s is not on it",
+			strings.Join(origins, ", ")),
+		Details: map[string]any{
+			"origin": origins[0],
+			"verb":   "close",
+			"rule":   closeRule,
+			"config": c.Source(),
+		},
+	}
+}
+
 // notePolicyOff records the explicit bypass. --policy-off exists so a bad
 // policy is fixable, but it is never implicit: it warns on stderr and lands in
 // the audit log (RFC-0012 VS-12).

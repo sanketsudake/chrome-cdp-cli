@@ -82,6 +82,22 @@ See **[Using chrome-cdp from an AI agent](docs/using-with-ai-agents.md)**.
 
 An [Agent Skill](https://docs.claude.com/en/docs/claude-code/skills) that teaches the whole loop ships in [`skills/drive-chrome-cdp`](skills/drive-chrome-cdp/SKILL.md) — point your harness at it.
 
+## Use it from an MCP client
+
+`chrome-cdp mcp` runs the same verbs as a [Model Context Protocol](https://modelcontextprotocol.io) server on stdio — one entry in your client's config, no wrapper to write:
+
+```jsonc
+{ "mcpServers": { "chrome-cdp": { "command": "chrome-cdp", "args": ["mcp"] } } }
+```
+
+It exposes a deliberately small set of tools (grouped, `chrome_cdp_`-prefixed, with a `batch` that collapses a five-step interaction into one round trip), and every result is the same envelope the CLI prints — a failure comes back with its `code` and `exit`, not as prose.
+
+**It requires a policy allow-list and refuses to start without one.**
+Run `chrome-cdp policy init` on the tab you want it to drive first: at a shell you decided to run each command, but an assistant holding this connection can act as you on every site you are signed into, and that deserves an explicit boundary.
+`eval` and `raw` are denied in this mode unless you pass `--allow-eval` — they can navigate the tab out of the allow-list themselves, which would make the boundary decorative.
+`chrome-cdp mcp --read-only` is a good way to try it — it exposes only verbs that cannot change a page or close a tab.
+See the [MCP section of the CLI reference](docs/cli-reference.md#mcp-server).
+
 ## Configure
 
 Persist flags you'd otherwise retype in `~/.config/chrome-cdp/config.toml` — see [`config.example.toml`](config.example.toml).
