@@ -55,8 +55,11 @@ func TestAwaitUpgradePendingIsBoundedAndAnnounced(t *testing.T) {
 	if pendingAt == 0 {
 		t.Error("onPending never fired — the user is told only after the wait, which is the bug")
 	}
-	if pendingAt > 400*time.Millisecond {
-		t.Errorf("onPending fired after %v, want ~100ms (it must announce during the wait)", pendingAt)
+	// An ORDERING relation, not a wall-clock ceiling: the property is that the
+	// announcement lands during the wait rather than on the way out of it, and
+	// a scheduler hiccup on a loaded CI box is not a regression.
+	if pendingAt > elapsed/2 {
+		t.Errorf("onPending fired after %v of a %v wait — it must announce while the dialog is up, not on the way out", pendingAt, elapsed)
 	}
 	if elapsed < 500*time.Millisecond {
 		t.Errorf("gave up after %v, want the full ~600ms budget", elapsed)
@@ -236,13 +239,15 @@ func TestResolveWSURL(t *testing.T) {
 // holding a consent prompt.
 func TestAwaitUpgradeAnswerDuringOnPendingIsNotDiscarded(t *testing.T) {
 	t.Parallel()
-	const budget = 50 * time.Millisecond
+	const budget = 100 * time.Millisecond
 	// The answer lands after the budget is up but WHILE onPending is still
-	// running, so it is sitting in the channel when the wait ends.
-	ep := probetest.Answer(t, budget+10*time.Millisecond, "HTTP/1.1 101 Switching Protocols")
+	// running, so it is sitting in the channel when the wait ends. The margins
+	// are generous in both directions because the property is an ordering, not
+	// a duration.
+	ep := probetest.Answer(t, budget+20*time.Millisecond, "HTTP/1.1 101 Switching Protocols")
 
 	u := AwaitUpgrade(ep.WS(), UpgradeTimings{PendingAfter: budget, Total: budget}, func() {
-		time.Sleep(30 * time.Millisecond)
+		time.Sleep(200 * time.Millisecond)
 	})
 	defer u.Close()
 

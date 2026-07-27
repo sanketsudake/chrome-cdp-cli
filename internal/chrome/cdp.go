@@ -48,6 +48,18 @@ type Options struct {
 	// It arrives already normalised: config resolution is the one boundary
 	// where flag, env and file meet, and ClampConsentTimeout runs there.
 	ConsentTimeout time.Duration
+	// ConsentPendingAfter is how much silence from an OPEN port counts as
+	// "Chrome is asking the user", i.e. when OnConsentPending fires. Zero means
+	// DefaultConsentPendingAfter, which is what production always uses.
+	//
+	// It is a field rather than a package var because a test needs to shrink
+	// it, and the tests that need it most are in another package: the daemon's
+	// had to sit a 3s consent budget and a 3s poll around a 2s threshold it
+	// could not reach, measuring 3.05s against a marker at ~2.0s. A 1.5x margin
+	// on a timing this repo has already been bitten by four times on macOS is
+	// not a margin. Options already carries ConsentTimeout and
+	// OnConsentPending; this belongs with them.
+	ConsentPendingAfter time.Duration
 	// OnConsentPending fires once, as soon as the upgrade is classified as
 	// pending — i.e. while the dialog is still on screen, not after the wait.
 	// The daemon uses it to tell the CLI what it is waiting for.
@@ -163,6 +175,11 @@ const (
 	// would block every other invocation for a year.
 	MinConsentTimeout = 1 * time.Second
 	MaxConsentTimeout = 10 * time.Minute
+	// DefaultConsentPendingAfter is how much silence from an open port counts
+	// as "Chrome is asking the user". Two seconds, because this is loopback: a
+	// debug endpoint that has accepted and then said nothing for two seconds is
+	// not busy, it is waiting for a human.
+	DefaultConsentPendingAfter = 2 * time.Second
 )
 
 // ClampConsentTimeout normalises a configured consent budget: zero or negative
@@ -186,11 +203,6 @@ func ClampConsentTimeout(d time.Duration) time.Duration {
 	}
 	return d
 }
-
-// consentPendingAfter is how much silence from an open port counts as "Chrome is
-// asking the user". It is a var only so a test can shrink the clock; production
-// never changes it.
-var consentPendingAfter = 2 * time.Second
 
 // Connect walks the connection ladder (mirroring browser.DecideConnection):
 //   - a completed WebSocket upgrade           -> attach (Path B)
@@ -216,6 +228,10 @@ func Connect(_ context.Context, opts Options) (*CDP, error) {
 	// second, disagreeing policy — which is the only thing that went wrong here
 	// before.
 	consent := ClampConsentTimeout(opts.ConsentTimeout)
+	pendingAfter := opts.ConsentPendingAfter
+	if pendingAfter <= 0 {
+		pendingAfter = DefaultConsentPendingAfter
+	}
 	// One upgrade decides the ladder's first two rungs, and it is the ONLY thing
 	// here that can raise a consent prompt. chromedp cannot do this itself:
 	// bounding its first Run with a context deadline would tear down the browser
@@ -224,7 +240,7 @@ func Connect(_ context.Context, opts Options) (*CDP, error) {
 	// consent the user just granted is still live when chromedp arrives.
 	ws := browser.WSRefused
 	if wsURL, ok := ResolveWSURL(endpoint); ok {
-		up := AwaitUpgrade(wsURL, UpgradeTimings{PendingAfter: consentPendingAfter, Total: consent}, opts.OnConsentPending)
+		up := AwaitUpgrade(wsURL, UpgradeTimings{PendingAfter: pendingAfter, Total: consent}, opts.OnConsentPending)
 		defer up.Close()
 		ws = up.State
 	}

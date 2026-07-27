@@ -24,15 +24,6 @@ import (
 // Chrome twice, and a regression test that needs a human to click a modal is not
 // a test.
 
-// shrinkPendingThreshold shortens the silence that counts as consent-pending, so
-// a test can assert the announce-during-the-wait property in milliseconds.
-func shrinkPendingThreshold(t *testing.T, d time.Duration) {
-	t.Helper()
-	prev := consentPendingAfter
-	consentPendingAfter = d
-	t.Cleanup(func() { consentPendingAfter = prev })
-}
-
 // pinChromeRunning fixes the pgrep answer: whether the machine running the test
 // happens to have Chrome open must not decide which rung of the ladder we land on.
 func pinChromeRunning(t *testing.T, running bool) {
@@ -62,15 +53,15 @@ func connectErrCode(t *testing.T, err error) string {
 func TestConnectConsentPendingWaitsAndReports(t *testing.T) {
 	ep := probetest.Stall(t)
 	pinChromeRunning(t, true) // even so: a hanging upgrade is not "enable the toggle"
-	shrinkPendingThreshold(t, 200*time.Millisecond)
 
 	var pendingAt time.Duration
 	start := time.Now()
 	_, err := Connect(context.Background(), Options{
-		PortFile:         ep.PortFile(t),
-		NoLaunch:         true,
-		ConsentTimeout:   2 * time.Second,
-		OnConsentPending: func() { pendingAt = time.Since(start) },
+		PortFile:            ep.PortFile(t),
+		NoLaunch:            true,
+		ConsentTimeout:      2 * time.Second,
+		ConsentPendingAfter: 200 * time.Millisecond,
+		OnConsentPending:    func() { pendingAt = time.Since(start) },
 	})
 	elapsed := time.Since(start)
 
@@ -198,10 +189,10 @@ func TestConnectExplicitPortStillProbes(t *testing.T) {
 	_, port, _ := net.SplitHostPort(strings.TrimPrefix(srv.URL, "http://"))
 	p, _ := strconv.Atoi(port)
 	pinChromeRunning(t, false)
-	shrinkPendingThreshold(t, 100*time.Millisecond)
 
 	_, err := Connect(context.Background(), Options{
 		Port: p, NoLaunch: true, ConsentTimeout: 700 * time.Millisecond,
+		ConsentPendingAfter: 100 * time.Millisecond,
 	})
 	if got := connectErrCode(t, err); got != result.CodeConsentPending {
 		t.Errorf("error.code = %q, want %q — the --port endpoint was not probed as a WebSocket", got, result.CodeConsentPending)
@@ -248,10 +239,10 @@ func TestConnectExplicitPortDetectsConsentWithoutJSONVersion(t *testing.T) {
 	_, port, _ := net.SplitHostPort(ln.Addr().String())
 	p, _ := strconv.Atoi(port)
 	pinChromeRunning(t, true) // and yet: a hanging upgrade is not "enable the toggle"
-	shrinkPendingThreshold(t, 100*time.Millisecond)
 
 	_, cerr := Connect(context.Background(), Options{
 		Port: p, NoLaunch: true, ConsentTimeout: 700 * time.Millisecond,
+		ConsentPendingAfter: 100 * time.Millisecond,
 	})
 	if got := connectErrCode(t, cerr); got != result.CodeConsentPending {
 		t.Errorf("error.code = %q, want %q — with /json/version 404ing, the pending prompt is invisible and the user is told to re-enable a setting that is already on:\n%v",

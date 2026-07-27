@@ -204,6 +204,11 @@ func TestRunDaemonPublishesPendingWhileWaiting(t *testing.T) {
 	go func() {
 		done <- RunDaemon(sock, chrome.Options{
 			PortFile: pf, NoLaunch: true, ConsentTimeout: 3 * time.Second,
+			// The marker is published at this threshold, and the poll below
+			// has three seconds to see it. With the production 2s threshold
+			// the two were 3.05s and ~2.0s apart — a 1.5x margin on exactly
+			// the kind of timing that has flaked in CI here four times.
+			ConsentPendingAfter: 100 * time.Millisecond,
 		}, time.Minute)
 	}()
 
