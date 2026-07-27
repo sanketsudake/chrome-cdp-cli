@@ -529,7 +529,7 @@ That is everything — there is no other key, and an unrecognised one is an erro
 | `label` | a name for the step, echoed in its envelope and in the failure summary |
 | `on_error` | `abort` (default) or `continue`; there are no retries, conditionals, or loops |
 | `inputs` | `required`, `default`, `description` — no types and no validation expressions |
-| `target` | a default `--target` for every step, overridden by a step's own `--target` or by `--target` on the run |
+| `target` | a default `--target` for every step, overridden by a step's own `--target` or by `--target` on the run; takes `{{placeholders}}` like any argv element |
 
 `{{name}}` substitutes an input **into one argv element**.
 There is no shell anywhere in this design and there is no `shell:` step type, so a value is passed through byte for byte and nothing in it is interpreted.

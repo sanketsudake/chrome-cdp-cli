@@ -282,6 +282,14 @@ func validateHeader(r *Recipe, f *fileRecipe, path string) error {
 		}
 		r.Inputs[name] = Input{Required: in.Required, Default: in.Default, Description: in.Description}
 	}
+	// `target:` is argv too — it becomes each step's --target — so it is
+	// placeholder-checked like any other argv element. Skipping it let an
+	// undeclared placeholder through load and surface as a runtime
+	// target_not_found after connecting, which is the one thing this package
+	// exists to prevent.
+	if err := checkPlaceholders([]string{f.Target}, r.Inputs); err != nil {
+		return fmt.Errorf("%s: `target`: %v", path, err)
+	}
 	return nil
 }
 
@@ -522,7 +530,9 @@ func Resolve(r *Recipe, opts Opts) (*Plan, error) {
 	if err != nil {
 		return nil, err
 	}
-	target := r.Target
+	// The recipe's own target carries inputs like any other argv element; a
+	// --target from the command line is already a value and is used as given.
+	target := substitute(r.Target, values)
 	if opts.Target != "" {
 		target = opts.Target
 	}

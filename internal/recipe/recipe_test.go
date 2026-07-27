@@ -238,6 +238,18 @@ func TestMalformedRecipesRejectedAtLoad(t *testing.T) {
 			body: "name: x\ninputs:\n  cmd: { default: \"snap\" }\nsteps:\n  - run: [\"{{cmd}}\"]\n",
 			want: "must be a literal",
 		},
+		// `target:` is argv too — it becomes each step's --target — so an
+		// undeclared placeholder there has to fail at load like any other.
+		// Escaping validation produced a runtime target_not_found AFTER
+		// connecting, against this package's validate-before-connect contract.
+		"undeclared placeholder in target": {
+			body: "name: x\ntarget: \"url:{{env}}.corp.test\"\nsteps:\n  - run: [\"snap\"]\n",
+			want: "not a declared input",
+		},
+		"malformed placeholder in target": {
+			body: "name: x\ntarget: \"url:{{env.name}}\"\nsteps:\n  - run: [\"snap\"]\n",
+			want: "malformed placeholder",
+		},
 		"undeclared placeholder": { // VS-5
 			body: "name: x\nsteps:\n  - run: [\"nav\", \"https://x.test/{{nope}}\"]\n",
 			want: "not a declared input",
@@ -655,6 +667,38 @@ func TestStepWithItsOwnTerminator(t *testing.T) {
 	want := []string{"text", "--target", "aa11", "--", "-weird-selector"}
 	if !reflect.DeepEqual(plan.Steps[0].Argv, want) {
 		t.Errorf("argv = %#v, want %#v", plan.Steps[0].Argv, want)
+	}
+}
+
+// `target:` takes inputs like any other argv element: it IS argv, injected as
+// each step's --target. Emitting it verbatim shipped a literal `{{env}}` to the
+// target resolver.
+func TestTargetIsSubstituted(t *testing.T) {
+	t.Parallel()
+	r := loadFixture(t, "t", `name: t
+inputs:
+  env: { default: "staging" }
+target: "url:{{env}}.corp.test"
+steps:
+  - run: ["snap"]
+`)
+	plan, err := Resolve(r, Opts{Set: map[string]string{"env": "prod"}})
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if plan.Target != "url:prod.corp.test" {
+		t.Errorf("plan target = %q, want url:prod.corp.test", plan.Target)
+	}
+	if want := []string{"snap", "--target", "url:prod.corp.test"}; !reflect.DeepEqual(plan.Steps[0].Argv, want) {
+		t.Errorf("argv = %#v, want %#v", plan.Steps[0].Argv, want)
+	}
+	// The default applies when --set does not.
+	plan, err = Resolve(r, Opts{})
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if plan.Target != "url:staging.corp.test" {
+		t.Errorf("plan target = %q, want url:staging.corp.test", plan.Target)
 	}
 }
 
