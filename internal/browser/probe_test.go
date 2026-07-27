@@ -1,0 +1,193 @@
+package browser
+
+import (
+	"fmt"
+	"net"
+	"sync/atomic"
+	"testing"
+	"time"
+)
+
+// The consent-pending state is reproducible without a browser: it is a TCP
+// listener that accepts and then stalls. These helpers build the three endpoint
+// shapes the probe has to tell apart. The manual reproduction of this bug wedged
+// a real browser twice, so it must never be the regression test.
+
+// stallListener accepts connections and never answers — Chrome holding a consent
+// prompt. It counts accepted connections, so a test can prove nothing connected.
+func stallListener(t *testing.T) (wsURL string, conns *atomic.Int32) {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+	var n atomic.Int32
+	go func() {
+		var held []net.Conn
+		defer func() {
+			for _, c := range held {
+				_ = c.Close()
+			}
+		}()
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			n.Add(1)
+			held = append(held, c) // hold it open, saying nothing
+		}
+	}()
+	return wsFor(ln), &n
+}
+
+// answerListener accepts and completes the WebSocket upgrade after delay — the
+// user finding the dialog and clicking Allow. It records whether the connection
+// was still open when the answer was written: that is what "no orphaned prompt"
+// means in the failure this exists to prevent.
+func answerListener(t *testing.T, delay time.Duration, status string) (wsURL string, answeredLive *atomic.Bool) {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+	var live atomic.Bool
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func(c net.Conn) {
+				defer c.Close()
+				time.Sleep(delay)
+				if _, err := c.Write([]byte(status + "\r\n\r\n")); err == nil {
+					live.Store(true)
+				}
+				time.Sleep(50 * time.Millisecond)
+			}(c)
+		}
+	}()
+	return wsFor(ln), &live
+}
+
+// closedWS returns a ws:// URL for a port with nothing listening.
+func closedWS(t *testing.T) string {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	url := wsFor(ln)
+	_ = ln.Close()
+	return url
+}
+
+func wsFor(ln net.Listener) string {
+	return fmt.Sprintf("ws://%s/devtools/browser/stub", ln.Addr().String())
+}
+
+// TestAwaitUpgradeRefusedIsFast is the safety property behind the long consent
+// wait: only an OPEN port earns it. A dead endpoint must fail in milliseconds,
+// never after the consent timeout.
+func TestAwaitUpgradeRefusedIsFast(t *testing.T) {
+	t.Parallel()
+	start := time.Now()
+	u := AwaitUpgrade(closedWS(t), 2*time.Second, time.Second, 30*time.Second, nil)
+	defer u.Close()
+	if u.State != WSRefused {
+		t.Errorf("closed port classified %v, want refused", u.State)
+	}
+	if el := time.Since(start); el > 2*time.Second {
+		t.Errorf("a refused endpoint took %v — it must fail fast, not wait out the consent budget", el)
+	}
+}
+
+// TestAwaitUpgradePendingIsBoundedAndAnnounced covers the consent signature:
+// silence on an open port is reported while it is happening, and the wait ends.
+func TestAwaitUpgradePendingIsBoundedAndAnnounced(t *testing.T) {
+	t.Parallel()
+	ws, conns := stallListener(t)
+	var pendingAt time.Duration
+	start := time.Now()
+	u := AwaitUpgrade(ws, time.Second, 100*time.Millisecond, 600*time.Millisecond, func() {
+		pendingAt = time.Since(start)
+	})
+	defer u.Close()
+	elapsed := time.Since(start)
+
+	if u.State != WSPending {
+		t.Fatalf("a stalling endpoint classified %v, want pending", u.State)
+	}
+	if pendingAt == 0 {
+		t.Error("onPending never fired — the user is told only after the wait, which is the bug")
+	}
+	if pendingAt > 400*time.Millisecond {
+		t.Errorf("onPending fired after %v, want ~100ms (it must announce during the wait)", pendingAt)
+	}
+	if elapsed < 500*time.Millisecond {
+		t.Errorf("gave up after %v, want the full ~600ms budget", elapsed)
+	}
+	if elapsed > 3*time.Second {
+		t.Errorf("the wait is unbounded (%v)", elapsed)
+	}
+	if got := conns.Load(); got != 1 {
+		t.Errorf("probe opened %d connections, want exactly 1 — each one is a consent request", got)
+	}
+}
+
+// TestAwaitUpgradeLateAnswerStillSucceeds is the orphaned-prompt regression: an
+// answer that arrives long after the old ~10s dial timeout must still land on a
+// live connection.
+func TestAwaitUpgradeLateAnswerStillSucceeds(t *testing.T) {
+	t.Parallel()
+	ws, answeredLive := answerListener(t, 300*time.Millisecond, "HTTP/1.1 101 Switching Protocols")
+	var announced bool
+	u := AwaitUpgrade(ws, time.Second, 50*time.Millisecond, 5*time.Second, func() { announced = true })
+	defer u.Close()
+
+	if u.State != WSReady {
+		t.Fatalf("a late-but-completed upgrade classified %v, want ready", u.State)
+	}
+	if !announced {
+		t.Error("the pending state was never announced even though the answer took 6x the threshold")
+	}
+	if !answeredLive.Load() {
+		t.Error("the endpoint answered into a closed socket — the prompt was orphaned")
+	}
+	if u.conn == nil {
+		t.Error("a ready upgrade must keep its socket, so the granted consent is still held when the attach lands")
+	}
+}
+
+// TestProbeWSClassifiesAllThree is doctor's view: three endpoints, three answers,
+// and the ready one established by a completed upgrade rather than a port file.
+func TestProbeWSClassifiesAllThree(t *testing.T) {
+	t.Parallel()
+	stalling, _ := stallListener(t)
+	ready, _ := answerListener(t, 0, "HTTP/1.1 101 Switching Protocols")
+	// An endpoint that ANSWERS with something other than 101 is a live server
+	// that is not a CDP browser (a stale port file reused by another process).
+	wrong, _ := answerListener(t, 0, "HTTP/1.1 404 Not Found")
+
+	for _, c := range []struct {
+		name string
+		ws   string
+		want WSState
+	}{
+		{"nothing listening", closedWS(t), WSRefused},
+		{"accepts and stalls", stalling, WSPending},
+		{"completes the upgrade", ready, WSReady},
+		{"answers 404", wrong, WSRefused},
+		{"not a ws url", "::::", WSRefused},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			if got := ProbeWS(c.ws, time.Second, 400*time.Millisecond); got != c.want {
+				t.Errorf("ProbeWS = %v, want %v", got, c.want)
+			}
+		})
+	}
+}
