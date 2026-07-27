@@ -1,6 +1,6 @@
 # RFC-0009: Recipes — saved, shareable `session` scripts
 
-- **Status:** Draft
+- **Status:** Accepted — implemented in [#14](https://github.com/sanketsudake/chrome-cdp-cli/pull/14)
 - **Priority:** P2
 - **Area:** workflow
 - **Depends on:** `session` (exists); benefits from RFC-0001, RFC-0005, RFC-0006

@@ -5,7 +5,14 @@ Design proposals for `chrome-cdp`, written before the code so the CLI surface, t
 Each RFC is self-contained: motivation, user stories with acceptance criteria, the proposed command surface, the envelope shape, and a verification plan that maps to real tests.
 An RFC is `Draft` until someone implements it; the implementing PR flips it to `Accepted` and links itself.
 
+**All thirteen are now implemented and merged.**
+They are kept as the design record — what was proposed, why, and what the verification plan was — not as a to-do list.
+Where the implementation departed from the proposal, the RFC's own Open Questions section records the decision, and the PR records the reason.
+
 ## Why these, and why in this order
+
+Written when none of it existed.
+Kept in the present tense of the time, because the reasoning is the point: this is what the tool could not do, and why that ordering.
 
 `chrome-cdp` is already strong where browser automation is usually weak: a stable JSON envelope, a stable exit-code contract, batched execution over one connection (`session`), settle-aware waiting (`wait --idle` / `--stable`), and element addressing that survives dynamic-id apps (`--by name` / `cell` / `label` / `in-row`).
 
@@ -24,23 +31,27 @@ The gaps are concentrated in three places:
 
 The ordering below follows that: make the interaction surface complete, then make the browser observable, then make the tool easy to adopt and safe to hand to an agent.
 
+RFC-0013 was not part of that plan.
+It came out of a failure the work itself caused — several processes attaching at once, each raising Chrome's consent prompt, and the browser wedging with no button that responded.
+The reproduction then contradicted the first diagnosis, which is why it is written up rather than just fixed.
+
 ## Index
 
 | RFC | Title | Priority | Area | Status |
 |-----|-------|----------|------|--------|
-| [0001](0001-keyboard-key-verb.md) | Keyboard input: the `key` verb | P0 | input | Draft |
-| [0002](0002-console-messages.md) | Console messages: the `console` verb | P0 | observability | Draft |
-| [0003](0003-network-requests.md) | Network requests: the `net` verb | P0 | observability | Draft |
-| [0004](0004-mcp-server-mode.md) | MCP server mode: `chrome-cdp mcp` | P0 | distribution | Draft |
-| [0005](0005-pointer-verbs.md) | Pointer verbs: `hover`, `dblclick`, `rclick`, `drag` | P1 | input | Draft |
-| [0006](0006-file-upload.md) | File upload: the `upload` verb | P1 | input | Draft |
-| [0007](0007-tab-lifecycle.md) | Tab lifecycle: `close`, `activate`, history navigation | P1 | tabs | Draft |
-| [0008](0008-screenshot-options.md) | Screenshot options: element, full-page, region, format | P1 | capture | Draft |
-| [0009](0009-recipes.md) | Recipes: saved, shareable `session` scripts | P2 | workflow | Draft |
-| [0010](0010-page-reading-ergonomics.md) | Page-reading ergonomics: `text --article`, `eval --await` | P2 | reading | Draft |
-| [0011](0011-session-recording.md) | Session recording: `record` and GIF export | P2 | capture | Draft |
-| [0012](0012-domain-allowlist.md) | Domain allow-list: bounding what the CLI may drive | P2 | safety | Draft |
-| [0013](0013-consent-prompt-lifecycle.md) | Surviving Chrome's consent prompt | P0 | connection | Draft |
+| [0001](0001-keyboard-key-verb.md) | Keyboard input: the `key` verb | P0 | input | Accepted — [#10](https://github.com/sanketsudake/chrome-cdp-cli/pull/10) |
+| [0002](0002-console-messages.md) | Console messages: the `console` verb | P0 | observability | Accepted — [#13](https://github.com/sanketsudake/chrome-cdp-cli/pull/13) |
+| [0003](0003-network-requests.md) | Network requests: the `net` verb | P0 | observability | Accepted — [#13](https://github.com/sanketsudake/chrome-cdp-cli/pull/13) |
+| [0004](0004-mcp-server-mode.md) | MCP server mode: `chrome-cdp mcp` | P0 | distribution | Accepted — [#15](https://github.com/sanketsudake/chrome-cdp-cli/pull/15) |
+| [0005](0005-pointer-verbs.md) | Pointer verbs: `hover`, `dblclick`, `rclick`, `drag` | P1 | input | Accepted — [#10](https://github.com/sanketsudake/chrome-cdp-cli/pull/10) |
+| [0006](0006-file-upload.md) | File upload: the `upload` verb | P1 | input | Accepted — [#12](https://github.com/sanketsudake/chrome-cdp-cli/pull/12) |
+| [0007](0007-tab-lifecycle.md) | Tab lifecycle: `close`, `activate`, history navigation | P1 | tabs | Accepted — [#10](https://github.com/sanketsudake/chrome-cdp-cli/pull/10) |
+| [0008](0008-screenshot-options.md) | Screenshot options: element, full-page, region, format | P1 | capture | Accepted — [#11](https://github.com/sanketsudake/chrome-cdp-cli/pull/11) |
+| [0009](0009-recipes.md) | Recipes: saved, shareable `session` scripts | P2 | workflow | Accepted — [#14](https://github.com/sanketsudake/chrome-cdp-cli/pull/14) |
+| [0010](0010-page-reading-ergonomics.md) | Page-reading ergonomics: `text --article`, `eval --await` | P2 | reading | Accepted — [#11](https://github.com/sanketsudake/chrome-cdp-cli/pull/11) |
+| [0011](0011-session-recording.md) | Session recording: `record` and GIF export | P2 | capture | Accepted — [#14](https://github.com/sanketsudake/chrome-cdp-cli/pull/14) |
+| [0012](0012-domain-allowlist.md) | Domain allow-list: bounding what the CLI may drive | P2 | safety | Accepted — [#12](https://github.com/sanketsudake/chrome-cdp-cli/pull/12) |
+| [0013](0013-consent-prompt-lifecycle.md) | Surviving Chrome's consent prompt | P0 | connection | Accepted — [#18](https://github.com/sanketsudake/chrome-cdp-cli/pull/18) |
 
 ## Dependency graph
 

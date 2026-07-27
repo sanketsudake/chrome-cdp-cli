@@ -1,6 +1,6 @@
 # RFC-0006: File upload — the `upload` verb
 
-- **Status:** Draft
+- **Status:** Accepted — implemented in [#12](https://github.com/sanketsudake/chrome-cdp-cli/pull/12)
 - **Priority:** P1
 - **Area:** input
 - **Depends on:** —

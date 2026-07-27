@@ -1,6 +1,6 @@
 # RFC-0001: Keyboard input — the `key` verb
 
-- **Status:** Draft
+- **Status:** Accepted — implemented in [#10](https://github.com/sanketsudake/chrome-cdp-cli/pull/10)
 - **Priority:** P0
 - **Area:** input
 - **Depends on:** —

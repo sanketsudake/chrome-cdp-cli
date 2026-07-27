@@ -1,6 +1,6 @@
 # RFC-0002: Console messages — the `console` verb
 
-- **Status:** Draft
+- **Status:** Accepted — implemented in [#13](https://github.com/sanketsudake/chrome-cdp-cli/pull/13), with follow-up fixes in [#16](https://github.com/sanketsudake/chrome-cdp-cli/pull/16)
 - **Priority:** P0
 - **Area:** observability
 - **Depends on:** —

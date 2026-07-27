@@ -1,6 +1,6 @@
 # RFC-0010: Page-reading ergonomics — `text --article` and `eval --await`
 
-- **Status:** Draft
+- **Status:** Accepted — implemented in [#11](https://github.com/sanketsudake/chrome-cdp-cli/pull/11)
 - **Priority:** P2
 - **Area:** reading
 - **Depends on:** —

@@ -1,6 +1,6 @@
 # RFC-0007: Tab lifecycle — `close`, `activate`, and history navigation
 
-- **Status:** Draft
+- **Status:** Accepted — implemented in [#10](https://github.com/sanketsudake/chrome-cdp-cli/pull/10)
 - **Priority:** P1
 - **Area:** tabs
 - **Depends on:** —
