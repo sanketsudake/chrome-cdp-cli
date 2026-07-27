@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	cdplog "github.com/chromedp/cdproto/log"
@@ -49,11 +50,14 @@ const (
 	// reader that cannot keep up drops rather than stalls Chrome.
 	consoleStreamBacklog = 256
 
-	// noRetainedHistoryNote is the honest answer when nothing was listening
-	// before this command started. Reporting an empty list without it would let
-	// a caller conclude the page was silent.
-	noRetainedHistoryNote = "no retained history: nothing was listening to this tab before this command started, " +
-		"so only messages emitted during it can appear. Use the daemon (drop --no-daemon) to retain history, or --follow to watch from here."
+	// partialHistoryNote is the honest answer when nothing was listening before
+	// this command started. Some history does arrive — Chrome replays what it
+	// retained when capture is enabled — but it is Chrome's window, not ours,
+	// and it is neither complete nor bounded by anything the caller set. Saying
+	// so is what stops a short list being read as "the page was quiet".
+	partialHistoryNote = "partial history: nothing was listening to this tab before this command started, so what appears is " +
+		"whatever Chrome replayed when capture was enabled, plus what arrived during this command. " +
+		"Use the daemon (drop --no-daemon) to retain everything from the moment it attached, or --follow to watch from here."
 )
 
 // consoleMessage is one retained console line or uncaught exception.
@@ -129,18 +133,38 @@ func (c *CDP) attached(id string) bool {
 	return ok
 }
 
-// startCapture turns on the CDP event capture for a freshly attached tab. It is
-// called from on(), under c.mu, exactly once per tab.
+// listenCapture registers every event-capture listener for a tab. It is called
+// from on(), under c.mu, exactly once per tab — and BEFORE the attach, so the
+// backlog Log.enable flushes during chromedp's own attach sequence is received
+// rather than dropped on the floor.
 //
 // This is the hook every event-backed verb shares; RFC-0003's network capture
-// starts here too.
-func (c *CDP) startCapture(tctx context.Context, id string) {
-	c.startConsoleCapture(tctx, id)
-	c.startNetCapture(tctx, id)
+// and RFC-0011's screencast register here too.
+func (c *CDP) listenCapture(tctx context.Context, id string) {
+	c.listenConsole(tctx, id)
+	c.listenNet(tctx, id)
 	c.startRecordCapture(tctx, id)
 }
 
-// startConsoleCapture retains console output and uncaught exceptions for a tab.
+// enableCapture turns the CDP domains on after the attach.
+//
+// It is best-effort and separate from listenCapture for two reasons. Every verb
+// attaches, so a target that refuses Runtime/Log/Network (a chrome:// page, say)
+// must not have `click` broken by an observability feature it never used —
+// Console and Net re-enable at read time and DO report the failure, so the
+// honesty is paid for where it is asked for. And chromedp's attach already
+// enables all three, so this is the idempotent belt to that braces: it matters
+// only when a future chromedp drops one of them.
+func (c *CDP) enableCapture(tctx context.Context, id string) {
+	// Bounded so a wedged target cannot hang the attach; cancelling this child
+	// never closes the tab (only chromedp's own NewContext contexts do).
+	ectx, cancel := context.WithTimeout(tctx, 5*time.Second)
+	defer cancel()
+	_ = chromedp.Run(ectx, consoleEnable()...)
+	_ = chromedp.Run(ectx, netEnable(c.netMaxBody)...)
+}
+
+// listenConsole retains console output and uncaught exceptions for a tab.
 //
 // It runs at ATTACH, not at the first `console` read, and that is the whole
 // design: the process holding the connection has to already be listening when
@@ -151,28 +175,109 @@ func (c *CDP) startCapture(tctx context.Context, id string) {
 // as the buffer, rather than on a per-command context whose cancel would take
 // the subscription with it. It runs on chromedp's event loop, so it only ever
 // appends to an in-memory buffer and never issues a CDP command.
-//
-// Enabling the domains is best-effort HERE, because every verb attaches: a
-// target that refuses Runtime/Log (a chrome:// page, say) must not have `click`
-// broken by a console feature it never used. Console re-enables at read time
-// and does report the failure, so the honesty is paid for where it is asked
-// for.
-func (c *CDP) startConsoleCapture(tctx context.Context, id string) {
+func (c *CDP) listenConsole(tctx context.Context, id string) {
 	set := c.consoleBuf()
 	maxEntry := c.consoleMaxEntry
+	dedup := &consoleDedup{}
 	chromedp.ListenTarget(tctx, func(ev any) {
-		if m, ok := consoleEvent(ev, maxEntry); ok {
-			set.Add(id, m)
+		m, ok := consoleEvent(ev, maxEntry)
+		if !ok {
+			return
 		}
+		if ident, collidable := consoleDedupIdent(ev, m); collidable && !dedup.first(ident, m.TS) {
+			return
+		}
+		set.Add(id, m)
 	})
-	// Bounded so a wedged target cannot hang the attach; cancelling this child
-	// never closes the tab (only chromedp's own NewContext contexts do). The
-	// error is swallowed HERE because every verb attaches — but Console
-	// re-enables and does report it, so a tab whose capture cannot start
-	// answers `cdp_error` rather than a silently empty console.
-	ectx, cancel := context.WithTimeout(tctx, 5*time.Second)
-	defer cancel()
-	_ = chromedp.Run(ectx, consoleEnable()...)
+}
+
+// consoleDedup suppresses a SECOND report of the same message.
+//
+// Chrome can describe one uncaught exception twice: Runtime.exceptionThrown and
+// Log.entryAdded with source "javascript". Suppressing the second by SOURCE, as
+// this used to, throws away the pre-attach backlog along with the duplicates —
+// Log.enable's replay of "the entries collected so far" is the ONLY record of an
+// error that predates the attach, and Runtime.enable replays nothing. A page
+// that had already thrown answered `console --only-errors` with an empty list
+// and exit 0, which reads as "the page is clean": RFC-0002 US-1 exactly
+// inverted.
+//
+// So duplicates are judged on IDENTITY — what was said, and where — inside a
+// short window, and the backlog survives. The window matters: an app that throws
+// the same error on every poll is reporting a real repeat, not a duplicate.
+type consoleDedup struct {
+	mu     sync.Mutex
+	recent []consoleSeen
+}
+
+type consoleSeen struct {
+	ident string
+	ts    time.Time
+}
+
+const (
+	// consoleDedupWindow is how close two reports must be to be the same event.
+	// The two CDP events for one exception are emitted together, so this only
+	// has to survive event-loop jitter — while staying far below the interval at
+	// which a genuinely repeating error repeats.
+	consoleDedupWindow = 2 * time.Second
+
+	// consoleDedupDepth bounds what the dedupe remembers. A burst of distinct
+	// errors must not push the window's worth of identities out, and a day-long
+	// session must not accumulate them.
+	consoleDedupDepth = 64
+)
+
+// first records a report and reports whether it is the first one for ident
+// within the window.
+func (d *consoleDedup) first(ident string, ts time.Time) bool {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	kept := d.recent[:0]
+	seen := false
+	for _, e := range d.recent {
+		if ts.Sub(e.ts).Abs() > consoleDedupWindow {
+			continue // outside the window: a genuine repeat, not a duplicate
+		}
+		if e.ident == ident {
+			seen = true
+		}
+		kept = append(kept, e)
+	}
+	d.recent = append(kept, consoleSeen{ident: ident, ts: ts})
+	if len(d.recent) > consoleDedupDepth {
+		d.recent = d.recent[len(d.recent)-consoleDedupDepth:]
+	}
+	return !seen
+}
+
+// consoleDedupIdent returns the identity a duplicate is judged on, and whether
+// this event is one of the two shapes that can describe the same thing.
+//
+// Only an uncaught exception can arrive twice, so only those two shapes are
+// deduped: a page that logs the same line twice on purpose must still see both.
+// The identity is the message text with the noise the two reports differ on
+// stripped — Log's entry says "Uncaught TypeError: …" where Runtime's says
+// "TypeError: …" — plus the file it came from. Line numbers are deliberately
+// NOT part of it: the two domains report them on different bases.
+func consoleDedupIdent(ev any, m consoleMessage) (string, bool) {
+	switch e := ev.(type) {
+	case *cdpruntime.EventExceptionThrown:
+		return consoleIdent(m.Text, m.URL), true
+	case *cdplog.EventEntryAdded:
+		if e.Entry != nil && e.Entry.Source == cdplog.SourceJavascript {
+			return consoleIdent(e.Entry.Text, e.Entry.URL), true
+		}
+	}
+	return "", false
+}
+
+// consoleIdent normalises one report of an error to its identity.
+func consoleIdent(text, url string) string {
+	t := strings.TrimSpace(text)
+	t = strings.TrimPrefix(t, "Uncaught (in promise) ")
+	t = strings.TrimPrefix(t, "Uncaught ")
+	return strings.TrimSpace(t) + "\x00" + url
 }
 
 // consoleEnable turns on the domains console capture listens to. Both calls are
@@ -199,13 +304,15 @@ func (c *CDP) Console(ctx context.Context, id string, opts ConsoleOpts) (any, er
 	}
 	q := eventbuf.Query[consoleMessage]{Keep: keep, Limit: opts.Limit, Clear: opts.Clear}
 	if fresh {
-		// Nothing was alive to receive this tab's earlier events. Report what
-		// arrives now, and say so — an empty list with no note would read as
-		// "the page was quiet", which is a lie the caller cannot detect.
+		// Nothing was alive to receive this tab's earlier events, so whatever
+		// history there is came from Chrome's own replay at enable time. Report
+		// it — `buffered` is a real count of what is held, not a claim about
+		// completeness — and carry the note, because a short list with no
+		// explanation reads as "the page was quiet", which is a lie the caller
+		// cannot detect.
 		settle(ctx, consoleFreshGrace)
 		res := consoleResult(c.consoleBuf().Query(id, q))
-		res["buffered"] = 0
-		res["note"] = noRetainedHistoryNote
+		res["note"] = partialHistoryNote
 		return res, nil
 	}
 	return consoleResult(c.consoleBuf().Query(id, q)), nil
@@ -404,13 +511,6 @@ func consoleEvent(ev any, maxEntry int) (consoleMessage, bool) {
 	case *cdplog.EventEntryAdded:
 		en := e.Entry
 		if en == nil {
-			return consoleMessage{}, false
-		}
-		// Runtime is the authoritative source for anything the page itself
-		// said: console-api entries duplicate consoleAPICalled, and javascript
-		// entries duplicate exceptionThrown (with a worse stack). Dropping them
-		// here is what keeps `buffered` an honest count of distinct messages.
-		if en.Source == cdplog.SourceJavascript || string(en.Source) == "console-api" {
 			return consoleMessage{}, false
 		}
 		level, ok := NormalizeConsoleLevel(string(en.Level))

@@ -323,16 +323,25 @@ func (c *CDP) on(id string) (context.Context, error) {
 		return t.ctx, nil
 	}
 	tctx, cancel := chromedp.NewContext(c.base, chromedp.WithTargetID(cdptarget.ID(id)))
+	// Event capture starts at ATTACH, not at the first `console`/`net` read:
+	// the process holding the connection has to already be listening when the
+	// page logs, or an observability verb can only report what happened after
+	// somebody thought to look. See listenCapture in console.go.
+	//
+	// The listeners go on BEFORE chromedp.Run, which is the attach. chromedp's
+	// own attach sequence issues Runtime.enable and Log.enable itself, and
+	// Log.enable is what flushes "the entries collected so far" — so a listener
+	// registered after the attach misses that flush entirely, and with it the
+	// ONLY record of anything the page did before we arrived (Runtime.enable
+	// replays nothing). ListenTarget before Run is supported: the callback is
+	// held on the context and attached to the target before those enables run.
+	c.listenCapture(tctx, id)
 	if err := chromedp.Run(tctx); err != nil { // attach once, tied to tctx
 		cancel()
 		return nil, err
 	}
 	c.tabs[id] = tabConn{ctx: tctx, stop: cancel}
-	// Event capture starts at ATTACH, not at the first `console`/`net` read:
-	// the process holding the connection has to already be listening when the
-	// page logs, or an observability verb can only report what happened after
-	// somebody thought to look. See startCapture in console.go.
-	c.startCapture(tctx, id)
+	c.enableCapture(tctx, id)
 	return tctx, nil
 }
 

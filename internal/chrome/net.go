@@ -44,11 +44,15 @@ const (
 	// reader that cannot keep up drops rather than stalls Chrome.
 	netStreamBacklog = 256
 
-	// netNoRetainedHistoryNote is the honest answer when nothing was listening to
-	// this tab before the command started. An empty list without it would read as
-	// "the page made no requests", which is a lie the caller cannot detect.
-	netNoRetainedHistoryNote = "no retained history: nothing was listening to this tab before this command started, " +
-		"so only requests made during it can appear. Use the daemon (drop --no-daemon) to retain history, or --follow to watch from here."
+	// netPartialHistoryNote is the honest answer when nothing was listening to
+	// this tab before the command started. Some history does arrive — enabling
+	// the domain makes Chrome describe what it still holds for the page, which
+	// is a handful of cached resources rather than the session — so a short list
+	// without this note would read as "the page made these requests and no
+	// others", which is a lie the caller cannot detect.
+	netPartialHistoryNote = "partial history: nothing was listening to this tab before this command started, so what appears is " +
+		"whatever Chrome still held when capture was enabled, plus what arrived during this command. " +
+		"Use the daemon (drop --no-daemon) to retain everything from the moment it attached, or --follow to watch from here."
 )
 
 // NetRedacted is the placeholder a redacted header value or URL parameter is
@@ -259,18 +263,16 @@ func (c *CDP) configureNetCapture(buffer, maxBody int) {
 // already holds c.mu.
 func (c *CDP) netBuf() *eventbuf.Set[netRecord] { return c.net }
 
-// startNetCapture retains the tab's HTTP requests, from ATTACH rather than from
-// the first `net` read — the same reason console captures early: the process
-// holding the connection has to already be listening when the page makes the
-// request, or `net` can only ever report what happened after somebody thought to
-// look, which is exactly when it is least useful.
+// listenNet retains the tab's HTTP requests, from ATTACH rather than from the
+// first `net` read — the same reason console captures early: the process holding
+// the connection has to already be listening when the page makes the request, or
+// `net` can only ever report what happened after somebody thought to look, which
+// is exactly when it is least useful.
 //
 // The listener runs on chromedp's event loop and only folds events into an
-// in-memory record; it never issues a CDP command. Enabling the domain is
-// best-effort here (every verb attaches, and a chrome:// page that refuses
-// Network must not break `click`); Net re-enables at read time and DOES report
-// the failure, so the honesty is paid for where it is asked for.
-func (c *CDP) startNetCapture(tctx context.Context, id string) {
+// in-memory record; it never issues a CDP command. Enabling the domain happens
+// after the attach, in enableCapture.
+func (c *CDP) listenNet(tctx context.Context, id string) {
 	set := c.netBuf()
 	maxBody := c.netMaxBody
 	// Per-tab epoch, so `started_ms` is a small number relative to when this
@@ -281,9 +283,6 @@ func (c *CDP) startNetCapture(tctx context.Context, id string) {
 			set.Upsert(id, key, mutate)
 		}
 	})
-	ectx, cancel := context.WithTimeout(tctx, 5*time.Second)
-	defer cancel()
-	_ = chromedp.Run(ectx, netEnable(maxBody)...)
 }
 
 // netEnable turns on the domain network capture listens to. It is idempotent, so
@@ -1014,8 +1013,10 @@ func (c *CDP) Net(ctx context.Context, id string, opts NetOpts) (any, error) {
 	res := c.netBuf().Query(id, q)
 	out := c.netResult(ctx, id, res, pending, opts)
 	if fresh {
-		out["buffered"] = 0
-		out["note"] = netNoRetainedHistoryNote
+		// `buffered` is a real count of what is held, not a claim about
+		// completeness; the note is what says the history is Chrome's window
+		// rather than ours.
+		out["note"] = netPartialHistoryNote
 	}
 	return out, nil
 }

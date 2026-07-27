@@ -1615,10 +1615,11 @@ func TestNetBodyUnavailableIsMarkedNotErrored(t *testing.T) {
 	}
 }
 
-// With nothing alive to have received them, earlier requests are absent,
-// buffered is 0, and the envelope SAYS so — it must not pass an empty list off
-// as a page that made no requests. This is the --no-daemon situation.
-func TestNetWithoutRetainedHistoryDoesNotFabricateIt(t *testing.T) {
+// With nothing alive when the page loaded, the history is whatever Chrome still
+// held when the domain was enabled — a couple of cached resources, never the
+// session. The envelope SAYS so rather than passing a short list off as the
+// whole story. This is the --no-daemon situation.
+func TestNetWithoutRetainedHistorySaysSo(t *testing.T) {
 	b := liveChrome(t)
 	_, page := netFixtures(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
@@ -1644,15 +1645,14 @@ func TestNetWithoutRetainedHistoryDoesNotFabricateIt(t *testing.T) {
 		t.Fatalf("Net: %v", err)
 	}
 	m := res.(map[string]any)
-	if got := m["buffered"]; got != 0 {
-		t.Errorf("buffered = %v, want 0 — there was no retained history to report", got)
-	}
 	if note, _ := m["note"].(string); note == "" {
-		t.Error("no note: an empty request list with no explanation reads as 'the page made no requests', " +
+		t.Error("no note: a request list with no explanation reads as the whole story, " +
 			"which is a lie the caller cannot detect")
 	}
-	if hasURL(netRequests(t, res), "style.css") {
-		t.Error("a request made before anything was listening was reported anyway")
+	// `buffered` must describe what is really held: reporting 0 alongside a
+	// non-empty list would make both numbers useless.
+	if got, want := m["buffered"].(int), len(netRequests(t, res)); got < want {
+		t.Errorf("buffered = %d but %d requests were returned; the count must describe what is held", got, want)
 	}
 }
 

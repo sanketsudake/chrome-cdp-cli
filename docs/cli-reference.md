@@ -382,8 +382,9 @@ Raise `console_buffer`, or read closer to the action.
 **`--follow`** writes one JSON envelope per line, the same shape `session` streams.
 It cannot combine with `--fail-on-match`, and it is a usage error inside `session` or a recipe step, where it would break the one-envelope-per-line contract a batch promises.
 
-**`--no-daemon` has no retained history.**
-Without the daemon there was no process alive to receive the tab's earlier events, so the read reports `"buffered": 0` and carries a `note` saying so, rather than passing an empty list off as a quiet page.
+**`--no-daemon` has only partial history.**
+Without the daemon there was no process alive to receive the tab's earlier events, so what appears is whatever Chrome replays when capture is enabled (recent console output and uncaught exceptions it still holds) plus what arrives during the command.
+The read carries a `note` saying so, rather than passing a short list off as a full session record.
 
 The buffer is bounded by `console_buffer` (messages per tab, default 1000) and `console_max_entry` (per-message text cap, default 8192 bytes); see [Configuration](#configuration).
 
@@ -458,7 +459,7 @@ No match before `--timeout` is `target_timeout` / exit 4.
 **`--follow`** writes one JSON envelope per **completed** request, the same shape `session` streams.
 It cannot combine with `--fail-on-match`, and it is a usage error inside `session` or a recipe step.
 
-**`--no-daemon` has no retained history**, exactly as with `console`: the read reports `"buffered": 0` and carries a `note` rather than passing an empty list off as a quiet page.
+**`--no-daemon` has only partial history**, exactly as with `console`: enabling the domain surfaces the handful of resources Chrome still holds for the page, never the session, so the read carries a `note` rather than passing a short list off as the whole story.
 
 Bad `--status` / `--type` / `--url` regex / `--since` values are `usage` / exit 2, validated before anything connects to Chrome.
 

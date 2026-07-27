@@ -196,25 +196,114 @@ func TestCapTextBoundsTextAndStack(t *testing.T) {
 	}
 }
 
-// Log.entryAdded duplicates what Runtime already reports for anything the page
-// itself said, so those sources are dropped — otherwise `buffered` double-counts
-// every console call and every uncaught error.
-func TestConsoleEventSkipsDuplicateLogSources(t *testing.T) {
+// A javascript-source Log entry is no longer dropped by SOURCE. That drop threw
+// away Log.enable's replay of "the entries collected so far", which is a record
+// of what a page did before the connection attached — so a tab that had already
+// thrown could answer `console --only-errors` with an empty list and exit 0,
+// which reads as "the page is clean".
+func TestConsoleEventKeepsEveryLogSource(t *testing.T) {
 	t.Parallel()
-	for _, src := range []string{"javascript", "console-api"} {
-		ev := logEntryEvent(src, "error", "Uncaught TypeError: boom")
-		if _, ok := consoleEvent(ev, DefaultConsoleMaxEntry); ok {
-			t.Errorf("Log.entryAdded source %q was retained; Runtime is the authoritative source for it", src)
-		}
+	m, ok := consoleEvent(logEntryEvent("javascript", "error", "Uncaught TypeError: boom"), DefaultConsoleMaxEntry)
+	if !ok {
+		t.Fatal("a javascript log entry was dropped by source; the pre-attach backlog arrives this way")
+	}
+	if m.Level != "error" || m.Source != consoleSourceLog || !strings.Contains(m.Text, "TypeError") {
+		t.Errorf("javascript log entry = %+v", m)
 	}
 	// A browser-level source (a failed subresource, a deprecation) is real
-	// added value and must survive.
-	m, ok := consoleEvent(logEntryEvent("network", "error", "Failed to load resource: 404"), DefaultConsoleMaxEntry)
+	// added value and must survive too.
+	m, ok = consoleEvent(logEntryEvent("network", "error", "Failed to load resource: 404"), DefaultConsoleMaxEntry)
 	if !ok {
 		t.Fatal("a network log entry was dropped")
 	}
 	if m.Level != "error" || m.Source != consoleSourceLog || !strings.Contains(m.Text, "404") {
 		t.Errorf("network log entry = %+v", m)
+	}
+}
+
+// Duplicates are suppressed by IDENTITY instead: one uncaught exception that
+// Chrome describes twice is one message, but the same error thrown again later
+// is two.
+func TestConsoleDedupSuppressesOneExceptionReportedTwice(t *testing.T) {
+	t.Parallel()
+	const url = "https://app.example/bundle.js"
+	thrown := &cdpruntime.EventExceptionThrown{
+		ExceptionDetails: &cdpruntime.ExceptionDetails{
+			URL: url, LineNumber: 41, ColumnNumber: 7,
+			Exception: &cdpruntime.RemoteObject{Description: "TypeError: x.map is not a function\n    at render"},
+		},
+	}
+	entry := &cdplog.EventEntryAdded{Entry: &cdplog.Entry{
+		Source: cdplog.SourceJavascript, Level: "error",
+		Text: "Uncaught TypeError: x.map is not a function", URL: url, LineNumber: 41,
+	}}
+	other := &cdplog.EventEntryAdded{Entry: &cdplog.Entry{
+		Source: cdplog.SourceJavascript, Level: "error",
+		Text: "Uncaught ReferenceError: nope is not defined", URL: url,
+	}}
+
+	// Order-independent: whichever of the two arrives first is the report kept.
+	for _, order := range [][]any{{thrown, entry}, {entry, thrown}} {
+		d := &consoleDedup{}
+		at := time.Now()
+		kept := 0
+		for _, ev := range order {
+			m, _ := consoleEvent(ev, DefaultConsoleMaxEntry)
+			m.TS = at
+			ident, collidable := consoleDedupIdent(ev, m)
+			if !collidable {
+				t.Fatalf("%T is not treated as a collidable report", ev)
+			}
+			if d.first(ident, m.TS) {
+				kept++
+			}
+		}
+		if kept != 1 {
+			t.Errorf("%d of the 2 reports of one exception were kept, want 1", kept)
+		}
+	}
+
+	// A DIFFERENT error is never suppressed.
+	d := &consoleDedup{}
+	at := time.Now()
+	for _, ev := range []any{thrown, other} {
+		m, _ := consoleEvent(ev, DefaultConsoleMaxEntry)
+		m.TS = at
+		ident, _ := consoleDedupIdent(ev, m)
+		if !d.first(ident, m.TS) {
+			t.Errorf("a distinct error was suppressed as a duplicate: %T", ev)
+		}
+	}
+
+	// And the SAME error thrown again later is a real repeat, not a duplicate:
+	// an app that throws on every poll is reporting something.
+	d = &consoleDedup{}
+	m, _ := consoleEvent(thrown, DefaultConsoleMaxEntry)
+	ident, _ := consoleDedupIdent(thrown, m)
+	if !d.first(ident, at) {
+		t.Fatal("the first report was suppressed")
+	}
+	if !d.first(ident, at.Add(consoleDedupWindow+time.Second)) {
+		t.Error("a repeat outside the dedupe window was suppressed; a recurring error must still be visible")
+	}
+}
+
+// A console.* call is NEVER deduped: a page that logs the same line twice on
+// purpose has to see both, and only an uncaught exception can arrive twice.
+func TestConsoleDedupIgnoresWhatCannotCollide(t *testing.T) {
+	t.Parallel()
+	ev := &cdpruntime.EventConsoleAPICalled{
+		Type: cdpruntime.APITypeLog,
+		Args: []*cdpruntime.RemoteObject{{Type: "string", Value: []byte(`"tick"`)}},
+	}
+	m, _ := consoleEvent(ev, DefaultConsoleMaxEntry)
+	if _, collidable := consoleDedupIdent(ev, m); collidable {
+		t.Error("a console.* call was treated as dedupable; repeated logs are real")
+	}
+	netEntry := logEntryEvent("network", "error", "Failed to load resource: 404")
+	nm, _ := consoleEvent(netEntry, DefaultConsoleMaxEntry)
+	if _, collidable := consoleDedupIdent(netEntry, nm); collidable {
+		t.Error("a network log entry was treated as dedupable; Runtime never reports it")
 	}
 }
 
@@ -276,6 +365,38 @@ func consoleFixtures(t *testing.T) *httptest.Server {
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 	return srv
+}
+
+// preAttachThrow serves a page that throws an uncaught TypeError and THEN
+// signals the returned channel, so a test can attach strictly after the throw
+// rather than guessing at a sleep. The throw is in its own script tag: an
+// uncaught error ends that script, not the next one.
+func preAttachThrow(t *testing.T) (*httptest.Server, <-chan struct{}) {
+	t.Helper()
+	thrown := make(chan struct{}, 1)
+	mux := http.NewServeMux()
+	mux.HandleFunc("/favicon.ico", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })
+	mux.HandleFunc("/thrown", func(w http.ResponseWriter, _ *http.Request) {
+		select {
+		case thrown <- struct{}{}:
+		default:
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
+	mux.HandleFunc("/late", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		fmt.Fprint(w, `<!doctype html><title>Console fixture</title><body>
+<script>
+  function inner() { return null.nope; }
+  function outer() { return inner(); }
+  outer();
+</script>
+<script>fetch("/thrown");</script>
+</body>`)
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	return srv, thrown
 }
 
 func liveChrome(t *testing.T) *CDP {
@@ -380,6 +501,49 @@ func TestConsoleCapturesALogEmittedBeforeTheRead(t *testing.T) {
 	}
 }
 
+// RFC-0002 US-1, the case the verb exists for: the daemon attaches to a tab that
+// has ALREADY loaded and thrown.
+//
+// The capture listeners have to be registered before the attach, because
+// chromedp's own attach sequence issues Runtime.enable and Log.enable — and
+// those enables are what flush what the page did before we arrived. Registering
+// afterwards dropped the whole backlog, so `console --only-errors` returned an
+// empty list with exit 0 and no note: the reader concludes the page is clean.
+func TestConsoleCapturesAnErrorThrownBeforeTheAttach(t *testing.T) {
+	b := liveChrome(t)
+	srv, thrown := preAttachThrow(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	// Open creates the tab WITHOUT attaching, so the page throws with nothing
+	// listening — which is exactly a daemon arriving at an existing tab.
+	res, err := b.Open(ctx, srv.URL+"/late")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	id, _ := res["id"].(string)
+	if id == "" {
+		t.Fatalf("Open returned no target id: %v", res)
+	}
+	select {
+	case <-thrown:
+	case <-time.After(30 * time.Second):
+		t.Fatal("the fixture never reported that it had thrown")
+	}
+	if b.attached(id) {
+		t.Fatal("the tab was already attached; this test has to read a backlog, not a live event")
+	}
+
+	opts := ConsoleOpts{Levels: []string{"error"}, Limit: 100} // --only-errors
+	msgs := awaitConsole(ctx, t, b, id, opts, func(m []consoleMessage) bool {
+		return hasText(m, "TypeError")
+	})
+	if !hasText(msgs, "TypeError") {
+		t.Fatalf("the error the page threw before we attached was not reported; --only-errors returned %+v.\n"+
+			"An empty list here reads as \"the page is clean\", which is the opposite of the truth", msgs)
+	}
+}
+
 // VS-2: an uncaught exception arrives at error level WITH its stack — the field
 // users need most and the one a marshalling mistake silently drops.
 func TestConsoleCapturesAnUncaughtExceptionWithAStack(t *testing.T) {
@@ -467,10 +631,11 @@ func TestConsoleClearScopesTheReadToOneAction(t *testing.T) {
 	}
 }
 
-// VS-10: with nothing alive to have received them, earlier messages are absent,
-// buffered is 0, and the envelope SAYS so — it must not pass an empty list off
-// as a quiet page.
-func TestConsoleWithoutRetainedHistoryDoesNotFabricateIt(t *testing.T) {
+// VS-10, as amended by the backlog fix: with nothing alive when the page logged,
+// the history is whatever Chrome replays at enable time — real, but Chrome's
+// window rather than ours. The envelope SAYS so rather than passing it off as a
+// full session record, and `buffered` reports what is actually held.
+func TestConsoleWithoutRetainedHistorySaysSo(t *testing.T) {
 	b := liveChrome(t)
 	srv := consoleFixtures(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
@@ -497,15 +662,14 @@ func TestConsoleWithoutRetainedHistoryDoesNotFabricateIt(t *testing.T) {
 		t.Fatalf("Console: %v", err)
 	}
 	m := res.(map[string]any)
-	if got := m["buffered"]; got != 0 {
-		t.Errorf("buffered = %v, want 0 — there was no retained history to report", got)
-	}
 	note, _ := m["note"].(string)
 	if note == "" {
-		t.Error("no note: an empty message list with no explanation reads as 'the page was quiet', which is a lie the caller cannot detect")
+		t.Error("no note: a message list with no explanation reads as a full session record, which is a lie the caller cannot detect")
 	}
-	if msgs := consoleMsgs(t, res); hasText(msgs, "hello from the page") {
-		t.Errorf("a message emitted before anything was listening was reported anyway: %+v", msgs)
+	// `buffered` must match what is really held — reporting 0 alongside a
+	// non-empty list would make both numbers useless.
+	if got, want := m["buffered"], len(consoleMsgs(t, res)); got.(int) < want {
+		t.Errorf("buffered = %v but %d messages were returned; the count must describe what is held", got, want)
 	}
 }
 

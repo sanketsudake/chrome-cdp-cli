@@ -95,7 +95,8 @@ func (a *App) cmdConsole() *cobra.Command {
 			"look for it. The buffer is bounded (config: console_buffer, console_max_entry);\n" +
 			"a nonzero `dropped` in the result means messages were evicted before you read.\n\n" +
 			"With --no-daemon no process was alive to receive earlier events, so the read\n" +
-			"reports buffered 0 and carries a note saying there is no retained history.\n\n" +
+			"sees only what Chrome replays when capture is enabled, and carries a note\n" +
+			"saying the history is partial.\n\n" +
 			"  chrome-cdp console --only-errors                       # what broke\n" +
 			"  chrome-cdp console --grep \"\\[Checkout\\]\" --limit 20    # one subsystem\n" +
 			"  chrome-cdp console --clear                             # reset before an action\n" +
