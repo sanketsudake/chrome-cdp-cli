@@ -1,0 +1,239 @@
+package cli
+
+import (
+	"bytes"
+	"encoding/json"
+	"fmt"
+	"net"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"github.com/sanketsudake/chrome-cdp-cli/internal/result"
+)
+
+// RFC-0013 VS-5 / VS-6. `doctor` used to read the DevToolsActivePort file and
+// report "Path B attach ready" with a ws:// URL, having never connected. During
+// the reproduction it said ready while every connection was hanging on an
+// unanswered consent prompt. These tests pin the three states it must now
+// distinguish, and the one case where it must NOT connect at all.
+
+// stubEndpoint starts a listener in one of the shapes doctor has to tell apart
+// and points CHROME_CDP_PORT_FILE at it. It returns the accepted-connection
+// count, which is how "doctor opened no connection" is proved.
+func stubEndpoint(t *testing.T, answer string) *atomic.Int32 {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	var conns atomic.Int32
+	go func() {
+		var held []net.Conn
+		defer func() {
+			for _, c := range held {
+				_ = c.Close()
+			}
+		}()
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			conns.Add(1)
+			if answer == "" { // accept and stall: consent pending
+				held = append(held, c)
+				continue
+			}
+			go func(c net.Conn) {
+				defer c.Close()
+				_, _ = c.Write([]byte(answer + "\r\n\r\n"))
+				time.Sleep(50 * time.Millisecond)
+			}(c)
+		}
+	}()
+
+	_, port, _ := net.SplitHostPort(ln.Addr().String())
+	pf := filepath.Join(t.TempDir(), "DevToolsActivePort")
+	if err := os.WriteFile(pf, []byte(fmt.Sprintf("%s\n/devtools/browser/stub\n", port)), 0o600); err != nil {
+		t.Fatalf("write port file: %v", err)
+	}
+	t.Setenv("CHROME_CDP_PORT_FILE", pf)
+	if answer == "closed" {
+		_ = ln.Close() // nothing listening: no endpoint
+	} else {
+		t.Cleanup(func() { _ = ln.Close() })
+	}
+	return &conns
+}
+
+// runDoctorApp runs `doctor --json`, optionally with a daemon-status seam wired.
+func runDoctorApp(t *testing.T, status func(ConnOpts) (map[string]any, error), args ...string) (env map[string]any, stderr string, code int) {
+	t.Helper()
+	var out, errb bytes.Buffer
+	app := New(nil, &out, &errb)
+	if status != nil {
+		app.WithDaemonCtl(nil, nil, status)
+	}
+	code = app.Execute(append([]string{"doctor", "--json"}, args...)...)
+	if s := strings.TrimSpace(out.String()); strings.HasPrefix(s, "{") {
+		if err := json.Unmarshal([]byte(s), &env); err != nil {
+			t.Fatalf("stdout is not one JSON value: %v\n%s", err, s)
+		}
+	}
+	return env, errb.String(), code
+}
+
+func doctorState(t *testing.T, env map[string]any) string {
+	t.Helper()
+	if res, ok := env["result"].(map[string]any); ok {
+		s, _ := res["state"].(string)
+		return s
+	}
+	if e, ok := env["error"].(map[string]any); ok {
+		s, _ := e["state"].(string)
+		return s
+	}
+	t.Fatalf("envelope has neither result nor error: %v", env)
+	return ""
+}
+
+func doctorErrCode(env map[string]any) string {
+	e, _ := env["error"].(map[string]any)
+	c, _ := e["code"].(string)
+	return c
+}
+
+// TestDoctorDistinguishesAllThreeStates is VS-5. The ready case is established
+// by a COMPLETED upgrade, not by the presence of a port file — that distinction
+// is the whole defect.
+func TestDoctorDistinguishesAllThreeStates(t *testing.T) {
+	prev := doctorProbeWait
+	doctorProbeWait = 400 * time.Millisecond
+	t.Cleanup(func() { doctorProbeWait = prev })
+
+	for _, c := range []struct {
+		name      string
+		answer    string
+		wantState string
+		wantCode  string
+		wantOK    bool
+	}{
+		{"nothing listening", "closed", stateNoEndpoint, result.CodeConnection, false},
+		{"accepts and stalls", "", stateConsentPending, result.CodeConsentPending, false},
+		{"completes the upgrade", "HTTP/1.1 101 Switching Protocols", stateReady, "", true},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			stubEndpoint(t, c.answer)
+			env, stderr, code := runDoctorApp(t, nil)
+			if env["ok"] != c.wantOK {
+				t.Fatalf("ok = %v, want %v (envelope %v)", env["ok"], c.wantOK, env)
+			}
+			if got := doctorState(t, env); got != c.wantState {
+				t.Errorf("state = %q, want %q", got, c.wantState)
+			}
+			if !c.wantOK {
+				if got := doctorErrCode(env); got != c.wantCode {
+					t.Errorf("error.code = %q, want %q", got, c.wantCode)
+				}
+				if code != result.ExitConnection {
+					t.Errorf("exit = %d, want %d", code, result.ExitConnection)
+				}
+			}
+			// Open question 3: probing is itself a connection request, so a
+			// diagnostic that was not asked to connect says so before it does.
+			if !strings.Contains(stderr, "opens one connection") {
+				t.Errorf("doctor probed without warning that it would:\n%s", stderr)
+			}
+		})
+	}
+}
+
+// TestDoctorConsentPendingNamesTheDialog: the state is only useful if the
+// message tells a user staring at a frozen browser what they are looking at.
+func TestDoctorConsentPendingNamesTheDialog(t *testing.T) {
+	prev := doctorProbeWait
+	doctorProbeWait = 400 * time.Millisecond
+	t.Cleanup(func() { doctorProbeWait = prev })
+
+	stubEndpoint(t, "")
+	env, _, _ := runDoctorApp(t, nil)
+	e, _ := env["error"].(map[string]any)
+	msg, _ := e["message"].(string)
+	for _, want := range []string{"Allow remote debugging", "modal", "BEHIND", "no other input", "--remote-debugging-port=9222"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("the consent_pending message does not mention %q:\n%s", want, msg)
+		}
+	}
+}
+
+// TestDoctorAnswersThroughARunningDaemon is VS-6.
+//
+// Probing is a connection request, and on the chrome://inspect path a connection
+// request is what raises the modal prompt. A running daemon is already holding a
+// verified connection, so doctor must answer through it and open nothing —
+// proved here by counting connections to the endpoint.
+func TestDoctorAnswersThroughARunningDaemon(t *testing.T) {
+	conns := stubEndpoint(t, "") // would classify as consent_pending IF probed
+
+	env, stderr, code := runDoctorApp(t, func(ConnOpts) (map[string]any, error) {
+		return map[string]any{"running": true, "socket": "/tmp/x.sock", "targets": 3}, nil
+	})
+
+	if env["ok"] != true || code != result.ExitOK {
+		t.Fatalf("doctor with a live daemon: ok=%v exit=%d (%v)", env["ok"], code, env)
+	}
+	if got := doctorState(t, env); got != stateReady {
+		t.Errorf("state = %q, want %q", got, stateReady)
+	}
+	res := env["result"].(map[string]any)
+	if res["via"] != "daemon" {
+		t.Errorf("via = %v, want daemon", res["via"])
+	}
+	if res["probed"] != false {
+		t.Errorf("probed = %v, want false", res["probed"])
+	}
+	if res["targets"] != float64(3) {
+		t.Errorf("the daemon's own status fields should survive into the envelope: %v", res)
+	}
+	if n := conns.Load(); n != 0 {
+		t.Errorf("doctor opened %d connection(s) to Chrome while a daemon was running — each one is a fresh consent request", n)
+	}
+	if strings.Contains(stderr, "opens one connection") {
+		t.Errorf("doctor announced a probe it did not make:\n%s", stderr)
+	}
+}
+
+// TestDoctorNoDaemonStatusStillProbes: a daemon that is not running is not an
+// answer, so doctor falls through to the probe rather than reporting ready.
+func TestDoctorNoDaemonStatusStillProbes(t *testing.T) {
+	conns := stubEndpoint(t, "HTTP/1.1 101 Switching Protocols")
+	env, _, _ := runDoctorApp(t, func(ConnOpts) (map[string]any, error) {
+		return map[string]any{"running": false}, nil
+	})
+	if got := doctorState(t, env); got != stateReady {
+		t.Errorf("state = %q, want %q", got, stateReady)
+	}
+	if env["result"].(map[string]any)["via"] != "probe" {
+		t.Errorf("with no daemon the answer must come from a probe: %v", env["result"])
+	}
+	if n := conns.Load(); n != 1 {
+		t.Errorf("probed with %d connections, want exactly 1", n)
+	}
+}
+
+// TestDoctorNoProbeRefusesToClaimReadiness: the escape hatch for a user who does
+// not want a diagnostic to open a connection must not resurrect the old lie.
+func TestDoctorNoProbeRefusesToClaimReadiness(t *testing.T) {
+	conns := stubEndpoint(t, "")
+	env, _, _ := runDoctorApp(t, nil, "--no-probe")
+	if got := doctorState(t, env); got == stateReady {
+		t.Error("--no-probe reported ready without verifying anything, which is the bug this RFC exists to fix")
+	}
+	if n := conns.Load(); n != 0 {
+		t.Errorf("--no-probe opened %d connection(s), want 0", n)
+	}
+}

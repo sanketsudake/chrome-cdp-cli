@@ -227,7 +227,7 @@ func TestEnsureConnectsToExisting(t *testing.T) {
 
 	// A daemon is already listening, so Ensure connects without spawning (the
 	// exe path is never used).
-	c, err := Ensure(sock, "/nonexistent-exe", nil)
+	c, err := Ensure(sock, "/nonexistent-exe", nil, time.Minute)
 	if err != nil {
 		t.Fatalf("Ensure should connect to the running daemon: %v", err)
 	}

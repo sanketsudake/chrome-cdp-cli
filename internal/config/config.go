@@ -21,16 +21,22 @@ import (
 // Defaults are the effective global-flag defaults after the config file and
 // CHROME_CDP_* env are merged over the built-in values.
 type Defaults struct {
-	Timeout    time.Duration
-	By         string
-	Wait       string
-	Target     string
-	Port       int
-	ProfileDir string
-	NoLaunch   bool
-	NoDaemon   bool
-	JSON       bool
-	NoColor    bool
+	Timeout time.Duration
+	// ConsentTimeout bounds the wait for Chrome's browser-modal "Allow remote
+	// debugging?" prompt (config key consent_timeout). It is separate from
+	// Timeout because it is not a command deadline at all: it is how long a
+	// human is given to find and click a dialog that may be behind the window,
+	// so it is measured in minutes where Timeout is measured in seconds.
+	ConsentTimeout time.Duration
+	By             string
+	Wait           string
+	Target         string
+	Port           int
+	ProfileDir     string
+	NoLaunch       bool
+	NoDaemon       bool
+	JSON           bool
+	NoColor        bool
 
 	// Policy is the optional [policy] table (RFC-0012). No CHROME_CDP_* variable
 	// sets any of its keys: a safety boundary whose CONTENTS an inherited
@@ -103,7 +109,8 @@ type Policy struct {
 // the environment sets a value.
 func Builtin() Defaults {
 	return Defaults{
-		Timeout: 30 * time.Second, By: "css", Wait: "visible",
+		Timeout: 30 * time.Second, ConsentTimeout: chrome.DefaultConsentTimeout,
+		By: "css", Wait: "visible",
 		ConsoleBuffer: chrome.DefaultConsoleBuffer, ConsoleMaxEntry: chrome.DefaultConsoleMaxEntry,
 		NetBuffer: chrome.DefaultNetBuffer, NetMaxBody: chrome.DefaultNetMaxBody,
 		RecordBuffer: chrome.DefaultRecordFrames, RecordMaxBytes: chrome.DefaultRecordMaxBytes,
@@ -113,16 +120,17 @@ func Builtin() Defaults {
 // file mirrors the TOML schema; pointer fields distinguish "set in file" from
 // "absent", so an omitted key leaves the built-in (or env) value intact.
 type file struct {
-	Timeout    *string `toml:"timeout"`
-	By         *string `toml:"by"`
-	Wait       *string `toml:"wait"`
-	Target     *string `toml:"target"`
-	Port       *int    `toml:"port"`
-	ProfileDir *string `toml:"profile_dir"`
-	NoLaunch   *bool   `toml:"no_launch"`
-	NoDaemon   *bool   `toml:"no_daemon"`
-	JSON       *bool   `toml:"json"`
-	NoColor    *bool   `toml:"no_color"`
+	Timeout        *string `toml:"timeout"`
+	ConsentTimeout *string `toml:"consent_timeout"`
+	By             *string `toml:"by"`
+	Wait           *string `toml:"wait"`
+	Target         *string `toml:"target"`
+	Port           *int    `toml:"port"`
+	ProfileDir     *string `toml:"profile_dir"`
+	NoLaunch       *bool   `toml:"no_launch"`
+	NoDaemon       *bool   `toml:"no_daemon"`
+	JSON           *bool   `toml:"json"`
+	NoColor        *bool   `toml:"no_color"`
 
 	ConsoleBuffer   *int `toml:"console_buffer"`
 	ConsoleMaxEntry *int `toml:"console_max_entry"`
@@ -236,6 +244,11 @@ func applyFile(d *Defaults, path string) error {
 	if f.Timeout != nil {
 		if t, err := time.ParseDuration(*f.Timeout); err == nil {
 			d.Timeout = t
+		}
+	}
+	if f.ConsentTimeout != nil {
+		if t, err := time.ParseDuration(*f.ConsentTimeout); err == nil {
+			d.ConsentTimeout = t
 		}
 	}
 	if f.By != nil {
@@ -373,6 +386,11 @@ func applyEnv(d *Defaults, getenv func(string) string) {
 	if v := getenv("CHROME_CDP_TIMEOUT"); v != "" {
 		if t, err := time.ParseDuration(v); err == nil {
 			d.Timeout = t
+		}
+	}
+	if v := getenv("CHROME_CDP_CONSENT_TIMEOUT"); v != "" {
+		if t, err := time.ParseDuration(v); err == nil {
+			d.ConsentTimeout = t
 		}
 	}
 	if v := getenv("CHROME_CDP_BY"); v != "" {

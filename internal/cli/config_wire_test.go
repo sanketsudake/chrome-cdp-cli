@@ -5,9 +5,11 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"testing"
 	"time"
 
+	"github.com/sanketsudake/chrome-cdp-cli/internal/chrome"
 	"github.com/sanketsudake/chrome-cdp-cli/internal/config"
 	"github.com/sanketsudake/chrome-cdp-cli/internal/target"
 )
@@ -64,5 +66,35 @@ func TestConfigTargetIsFallback(t *testing.T) {
 	app2 := New(b2, &o2, &e2).WithDefaults(defsBad)
 	if code := app2.Execute("eval", "1+1", "--target", "aa11", "--json"); code != 0 {
 		t.Fatalf("explicit --target should override config target, exit=%d stderr=%s", code, e2.String())
+	}
+}
+
+// TestConsentTimeoutReachesTheConnector pins the last link of RFC-0013's
+// precedence chain: the resolved value has to arrive at the connector, because
+// the connector is what hands it to the daemon that does the waiting. A key that
+// resolves correctly and is then dropped on the floor is the same as no key.
+func TestConsentTimeoutReachesTheConnector(t *testing.T) {
+	t.Parallel()
+	capture := func(args ...string) time.Duration {
+		t.Helper()
+		var got ConnOpts
+		var out, errb bytes.Buffer
+		app := New(nil, &out, &errb).
+			WithDefaults(config.Defaults{By: "css", Wait: "visible", Timeout: 5 * time.Second, ConsentTimeout: 90 * time.Second}).
+			WithConnector(func(_ context.Context, o ConnOpts) (chrome.Browser, error) {
+				got = o
+				return &fakeBrowser{tabs: []target.Info{{ID: "aa11", Title: "A", URL: "u"}}}, nil
+			})
+		if code := app.Execute(args...); code != 0 {
+			t.Fatalf("exit = %d, stderr=%s", code, errb.String())
+		}
+		return got.ConsentTimeout
+	}
+
+	if got := capture("list", "--json"); got != 90*time.Second {
+		t.Errorf("resolved consent_timeout = %v, want the config value 90s", got)
+	}
+	if got := capture("list", "--json", "--consent-timeout", "10s"); got != 10*time.Second {
+		t.Errorf("explicit --consent-timeout = %v, want 10s (a flag must beat the file)", got)
 	}
 }

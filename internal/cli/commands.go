@@ -12,7 +12,6 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/sanketsudake/chrome-cdp-cli/internal/browser"
 	"github.com/sanketsudake/chrome-cdp-cli/internal/chrome"
 	"github.com/sanketsudake/chrome-cdp-cli/internal/result"
 )
@@ -57,6 +56,7 @@ func (a *App) newRoot() *cobra.Command {
 	pf.BoolVar(&a.jsonOut, "json", d.JSON, "machine-readable output (one JSON value to stdout)")
 	pf.StringVar(&a.targetFlag, "target", "", "tab to act on (idprefix | url:<s> | title:<s> | @N)")
 	pf.DurationVar(&a.timeout, "timeout", d.Timeout, "max time to wait for the command")
+	pf.DurationVar(&a.consentTimeout, "consent-timeout", d.ConsentTimeout, "how long to wait for Chrome's \"Allow remote debugging?\" prompt to be answered (a refused endpoint still fails fast)")
 	pf.BoolVar(&a.noLaunch, "no-launch", d.NoLaunch, "don't auto-launch a fallback Chrome")
 	pf.BoolVar(&a.noDaemon, "no-daemon", d.NoDaemon, "connect directly instead of via the shared daemon")
 	pf.StringVar(&a.profileDir, "profile-dir", d.ProfileDir, "managed-launch Chrome profile dir (else $CHROME_CDP_PROFILE or ~/.cache/chrome-cdp/profile)")
@@ -766,31 +766,6 @@ func (a *App) targetAction(command string, fn func(ctx context.Context, b chrome
 func (a *App) withWaitText(c *cobra.Command) *cobra.Command {
 	c.Flags().StringVar(&a.actWaitText, "wait-text", "", "after the action, wait until the page contains this text (e.g. a 'Saved' toast)")
 	return c
-}
-
-func (a *App) cmdDoctor() *cobra.Command {
-	return &cobra.Command{
-		Use: "doctor", Short: "Check the Chrome connection and explain how to fix it",
-		RunE: func(*cobra.Command, []string) error {
-			pf := browser.FindPortFile("")
-			if pf == "" {
-				a.emitErr("doctor", "connection_failed", "no DevToolsActivePort found — enable chrome://inspect/#remote-debugging on your Chrome, or run a command without --no-launch to auto-launch a managed Chrome", nil)
-				return nil
-			}
-			ws, err := browser.WSURLFromPortFile(pf)
-			if err != nil {
-				a.emitErr("doctor", "connection_failed", "port file unreadable: "+err.Error(), map[string]any{"port_file": pf})
-				return nil
-			}
-			// Probe reachability — a stale port file must not report "ready".
-			if !chrome.Reachable(ws) {
-				a.emitErr("doctor", "connection_failed", "port file present but the debug endpoint is not reachable (stale) — re-enable chrome://inspect/#remote-debugging", map[string]any{"port_file": pf, "ws": ws})
-				return nil
-			}
-			a.emitOK("doctor", nil, map[string]any{"port_file": pf, "ws": ws, "status": "debug endpoint reachable — Path B attach ready"})
-			return nil
-		},
-	}
 }
 
 func (a *App) cmdDaemon() *cobra.Command {

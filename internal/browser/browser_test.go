@@ -59,10 +59,18 @@ func TestDecideConnection(t *testing.T) {
 		p    Probe
 		want Action
 	}{
-		{"reachable debug endpoint -> attach (Path B)",
-			Probe{PortFileWS: "ws://127.0.0.1:9222/x", WSReachable: true}, Attach},
-		{"stale port file + chrome running -> instruct toggle",
-			Probe{PortFileWS: "ws://127.0.0.1:9222/x", WSReachable: false, ChromeRunning: true}, InstructToggle},
+		{"completed upgrade -> attach (Path B)",
+			Probe{PortFileWS: "ws://127.0.0.1:9222/x", WS: WSReady}, Attach},
+		{"open port, hanging upgrade -> consent pending (NOT a timeout, NOT the toggle)",
+			Probe{PortFileWS: "ws://127.0.0.1:9222/x", WS: WSPending}, ConsentPending},
+		{"open port, hanging upgrade, chrome running -> still consent pending",
+			Probe{PortFileWS: "ws://127.0.0.1:9222/x", WS: WSPending, ChromeRunning: true}, ConsentPending},
+		{"open port, hanging upgrade, --no-launch -> still consent pending (nothing to launch, it is asking)",
+			Probe{PortFileWS: "ws://127.0.0.1:9222/x", WS: WSPending, NoLaunch: true}, ConsentPending},
+		{"hanging upgrade with no endpoint is not reachable state -> fall through",
+			Probe{PortFileWS: "", WS: WSPending, ChromeRunning: true}, InstructToggle},
+		{"stale port file (refused) + chrome running -> instruct toggle",
+			Probe{PortFileWS: "ws://127.0.0.1:9222/x", WS: WSRefused, ChromeRunning: true}, InstructToggle},
 		{"no debug + chrome running -> instruct toggle (don't shadow)",
 			Probe{ChromeRunning: true}, InstructToggle},
 		{"no debug + no chrome -> launch managed (Path A)",

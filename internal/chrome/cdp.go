@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"hash/fnv"
-	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -29,6 +28,7 @@ import (
 
 	"github.com/sanketsudake/chrome-cdp-cli/internal/browser"
 	"github.com/sanketsudake/chrome-cdp-cli/internal/eventbuf"
+	"github.com/sanketsudake/chrome-cdp-cli/internal/result"
 	"github.com/sanketsudake/chrome-cdp-cli/internal/target"
 )
 
@@ -39,6 +39,16 @@ type Options struct {
 	Port       int    // explicit debug port to attach to / launch with (0 = auto)
 	NoLaunch   bool   // don't fall back to launching a managed Chrome
 	Headless   bool   // headless for the managed-launch fallback (tests use this)
+
+	// ConsentTimeout bounds the wait for Chrome's "Allow remote debugging?"
+	// dialog (config key consent_timeout). Zero means DefaultConsentTimeout.
+	// It applies ONLY to an open port whose upgrade is hanging; a refused
+	// endpoint still fails in milliseconds. See browser.AwaitUpgrade.
+	ConsentTimeout time.Duration
+	// OnConsentPending fires once, as soon as the upgrade is classified as
+	// pending — i.e. while the dialog is still on screen, not after the wait.
+	// The daemon uses it to tell the CLI what it is waiting for.
+	OnConsentPending func()
 
 	// Event-capture bounds (config keys console_buffer / console_max_entry).
 	// Zero means the built-in default; see configureCapture.
@@ -132,8 +142,28 @@ func newCDP(managed bool, alloc context.Context, allocCancel context.CancelFunc,
 	return c
 }
 
+// Connection-probe timings. The dial and the pending threshold are short because
+// this is loopback: a debug endpoint that has not accepted in two seconds is not
+// slow, it is absent, and one that has accepted but said nothing for two seconds
+// is not busy, it is waiting for a human.
+const (
+	// DefaultConsentTimeout is how long an open-but-silent endpoint is waited
+	// out (config key consent_timeout). Two minutes is a human timescale for a
+	// browser-modal dialog that can sit behind the window; ten seconds is not,
+	// and ten seconds is what used to abandon the prompt it had just raised.
+	DefaultConsentTimeout = 120 * time.Second
+	consentDialTimeout    = 2 * time.Second
+)
+
+// consentPendingAfter is how much silence from an open port counts as "Chrome is
+// asking the user". It is a var only so a test can shrink the clock; production
+// never changes it.
+var consentPendingAfter = 2 * time.Second
+
 // Connect walks the connection ladder (mirroring browser.DecideConnection):
-//   - a reachable DevToolsActivePort endpoint -> attach (Path B)
+//   - a completed WebSocket upgrade           -> attach (Path B)
+//   - an open port with a hanging upgrade     -> wait out Chrome's consent
+//     prompt, then ConnectError{consent_pending} if it is never answered
 //   - a running but non-debug Chrome          -> ConnectError{not_debug_enabled}
 //     (never shadow the user's session with a second browser)
 //   - nothing running, --no-launch            -> ConnectError{connection_failed}
@@ -154,9 +184,25 @@ func Connect(_ context.Context, opts Options) (*CDP, error) {
 			endpoint = ws
 		}
 	}
+	consent := opts.ConsentTimeout
+	if consent <= 0 {
+		consent = DefaultConsentTimeout
+	}
+	// One upgrade decides the ladder's first two rungs, and it is the ONLY thing
+	// here that can raise a consent prompt. chromedp cannot do this itself:
+	// bounding its first Run with a context deadline would tear down the browser
+	// it just allocated, so the classification has to happen on a socket we own.
+	// The socket is then held (up.Close is deferred past the attach) so the
+	// consent the user just granted is still live when chromedp arrives.
+	ws := browser.WSRefused
+	if endpoint != "" {
+		up := browser.AwaitUpgrade(endpoint, consentDialTimeout, consentPendingAfter, consent, opts.OnConsentPending)
+		defer up.Close()
+		ws = up.State
+	}
 	probe := browser.Probe{
 		PortFileWS:    endpoint,
-		WSReachable:   endpoint != "" && Reachable(endpoint),
+		WS:            ws,
 		ChromeRunning: chromeRunning(),
 		NoLaunch:      opts.NoLaunch,
 	}
@@ -165,15 +211,17 @@ func Connect(_ context.Context, opts Options) (*CDP, error) {
 	switch browser.DecideConnection(probe) {
 	case browser.Attach:
 		c, err = attach(endpoint)
+	case browser.ConsentPending:
+		return nil, &ConnectError{Code: result.CodeConsentPending, Message: consentPendingMsg(consent)}
 	case browser.InstructToggle:
 		return nil, &ConnectError{
-			Code:    "not_debug_enabled",
-			Message: "Chrome is running but not debug-enabled — open chrome://inspect/#remote-debugging and toggle it on (chrome-cdp will not open a second browser over your session)",
+			Code:    result.CodeNotDebug,
+			Message: "Chrome is running but not debug-enabled — " + browser.EnableAdvice + " (chrome-cdp will not open a second browser over your session)",
 		}
 	case browser.InstructNoLaunch:
 		return nil, &ConnectError{
-			Code:    "connection_failed",
-			Message: "no debug-enabled Chrome found and --no-launch is set — enable chrome://inspect/#remote-debugging or drop --no-launch",
+			Code:    result.CodeConnection,
+			Message: "no debug-enabled Chrome found and --no-launch is set — " + browser.EnableAdvice + ", or drop --no-launch",
 		}
 	default: // Launch
 		c, err = launch(opts.Headless, opts.ProfileDir, opts.Port)
@@ -247,6 +295,19 @@ func startBase(managed bool, alloc context.Context, allocCancel context.CancelFu
 	return c, nil
 }
 
+// consentPendingMsg explains a wait that ran out with the dialog still
+// unanswered. Every clause is here because a user could not deduce it: that the
+// dialog is modal to the BROWSER (so the frozen window is the symptom, not a
+// crash), that it can be behind the window (so they have not seen it), and that
+// nothing else in Chrome will respond until it is answered.
+func consentPendingMsg(waited time.Duration) string {
+	return fmt.Sprintf("Chrome is holding its \"Allow remote debugging?\" consent prompt and it has not been answered in %s — "+
+		"the prompt is browser-modal and can sit BEHIND the Chrome window, and Chrome accepts no other input until it is answered, "+
+		"so a browser that looks frozen or crashed is usually this dialog. "+
+		"Find it and click Allow, then retry; raise --consent-timeout if you need longer. "+
+		"To avoid the prompt entirely, %s.", waited, browser.EnableAdvice)
+}
+
 // connectFailMsg turns a raw allocator/dial failure into an actionable message.
 // The common attach case — "could not dial … deadline exceeded" — is almost
 // always Chrome holding a pending "Allow remote debugging?" consent prompt (or a
@@ -254,14 +315,16 @@ func startBase(managed bool, alloc context.Context, allocCancel context.CancelFu
 func connectFailMsg(managed bool, what string, err error) string {
 	s := err.Error()
 	if !managed && (strings.Contains(s, "could not dial") || strings.Contains(s, "deadline exceeded")) {
-		return "cannot reach Chrome's debug endpoint — if Chrome is showing an \"Allow remote debugging?\" prompt, click Allow (it can be behind the window), then retry; if it stays unresponsive the endpoint is wedged: quit and reopen Chrome, re-enable chrome://inspect/#remote-debugging, and keep the daemon running so the consent is asked once, not per command"
+		return "cannot reach Chrome's debug endpoint — if Chrome is showing an \"Allow remote debugging?\" prompt, click Allow (it is browser-modal, can be behind the window, and blocks all other input until answered), then retry; if it stays unresponsive the endpoint is wedged: quit and reopen Chrome, then " + browser.EnableAdvice + ", and keep the daemon running so the consent is asked once, not per command"
 	}
 	return fmt.Sprintf("%s: %v", what, err)
 }
 
 // chromeRunning best-effort detects an already-running Chrome (so we instruct
 // the toggle instead of shadowing the user's session with a managed browser).
-func chromeRunning() bool {
+// It is a var so a connection test can pin the answer: whether the machine
+// running the test happens to have Chrome open must not change the ladder.
+var chromeRunning = func() bool {
 	var name string
 	switch runtime.GOOS {
 	case "darwin":
@@ -1608,19 +1671,4 @@ func (c *CDP) Raw(ctx context.Context, id, method string, params json.RawMessage
 	var v any
 	_ = json.Unmarshal(res, &v)
 	return v, nil
-}
-
-// Reachable reports whether the loopback debug port is actually listening
-// (used by `doctor` so a stale port file isn't reported as ready).
-func Reachable(wsURL string) bool {
-	hostport, ok := browser.HostPort(wsURL)
-	if !ok {
-		return false
-	}
-	conn, err := net.DialTimeout("tcp", hostport, 500*time.Millisecond)
-	if err != nil {
-		return false
-	}
-	_ = conn.Close()
-	return true
 }

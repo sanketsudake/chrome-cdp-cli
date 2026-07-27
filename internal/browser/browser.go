@@ -112,8 +112,9 @@ type Action int
 const (
 	Attach           Action = iota // attach to Probe.PortFileWS (Path B)
 	Launch                         // launch a managed Chrome (Path A fallback)
-	InstructToggle                 // Chrome is running but not debug-enabled — guide chrome://inspect
+	InstructToggle                 // Chrome is running but not debug-enabled — guide the launch flag / chrome://inspect
 	InstructNoLaunch               // nothing debug-enabled and --no-launch — print the launch command
+	ConsentPending                 // open port, hanging upgrade — Chrome is holding its consent prompt
 )
 
 func (a Action) String() string {
@@ -126,6 +127,8 @@ func (a Action) String() string {
 		return "instruct-toggle"
 	case InstructNoLaunch:
 		return "instruct-no-launch"
+	case ConsentPending:
+		return "consent-pending"
 	default:
 		return "unknown"
 	}
@@ -133,20 +136,31 @@ func (a Action) String() string {
 
 // Probe captures the observable connection state the ladder decides on.
 type Probe struct {
-	PortFileWS    string // ws:// from DevToolsActivePort, or "" if unavailable
-	WSReachable   bool   // did a WS connect to PortFileWS succeed?
-	ChromeRunning bool   // is a Chrome process running (possibly without debug)?
-	NoLaunch      bool   // the --no-launch flag
+	PortFileWS    string  // ws:// from DevToolsActivePort, or "" if unavailable
+	WS            WSState // what one WebSocket upgrade against PortFileWS did
+	ChromeRunning bool    // is a Chrome process running (possibly without debug)?
+	NoLaunch      bool    // the --no-launch flag
 }
 
 // DecideConnection walks the connection ladder:
-//  1. reachable debug endpoint            -> Attach (Path B)
-//  2. no reachable endpoint, Chrome up    -> InstructToggle (use the running session; never shadow it)
-//  3. no reachable endpoint, no Chrome    -> Launch (Path A) unless --no-launch
-//  4. ...with --no-launch                 -> InstructNoLaunch
+//  1. upgrade completed                   -> Attach (Path B)
+//  2. open port, hanging upgrade          -> ConsentPending (Chrome is asking the user, not failing)
+//  3. no reachable endpoint, Chrome up    -> InstructToggle (use the running session; never shadow it)
+//  4. no reachable endpoint, no Chrome    -> Launch (Path A) unless --no-launch
+//  5. ...with --no-launch                 -> InstructNoLaunch
+//
+// Rungs 1 and 2 are separate only because WS is three-way. While it was a bool,
+// "the port refused us" and "the port accepted and then said nothing" were the
+// same observation — which is exactly why a pending consent prompt could only
+// ever surface as an undifferentiated timeout.
 func DecideConnection(p Probe) Action {
-	if p.PortFileWS != "" && p.WSReachable {
-		return Attach
+	if p.PortFileWS != "" {
+		switch p.WS {
+		case WSReady:
+			return Attach
+		case WSPending:
+			return ConsentPending
+		}
 	}
 	if p.ChromeRunning {
 		return InstructToggle

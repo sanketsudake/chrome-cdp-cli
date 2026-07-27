@@ -31,6 +31,7 @@ func main() {
 			ProfileDir:      env.ProfileDir,
 			Port:            env.Port,
 			NoLaunch:        env.NoLaunch,
+			ConsentTimeout:  env.ConsentTimeout,
 			ConsoleBuffer:   env.ConsoleBuffer,
 			ConsoleMaxEntry: env.ConsoleMaxEntry,
 			NetBuffer:       env.NetBuffer,
@@ -103,6 +104,12 @@ func main() {
 		if o.NoLaunch {
 			env = append(env, "CHROME_CDP_NO_LAUNCH=1")
 		}
+		// The daemon is the process that actually waits out the consent prompt,
+		// so --consent-timeout has to reach it; it only ever parses the
+		// environment.
+		if o.ConsentTimeout > 0 {
+			env = append(env, "CHROME_CDP_CONSENT_TIMEOUT="+o.ConsentTimeout.String())
+		}
 		// The daemon parses only the environment, so config-file values for the
 		// event-capture bounds have to be forwarded explicitly or the buffers it
 		// holds would silently fall back to the built-in sizes.
@@ -121,12 +128,13 @@ func main() {
 		if o.NoDaemon {
 			return chrome.Connect(ctx, chrome.Options{
 				PortFile: portFile, NoLaunch: o.NoLaunch, ProfileDir: o.ProfileDir, Port: o.Port,
-				ConsoleBuffer: defs.ConsoleBuffer, ConsoleMaxEntry: defs.ConsoleMaxEntry,
+				ConsentTimeout: o.ConsentTimeout,
+				ConsoleBuffer:  defs.ConsoleBuffer, ConsoleMaxEntry: defs.ConsoleMaxEntry,
 				NetBuffer: defs.NetBuffer, NetMaxBody: defs.NetMaxBody,
 				RecordBuffer: defs.RecordBuffer, RecordMaxBytes: defs.RecordMaxBytes,
 			})
 		}
-		client, err := daemon.Ensure(socketFor(o), exe, daemonEnv(o))
+		client, err := daemon.Ensure(socketFor(o), exe, daemonEnv(o), o.ConsentTimeout)
 		if err != nil {
 			return nil, err
 		}
@@ -136,7 +144,7 @@ func main() {
 	app.WithDaemonCtl(
 		func(o cli.ConnOpts) (map[string]any, error) {
 			sock := socketFor(o)
-			if _, err := daemon.Ensure(sock, exe, daemonEnv(o)); err != nil {
+			if _, err := daemon.Ensure(sock, exe, daemonEnv(o), o.ConsentTimeout); err != nil {
 				return nil, err
 			}
 			return map[string]any{"started": true, "socket": sock, "endpoint": browser.EndpointKey(portFile, o.Port)}, nil
