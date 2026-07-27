@@ -150,8 +150,9 @@ chrome-cdp snap --by name … || { chrome-cdp activate && chrome-cdp snap --by n
 | Command | Returns |
 |---------|---------|
 | `snap [--role <r>] [--grep <re>] [--region <name>] [--dedupe]` | accessibility snapshot: roles + names of actionable nodes, plus `alerts`, `focused`, per-node `states`/`value`/`ref` |
+| `find <query> [--role <r>] [--limit <n>] [--region <name>] [--all] [--dedupe] [--min-score <s>]` | ranked element matches for a plain-language query, each with `ref`, exact name, `states`, `score`, and `center` |
 | `grid [selector]` | a table/grid as `{headers, rows, count}` |
-| `value <selector> [--all]` | a form field's value (`--all`: every match, as a list) |
+| `value <selector> [--all]` | a form field's value (`--all`: every match, as a list); password fields come back masked |
 | `text <selector>` | visible text of a selector |
 | `text --article [--markdown] [--min-chars <n>]` | the page's main readable content, boilerplate dropped |
 | `html <selector> [--inner]` | outer (or inner) HTML |
@@ -164,6 +165,61 @@ chrome-cdp snap --role button --grep "[AP]M"    # calendar-event buttons only
 chrome-cdp grid                                 # read a table without parsing snap
 chrome-cdp value --all "input.hours"            # every hour cell in one call
 ```
+
+#### Password fields are masked on every read
+
+`value`, `value --all`, `snap`, and `find` all report a `password` input's contents as bullets, and omit a hidden input's value entirely.
+Chrome already masks passwords in the accessibility tree; the DOM-reading paths mask them to match, so no read verb quietly becomes the door that hands a typed password to a script or an agent transcript.
+A masked single read says so with `"masked": true`, so a caller can tell bullets-because-masked from bullets-the-user-typed.
+
+This is about not leaking by accident, not a security boundary: `eval` still reads whatever the page holds.
+That is deliberate — when you genuinely need the characters, there is one explicit path for it rather than four incidental ones.
+
+#### `find` — describe the element, get its address
+
+`snap` answers "what is on this page"; `find` answers "where is the thing I already know I want".
+A short query — the element's purpose, a fragment of its text, or its hint text — is ranked against the accessibility tree, and the best matches come back with everything an acting verb needs:
+
+```sh
+chrome-cdp find "login button"
+chrome-cdp find "delete" --region "Invoice 4102" --role button
+chrome-cdp find "time type" --role textbox --limit 3
+```
+
+```json
+{ "ok": true, "command": "find",
+  "result": { "query": "login button",
+    "matches": [
+      { "ref": "e4821", "role": "button", "name": "Sign in to your account",
+        "score": 0.91, "center": {"x": 640, "y": 412},
+        "states": ["focusable"], "visible": true } ],
+    "count": 1, "truncated": false } }
+```
+
+The `ref` feeds `--by ref`, the exact `name` feeds `--by name`, and `center` is a viewport CSS-pixel point.
+This is the cure for verbose accessible names: `find "review"` returns the real name (`"Review Approval: Awaiting Action by …"`) so you never have to guess it.
+
+Matching is a deterministic heuristic — token overlap plus role words (button, link, field, box, bar, checkbox, tab, menu, heading, row, icon) that softly steer the ranking — not a model call.
+It handles descriptive queries, not paraphrase; for "the thing that saves my work" you still read a `snap`.
+Role words are a nudge; `--role` is the hard filter.
+
+Finding nothing is an answer, not an error: `count: 0`, exit 0.
+`--min-score` drops weak matches, `--all` includes hidden/ignored nodes (ranked lower), and `--dedupe` collapses identical role+name pairs in virtualized grids.
+A `--region` that names no container on the page also yields zero matches rather than an error — the same as `snap` — but the envelope reports `region_found: false`, so a typo'd region is distinguishable from a region that exists and holds nothing.
+
+On a backgrounded tab the a11y tree may be throttled; when it yields nothing there, `find` falls back to a DOM-computed pass (`note: "dom_fallback"`) that uses the same accessible-name derivation `--by name` falls back to.
+Fallback matches carry centres but no refs, and `--region` is not honoured (region scoping is an accessibility-subtree notion); `--role`, `--dedupe`, `--limit`, and `--min-score` all still apply.
+
+A password field's `value` comes back masked on both paths, and a hidden input's is omitted — the fallback reads the DOM, where the value is the literal typed text, so it masks what Chrome's accessibility tree masks for you.
+Other field values are returned as-is, exactly as `snap` and `value` return them.
+
+`center` is the element's box centre in viewport CSS pixels, measured with the same primitive the pointer verbs use — so a centre `find` reports is a point a click lands on.
+When that centre pixel resolves to something else (a cookie banner, a modal, a sticky header), the match carries `occluded: true`: the element is there, but a click at that coordinate would hit the overlay instead.
+That is reported, never fatal — knowing the coordinate would miss is the useful part.
+`visible` remains "has a box"; `occluded` is the separate question of whether the box is reachable.
+
+`find` never scrolls the page to measure, because a read verb must not move the page under a running automation.
+The pointer verbs do scroll their target into view, which is why an off-screen element can be clickable even when `find` reports its centre outside the viewport.
 
 #### `text --article` — the page without the furniture
 

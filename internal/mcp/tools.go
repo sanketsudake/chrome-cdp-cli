@@ -104,6 +104,7 @@ func registry() []*tool {
 		tabsTool(),
 		navigateTool(),
 		snapshotTool(),
+		findTool(),
 		readTool(),
 		clickTool(),
 		typeTextTool(),
@@ -216,6 +217,30 @@ func snapshotTool() *tool {
 		}, targetArgs()),
 		build: func(c *call) (string, []string, []string, error) {
 			return "snap", c.flags(), nil, nil
+		},
+	}
+}
+
+func findTool() *tool {
+	return &tool{
+		name:  prefix + "find",
+		title: "Find elements",
+		desc: "Find elements by describing them: a short plain-language query (\"login button\", \"search bar\", \"delete icon\") ranked against the accessibility tree, returning the best matches with their `e<id>` ref, exact accessible name, role, states, score, and centre point.\n\n" +
+			"Use this before a snapshot when you know what you are looking for — one call replaces reading hundreds of snapshot nodes, and the returned exact name and ref feed `by: \"name\"` / `by: \"ref\"` directly. " +
+			"Matching is a deterministic heuristic (token overlap plus role words like button/link/field/heading), not a model: it handles descriptive queries, not paraphrase. Finding nothing is a normal result (`count: 0`), not an error.",
+		verbs: []string{"find"},
+		args: concat([]arg{
+			{name: "query", typ: "string", required: true, pos: true,
+				desc: "a few words describing the element: its purpose (\"login button\"), visible text fragment (\"review\"), or hint text (\"search bar\")."},
+			{name: "role", typ: "string", flag: "role", desc: "hard-filter matches to this ARIA role (button|link|textbox|…)."},
+			{name: "limit", typ: "integer", flag: "limit", desc: "maximum matches returned (1..50, default 10)."},
+			{name: "region", typ: "string", flag: "region", desc: "only elements inside a container whose accessible name contains this."},
+			{name: "all", typ: "boolean", flag: "all", desc: "include off-screen and ignored nodes, ranked lower."},
+			{name: "dedupe", typ: "boolean", flag: "dedupe", desc: "collapse identical role+name matches (for virtualized grids)."},
+			{name: "min_score", typ: "number", flag: "min-score", desc: "drop matches scoring below this (0..1)."},
+		}, targetArgs()),
+		build: func(c *call) (string, []string, []string, error) {
+			return "find", c.flags("query"), []string{c.str("query")}, nil
 		},
 	}
 }

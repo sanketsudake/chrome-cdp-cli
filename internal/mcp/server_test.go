@@ -329,7 +329,7 @@ func TestReadOnlyHidesMutatingTools(t *testing.T) {
 			t.Errorf("--read-only still lists %s", hidden)
 		}
 	}
-	for _, shown := range []string{"tabs", "snapshot", "read", "wait_for", "screenshot", "console", "network", "batch"} {
+	for _, shown := range []string{"tabs", "snapshot", "find", "read", "wait_for", "screenshot", "console", "network", "batch"} {
 		if !hasTool(res.Tools, prefix+shown) {
 			t.Errorf("--read-only dropped the reading tool %s", shown)
 		}

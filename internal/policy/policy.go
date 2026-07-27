@@ -108,6 +108,7 @@ var verbClass = map[string]Class{
 
 	// Reading.
 	"snap":  Reading,
+	"find":  Reading,
 	"html":  Reading,
 	"text":  Reading,
 	"value": Reading,

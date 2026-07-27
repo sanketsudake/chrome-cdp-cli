@@ -12,6 +12,7 @@ Built for humans and AI agents alike: every command speaks one JSON envelope and
 ```sh
 chrome-cdp open https://example.com     # open a tab, get its id
 chrome-cdp snap --role button           # see what's clickable — by accessible name
+chrome-cdp find "login button"          # or describe it and get ranked matches
 chrome-cdp click --by name "Sign in"    # act by meaning, not a brittle CSS id
 ```
 

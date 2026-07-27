@@ -72,6 +72,10 @@ Clean up after yourself: **`close`** the tabs you opened, since this is the user
   - **Filter server-side** so you get just the relevant nodes, not the whole tree (a page can be hundreds of nodes): `--role <role>`, `--grep <name-regex>`, `--region <container-name>` (scope to a container's subtree), `--dedupe` (collapse identical role+name — for virtualized grids that render an item at several scroll positions).
     E.g. `snap --role button --grep "[AP]M"` to pull just the calendar events.
     `alerts`/`focused` stay page-wide.
+- **`find "<query>"`** — describe the element in a few words ("login button", "search bar") and get ranked matches, each with `ref`, the EXACT accessible name, `states`, `score`, and `center`.
+  Prefer this over parsing a big `snap` when you already know what you're looking for — one call replaces the snap→scan→guess-the-name loop, and it's the cure for verbose accessible names ("Review" vs `"Review Approval: Awaiting Action by …"`): `find "review"` hands you the real name for `--by name`, or the `ref` for `--by ref`.
+  Filters: `--role` (hard), `--region`, `--limit`, `--dedupe`, `--min-score`, `--all` (include hidden).
+  `count: 0` at exit 0 means "not on this page" — that's an answer, not an error.
 - **`value --all "<css>"`** — the value/text of every match as a list (a whole row of hour cells, a set of pills) in one call.
 - **`grid [selector]`** — read a table/grid as `{headers, rows, count}` from the accessibility structure.
   Use this for the calendar / task-list / timesheet grids instead of hand-parsing `snap` or screenshotting.
