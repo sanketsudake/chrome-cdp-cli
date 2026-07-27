@@ -59,3 +59,5 @@
 # console_max_entry = 8192 # per-message text cap, in bytes
 # net_buffer = 500         # network records retained per tab (`net` reports evictions as `dropped`)
 # net_max_body = 65536     # per-body cap in bytes, for `net --body`
+# record_buffer = 600          # frames retained per tab by `record` (evictions are reported as dropped_frames)
+# record_max_bytes = 100663296 # retained frame bytes per tab; a frame count alone does not bound memory on a large viewport

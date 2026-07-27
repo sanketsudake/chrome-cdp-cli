@@ -276,6 +276,18 @@ func (s *server) dispatch(ctx context.Context, method string, args []json.RawMes
 		return nil, errors.New("NetStream is a streaming method: call it over the streaming RPC path")
 	case "Screenshot":
 		return capture(b.Screenshot(ctx, argStr(args, 0), argShot(args, 1)))
+	case "RecordStart":
+		return b.RecordStart(ctx, argStr(args, 0), argRecord(args, 1))
+	case "RecordStop":
+		frames, meta, err := b.RecordStop(ctx, argStr(args, 0))
+		if err != nil {
+			return nil, err
+		}
+		return recordResult{Frames: frames, Meta: meta}, nil
+	case "RecordStatus":
+		return b.RecordStatus(ctx, argStr(args, 0))
+	case "RecordCancel":
+		return b.RecordCancel(ctx, argStr(args, 0))
 	case "PDF":
 		return capture(b.PDF(ctx, argStr(args, 0), argPDF(args, 1)))
 	case "CookieList":
@@ -308,6 +320,15 @@ func capture(data []byte, meta map[string]any, err error) (any, error) {
 		return nil, err
 	}
 	return captureResult{Data: data, Meta: meta}, nil
+}
+
+// recordResult carries RecordStop's two return values over the one-result RPC.
+// The frames ride as an array of objects whose JPEG bytes encoding/json renders
+// as base64 — the same treatment captureResult gives a screenshot, for the same
+// reason: the forwarder has to hand both halves back unchanged.
+type recordResult struct {
+	Frames []chrome.Frame `json:"frames,omitempty"`
+	Meta   map[string]any `json:"meta,omitempty"`
 }
 
 // arg decodes the i'th positional argument, yielding the zero value when it is
@@ -345,6 +366,7 @@ func argPointer(a []json.RawMessage, i int) chrome.PointerOpts { return arg[chro
 func argShot(a []json.RawMessage, i int) chrome.ShotOpts       { return arg[chrome.ShotOpts](a, i) }
 func argPDF(a []json.RawMessage, i int) chrome.PDFOpts         { return arg[chrome.PDFOpts](a, i) }
 func argUpload(a []json.RawMessage, i int) chrome.UploadOpts   { return arg[chrome.UploadOpts](a, i) }
+func argRecord(a []json.RawMessage, i int) chrome.RecordOpts   { return arg[chrome.RecordOpts](a, i) }
 func argMap(a []json.RawMessage, i int) map[string]string      { return arg[map[string]string](a, i) }
 func argConsole(a []json.RawMessage, i int) chrome.ConsoleOpts { return arg[chrome.ConsoleOpts](a, i) }
 func argNet(a []json.RawMessage, i int) chrome.NetOpts         { return arg[chrome.NetOpts](a, i) }
@@ -606,6 +628,23 @@ func (r *remoteBrowser) Screenshot(ctx context.Context, id string, opts chrome.S
 	var out captureResult
 	err := r.c.call(ctx, "Screenshot", &out, id, opts)
 	return out.Data, out.Meta, err
+}
+func (r *remoteBrowser) RecordStart(ctx context.Context, id string, opts chrome.RecordOpts) (map[string]any, error) {
+	var out map[string]any
+	return out, r.c.call(ctx, "RecordStart", &out, id, opts)
+}
+func (r *remoteBrowser) RecordStop(ctx context.Context, id string) ([]chrome.Frame, map[string]any, error) {
+	var out recordResult
+	err := r.c.call(ctx, "RecordStop", &out, id)
+	return out.Frames, out.Meta, err
+}
+func (r *remoteBrowser) RecordStatus(ctx context.Context, id string) (map[string]any, error) {
+	var out map[string]any
+	return out, r.c.call(ctx, "RecordStatus", &out, id)
+}
+func (r *remoteBrowser) RecordCancel(ctx context.Context, id string) (map[string]any, error) {
+	var out map[string]any
+	return out, r.c.call(ctx, "RecordCancel", &out, id)
 }
 func (r *remoteBrowser) Console(ctx context.Context, id string, opts chrome.ConsoleOpts) (any, error) {
 	var out any

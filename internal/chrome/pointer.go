@@ -47,6 +47,10 @@ func IsOccluded(err error) bool { return errIs(err, ErrOccluded) }
 // modified click multi-selects the way a human's does.
 func (c *CDP) Pointer(ctx context.Context, id, selector string, opts PointerOpts) (map[string]any, error) {
 	var out map[string]any
+	// Where the gesture landed, kept for the recorder. This resolution is the
+	// only place a centre point exists, which is precisely why RFC-0011's
+	// annotation needs no geometry of its own.
+	var markX, markY float64
 	core := chromedp.ActionFunc(func(actx context.Context) error {
 		nid, err := resolveNodeReady(actx, selector, opts.Query)
 		if err != nil {
@@ -118,6 +122,10 @@ func (c *CDP) Pointer(ctx context.Context, id, selector string, opts PointerOpts
 	if err := c.run(ctx, id, bringToFront(), action); err != nil {
 		return nil, err
 	}
+	// Recorded only after the gesture succeeded: a marker for a click that never
+	// landed would be worse than no annotation at all. A no-op when the tab is
+	// not being recorded.
+	c.noteRecordMark(id, string(opts.Action), markX, markY)
 	return withDialogResult(out, sink), nil
 }
 

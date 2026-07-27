@@ -500,6 +500,52 @@ func TestConsoleBufferPrecedence(t *testing.T) {
 		}
 	})
 
+	// Recording gets its own pair too, and one of them is a BYTE ceiling rather
+	// than a count: 600 frames means something entirely different on a laptop
+	// viewport and on a 4K one, so a frame count alone does not bound memory.
+	t.Run("record bounds are separate and byte-aware", func(t *testing.T) {
+		t.Parallel()
+		d, err := ResolveFrom(filepath.Join(t.TempDir(), "absent.toml"), noEnv)
+		if err != nil {
+			t.Fatalf("resolve: %v", err)
+		}
+		if d.RecordBuffer != chrome.DefaultRecordFrames || d.RecordMaxBytes != chrome.DefaultRecordMaxBytes {
+			t.Errorf("record defaults = %d/%d, want %d/%d",
+				d.RecordBuffer, d.RecordMaxBytes, chrome.DefaultRecordFrames, chrome.DefaultRecordMaxBytes)
+		}
+
+		p := writeConfig(t, "console_buffer = 25\nrecord_buffer = 12\nrecord_max_bytes = 4096\n")
+		d, err = ResolveFrom(p, noEnv)
+		if err != nil {
+			t.Fatalf("resolve: %v", err)
+		}
+		if d.RecordBuffer != 12 || d.RecordMaxBytes != 4096 {
+			t.Errorf("record config = %d/%d, want 12/4096", d.RecordBuffer, d.RecordMaxBytes)
+		}
+		if d.ConsoleBuffer != 25 || d.NetBuffer != chrome.DefaultNetBuffer {
+			t.Errorf("record_buffer disturbed another bound: console=%d net=%d", d.ConsoleBuffer, d.NetBuffer)
+		}
+
+		env := envFrom(map[string]string{
+			"CHROME_CDP_RECORD_BUFFER":    "30",
+			"CHROME_CDP_RECORD_MAX_BYTES": "8192",
+		})
+		d, err = ResolveFrom(p, env)
+		if err != nil {
+			t.Fatalf("resolve: %v", err)
+		}
+		if d.RecordBuffer != 30 || d.RecordMaxBytes != 8192 {
+			t.Errorf("record env = %d/%d, want 30/8192", d.RecordBuffer, d.RecordMaxBytes)
+		}
+		d, err = ResolveFrom(p, envFrom(map[string]string{"CHROME_CDP_RECORD_BUFFER": "many"}))
+		if err != nil {
+			t.Fatalf("a malformed bound must not be fatal: %v", err)
+		}
+		if d.RecordBuffer != 12 {
+			t.Errorf("RecordBuffer = %d, want the config value 12 to survive a malformed env var", d.RecordBuffer)
+		}
+	})
+
 	// A typo in a bound must not brick the CLI, matching how every other
 	// malformed value here behaves: keep the value below it and carry on.
 	t.Run("malformed env keeps the config value", func(t *testing.T) {

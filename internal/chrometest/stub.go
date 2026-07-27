@@ -4,8 +4,13 @@
 package chrometest
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"image"
+	"image/color"
+	"image/png"
+	"time"
 
 	"github.com/sanketsudake/chrome-cdp-cli/internal/chrome"
 	"github.com/sanketsudake/chrome-cdp-cli/internal/target"
@@ -84,6 +89,51 @@ func (StubBrowser) Screenshot(context.Context, string, chrome.ShotOpts) ([]byte,
 func (StubBrowser) PDF(context.Context, string, chrome.PDFOpts) ([]byte, map[string]any, error) {
 	return []byte("%PDF-"), nil, nil
 }
+func (StubBrowser) RecordStart(context.Context, string, chrome.RecordOpts) (map[string]any, error) {
+	return map[string]any{"action": "start", "recording": true, "fps": 4.0, "scale": 0.5}, nil
+}
+
+// RecordStop hands back two REAL frames, small but decodable.
+//
+// A stub that returned empty bytes would make every CLI-level export test pass
+// through a code path that never encodes anything — and encoding is most of
+// what `record stop` does. Two frames also make the result an animation rather
+// than a still, which is what the command promises.
+func (StubBrowser) RecordStop(context.Context, string) ([]chrome.Frame, map[string]any, error) {
+	now := time.Now()
+	return []chrome.Frame{
+			{Data: stubFrame, TS: now, Width: 4, Height: 4},
+			{Data: stubFrame, TS: now.Add(250 * time.Millisecond), Width: 4, Height: 4},
+		}, map[string]any{
+			"action": "stop", "frames": 2, "dropped_frames": 0,
+			"truncated": false, "elapsed_ms": int64(250), "fps": 4.0, "scale": 0.5,
+		}, nil
+}
+
+func (StubBrowser) RecordStatus(context.Context, string) (map[string]any, error) {
+	return map[string]any{"action": "status", "recording": false, "frames": 0}, nil
+}
+
+func (StubBrowser) RecordCancel(context.Context, string) (map[string]any, error) {
+	return map[string]any{"action": "cancel", "recording": false, "discarded": 0}, nil
+}
+
+// stubFrame is a 4x4 PNG, built once so the frames the stub hands back decode
+// like the real thing.
+var stubFrame = func() []byte {
+	img := image.NewRGBA(image.Rect(0, 0, 4, 4))
+	for y := range 4 {
+		for x := range 4 {
+			img.Set(x, y, color.RGBA{R: 0x20, G: 0x80, B: 0xC0, A: 0xFF})
+		}
+	}
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, img); err != nil {
+		panic("chrometest: cannot build the stub frame: " + err.Error())
+	}
+	return buf.Bytes()
+}()
+
 func (StubBrowser) CookieList(context.Context, string) (any, error) {
 	return map[string]any{"cookies": []any{}}, nil
 }

@@ -137,6 +137,7 @@ func (c *CDP) attached(id string) bool {
 func (c *CDP) startCapture(tctx context.Context, id string) {
 	c.startConsoleCapture(tctx, id)
 	c.startNetCapture(tctx, id)
+	c.startRecordCapture(tctx, id)
 }
 
 // startConsoleCapture retains console output and uncaught exceptions for a tab.

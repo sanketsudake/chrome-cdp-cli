@@ -1,0 +1,713 @@
+package chrome
+
+// Session recording (RFC-0011) — the capture half.
+//
+// Three decisions shape this file, and each is the answer to a failure mode:
+//
+//   - The frames live HERE, on the object that holds the connection, which in
+//     normal use is owned by the daemon. A recording spans many CLI
+//     invocations, so a per-command process could not hold them; and because
+//     the process that dies with a failed automation was never holding them,
+//     `record stop` after a crash still exports what was captured (US-7).
+//
+//   - Capture is Page.startScreencast, not a screenshot loop. Chrome pushes a
+//     frame only when the page actually changes, which is both cheaper and
+//     better-looking than polling a static page — and it comes with one hard
+//     obligation: EVERY frame must be acknowledged, or Chrome stops sending
+//     after the first. The ack cannot happen on the event loop (it is a CDP
+//     call), so frames are handed to a pump goroutine that acks and stores.
+//
+//   - Bounds are structural, and their effects are REPORTED. A ring of
+//     MaxFrames, a total byte ceiling, and a max duration each stop the daemon
+//     growing; each one that fires increments dropped_frames or sets truncated,
+//     because a partial recording presented as complete is the failure US-6
+//     exists to prevent.
+
+import (
+	"bytes"
+	"context"
+	"encoding/base64"
+	"errors"
+	"image"
+	_ "image/jpeg" // registered so a screencast frame's header decodes
+	"math"
+	"sync"
+	"time"
+
+	"github.com/chromedp/cdproto/page"
+	"github.com/chromedp/chromedp"
+
+	"github.com/sanketsudake/chrome-cdp-cli/internal/eventbuf"
+)
+
+// Capture defaults. They are defaults, not policy: the `record` flags override
+// the per-recording ones and the `record_buffer` / `record_max_bytes` config
+// keys override the daemon-wide bounds.
+const (
+	// DefaultRecordFrames is the ring size. At the default scale and quality a
+	// frame is a few tens of KB, so 600 frames is a couple of minutes of a
+	// moving page for well under a hundred MB.
+	DefaultRecordFrames = 600
+
+	// DefaultRecordMaxBytes is the ceiling on retained frame bytes per tab. The
+	// frame count alone does not bound memory — a 4K viewport frame is an order
+	// of magnitude larger than a laptop one — so the byte ceiling is what makes
+	// the worst case a constant rather than a function of the user's monitor.
+	DefaultRecordMaxBytes = 96 << 20
+
+	// DefaultRecordFPS is the capture cadence ceiling. GIFs rarely need more,
+	// and every frame above it is memory spent on something nobody will see.
+	DefaultRecordFPS = 4
+
+	// DefaultRecordScale halves the captured dimensions, which quarters the
+	// bytes for output that is still perfectly readable in an issue thread.
+	DefaultRecordScale = 0.5
+
+	// DefaultRecordQuality is the JPEG quality of a captured frame. High enough
+	// that text stays legible, low enough that a long recording fits the cap.
+	DefaultRecordQuality = 60
+
+	// DefaultRecordMaxDuration stops a capture that was never stopped by hand.
+	DefaultRecordMaxDuration = 2 * time.Minute
+
+	// recordQueueDepth is the handoff depth between the CDP event loop and the
+	// pump. Deep enough that ordinary processing never overflows it; when it
+	// does overflow, the frame is dropped but its ACK is still queued, because
+	// an unacknowledged frame stalls the screencast permanently.
+	recordQueueDepth = 256
+
+	// recordMarkLinger is how long an action's marker stays on the frames after
+	// it: long enough to be visible at 4fps, short enough that a batch of clicks
+	// does not smear into one another.
+	recordMarkLinger = 1200 * time.Millisecond
+
+	// recordMarkPreroll attaches a marker to frames captured just BEFORE the
+	// action too. A click that changes nothing produces no new frame, and a
+	// marker with no frame to land on would silently vanish.
+	recordMarkPreroll = 400 * time.Millisecond
+
+	// recordMaxMarks bounds the action log of one recording.
+	recordMaxMarks = 2000
+
+	// recordMinRetained is the floor the byte ceiling may shrink a ring to. Two
+	// frames is the least that is still an animation.
+	recordMinRetained = 2
+)
+
+// Recording lifecycle errors. They are sentinels because the CLI maps both to
+// `usage` / exit 2, and — like every other sentinel here — they are matched
+// through errIs, so they survive the daemon RPC flattening them to a string.
+var (
+	// ErrAlreadyRecording reports a second `record start` on a tab that is
+	// already recording. It is deliberately not a no-op: silently adopting the
+	// existing recording would make `--fps 30` look like it took effect.
+	ErrAlreadyRecording = errors.New("a recording is already active on this tab")
+
+	// ErrNotRecording reports a stop/cancel with nothing to stop.
+	ErrNotRecording = errors.New("no recording is active on this tab")
+)
+
+// IsAlreadyRecording reports whether err is ErrAlreadyRecording.
+func IsAlreadyRecording(err error) bool { return errIs(err, ErrAlreadyRecording) }
+
+// IsNotRecording reports whether err is ErrNotRecording.
+func IsNotRecording(err error) bool { return errIs(err, ErrNotRecording) }
+
+// The reasons a capture stopped early, reported as `reason` in the envelope.
+const (
+	recordReasonDuration = "max_duration"
+	recordReasonBytes    = "max_bytes"
+	recordReasonFrames   = "max_frames"
+)
+
+// configureRecordCapture sizes the recording bounds from the resolved config.
+// Like configureCapture it runs in Connect, before any tab is attached. Zero
+// (an unset config key, or a direct launch in a test) means the default.
+func (c *CDP) configureRecordCapture(maxFrames, maxBytes int) {
+	if maxFrames <= 0 {
+		maxFrames = DefaultRecordFrames
+	}
+	if maxBytes <= 0 {
+		maxBytes = DefaultRecordMaxBytes
+	}
+	c.recMaxFrames, c.recMaxBytes = maxFrames, maxBytes
+}
+
+// pendingFrame is one screencast frame on its way from the event loop to the
+// pump. AckOnly frames were dropped by the handoff bound and carry no data:
+// they exist purely so their acknowledgement still reaches Chrome.
+type pendingFrame struct {
+	sessionID int64
+	data      string
+	meta      *page.ScreencastFrameMetadata
+	ackOnly   bool
+}
+
+// recorder is one tab's live recording.
+type recorder struct {
+	opts    RecordOpts
+	started time.Time
+	tctx    context.Context
+
+	mu   sync.Mutex
+	buf  *eventbuf.Buffer[Frame]
+	max  int   // the ring's current size (the byte ceiling may shrink it)
+	size []int // retained frame sizes, oldest first — parallel to the ring
+
+	bytes    int
+	maxBytes int
+	// evicted counts frames the ring lost across rebuilds, plus the ones the
+	// handoff dropped. The live ring's own evictions are read from the buffer.
+	evicted   int
+	marks     []FrameMark
+	lastKept  time.Time
+	stopped   bool
+	truncated bool
+	reason    string
+
+	queue    []pendingFrame
+	wake     chan struct{}
+	done     chan struct{} // closed by stopCapture: "stop capturing"
+	exited   chan struct{} // closed by the pump: "no goroutine is still storing"
+	stopOnce sync.Once
+}
+
+// withDefaults fills the zero fields a non-CLI caller left behind.
+func (o RecordOpts) withDefaults(maxFrames int) RecordOpts {
+	if o.FPS <= 0 {
+		o.FPS = DefaultRecordFPS
+	}
+	if o.Scale <= 0 {
+		o.Scale = DefaultRecordScale
+	}
+	if o.Quality <= 0 {
+		o.Quality = DefaultRecordQuality
+	}
+	if o.MaxFrames <= 0 {
+		o.MaxFrames = maxFrames
+	}
+	if o.MaxDuration <= 0 {
+		o.MaxDuration = DefaultRecordMaxDuration
+	}
+	return o
+}
+
+// startRecordCapture registers the screencast listener for a freshly attached
+// tab. It is called from startCapture, under c.mu, exactly once per tab.
+//
+// The listener is registered at ATTACH rather than at `record start` for the
+// same reason the console's is: chromedp listeners cannot be unregistered, so
+// starting and stopping a recording repeatedly would otherwise stack a new
+// listener each time. It routes to whatever recording is active for the tab,
+// and does nothing at all when there is none — which is the normal case, since
+// Chrome sends no screencast frames until one asks for them.
+func (c *CDP) startRecordCapture(tctx context.Context, id string) {
+	chromedp.ListenTarget(tctx, func(ev any) {
+		f, ok := ev.(*page.EventScreencastFrame)
+		if !ok {
+			return
+		}
+		if r := c.recorder(id); r != nil {
+			r.offer(f)
+		}
+	})
+}
+
+// recorder returns the active recording for a tab, or nil.
+func (c *CDP) recorder(id string) *recorder {
+	c.recMu.Lock()
+	defer c.recMu.Unlock()
+	return c.rec[id]
+}
+
+// RecordStart begins recording a tab.
+func (c *CDP) RecordStart(ctx context.Context, id string, opts RecordOpts) (map[string]any, error) {
+	opts = opts.withDefaults(c.recMaxFrames)
+
+	// The tab is attached (and its listener registered) before the recorder is
+	// published, so no frame can arrive with nothing to receive it.
+	tctx, err := c.on(id)
+	if err != nil {
+		return nil, err
+	}
+
+	// The viewport is read first because startScreencast takes a maximum size in
+	// PIXELS, not a scale factor.
+	var vw, vh float64
+	if err := c.run(ctx, id, bringToFront(), chromedp.ActionFunc(func(actx context.Context) error {
+		m, err := layoutRects(actx)
+		if err != nil {
+			return err
+		}
+		vw, vh = m.viewport.Width, m.viewport.Height
+		return nil
+	})); err != nil {
+		return nil, err
+	}
+	maxW := int64(math.Round(vw * opts.Scale))
+	maxH := int64(math.Round(vh * opts.Scale))
+
+	r := newRecorder(opts, tctx, c.recMaxBytes)
+	c.recMu.Lock()
+	if _, ok := c.rec[id]; ok {
+		c.recMu.Unlock()
+		return nil, ErrAlreadyRecording
+	}
+	c.rec[id] = r
+	c.recMu.Unlock()
+
+	if err := c.run(ctx, id, chromedp.ActionFunc(func(actx context.Context) error {
+		p := page.StartScreencast().
+			WithFormat(page.ScreencastFormatJpeg).
+			WithQuality(int64(opts.Quality)).
+			WithEveryNthFrame(1)
+		if maxW > 0 && maxH > 0 {
+			p = p.WithMaxWidth(maxW).WithMaxHeight(maxH)
+		}
+		return p.Do(actx)
+	})); err != nil {
+		// A refused screencast must not leave a recording nothing will ever
+		// feed, or the next `record start` would fail with "already recording".
+		c.forgetRecorder(id, r)
+		return nil, err
+	}
+	go r.pump()
+
+	return map[string]any{
+		"action":          "start",
+		"recording":       true,
+		"fps":             opts.FPS,
+		"scale":           opts.Scale,
+		"quality":         opts.Quality,
+		"max_frames":      opts.MaxFrames,
+		"max_duration_ms": opts.MaxDuration.Milliseconds(),
+		"annotate":        opts.Annotate,
+		"width":           maxW,
+		"height":          maxH,
+	}, nil
+}
+
+// RecordStop ends the recording and returns its frames.
+//
+// The recording is removed whether or not the caller can encode what comes
+// back: the frames are handed over in full, so nothing is lost by the daemon
+// forgetting them. Whether the requested format can be produced at all is
+// checked by the CLI BEFORE this call, which is what keeps a missing ffmpeg
+// from costing the user their recording (VS-10).
+func (c *CDP) RecordStop(ctx context.Context, id string) ([]Frame, map[string]any, error) {
+	r := c.takeRecorder(id)
+	if r == nil {
+		return nil, nil, ErrNotRecording
+	}
+	r.finish(ctx, "")
+	frames, meta := r.drain()
+	meta["action"] = "stop"
+	return frames, meta, nil
+}
+
+// RecordStatus reports the live state of a recording.
+func (c *CDP) RecordStatus(_ context.Context, id string) (map[string]any, error) {
+	r := c.recorder(id)
+	if r == nil {
+		return map[string]any{"action": "status", "recording": false, "frames": 0}, nil
+	}
+	m := r.stat()
+	m["action"] = "status"
+	m["recording"] = true
+	return m, nil
+}
+
+// RecordCancel discards a recording.
+func (c *CDP) RecordCancel(ctx context.Context, id string) (map[string]any, error) {
+	r := c.takeRecorder(id)
+	if r == nil {
+		return nil, ErrNotRecording
+	}
+	r.finish(ctx, "")
+	m := r.stat()
+	m["action"] = "cancel"
+	m["recording"] = false
+	m["discarded"] = m["frames"]
+	delete(m, "frames")
+	return m, nil
+}
+
+// takeRecorder removes and returns a tab's recording.
+func (c *CDP) takeRecorder(id string) *recorder {
+	c.recMu.Lock()
+	defer c.recMu.Unlock()
+	r := c.rec[id]
+	delete(c.rec, id)
+	return r
+}
+
+// forgetRecorder removes a recording only if it is still the one r names, so a
+// failed start cannot delete a recording someone else began meanwhile.
+func (c *CDP) forgetRecorder(id string, r *recorder) {
+	c.recMu.Lock()
+	defer c.recMu.Unlock()
+	if c.rec[id] == r {
+		delete(c.rec, id)
+	}
+}
+
+// noteRecordMark records that an action landed at (x, y) on a tab, if that tab
+// is being recorded.
+//
+// Marks are recorded whether or not --annotate was passed at start: they cost a
+// few floats, and recording them unconditionally is what lets one capture be
+// exported both annotated and clean (RFC-0011 design notes).
+func (c *CDP) noteRecordMark(id, command string, x, y float64) {
+	r := c.recorder(id)
+	if r == nil {
+		return
+	}
+	r.mark(FrameMark{X: x, Y: y, Command: command, TS: time.Now()})
+}
+
+func newRecorder(opts RecordOpts, tctx context.Context, maxBytes int) *recorder {
+	return &recorder{
+		opts:     opts,
+		started:  time.Now(),
+		tctx:     tctx,
+		buf:      eventbuf.New[Frame](opts.MaxFrames),
+		max:      opts.MaxFrames,
+		maxBytes: maxBytes,
+		wake:     make(chan struct{}, 1),
+		done:     make(chan struct{}),
+		exited:   make(chan struct{}),
+	}
+}
+
+// offer hands a frame from the CDP event loop to the pump. It must never block
+// and must never issue a CDP call — it runs on chromedp's event loop.
+func (r *recorder) offer(ev *page.EventScreencastFrame) {
+	r.mu.Lock()
+	if r.stopped {
+		r.mu.Unlock()
+		return
+	}
+	p := pendingFrame{sessionID: ev.SessionID, data: ev.Data, meta: ev.Metadata}
+	if len(r.queue) >= recordQueueDepth {
+		// Drop the payload, keep the acknowledgement. An unacked frame stalls
+		// the screencast for good, so the one thing that may never be dropped is
+		// the ack — and the loss is counted, not hidden.
+		p.data, p.meta, p.ackOnly = "", nil, true
+		r.evicted++
+		r.truncated = true
+	}
+	r.queue = append(r.queue, p)
+	r.mu.Unlock()
+
+	select {
+	case r.wake <- struct{}{}:
+	default:
+	}
+}
+
+// mark appends an action marker, bounded.
+func (r *recorder) mark(m FrameMark) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.stopped {
+		return
+	}
+	if len(r.marks) >= recordMaxMarks {
+		r.marks = r.marks[1:]
+	}
+	r.marks = append(r.marks, m)
+}
+
+// pump acknowledges and stores frames until the recording ends or its maximum
+// duration elapses.
+//
+// It exists because the acknowledgement is a CDP call and the listener runs on
+// chromedp's event loop, where issuing one would deadlock. Everything expensive
+// — base64, image header decode, the byte accounting — happens here too, so the
+// event loop only ever appends to a slice.
+func (r *recorder) pump() {
+	defer close(r.exited)
+	deadline := time.NewTimer(r.opts.MaxDuration)
+	defer deadline.Stop()
+	for {
+		r.drainQueue()
+		select {
+		case <-r.wake:
+		case <-deadline.C:
+			// The capture stops; the RECORDING does not. Whatever was captured
+			// stays exportable, flagged truncated with the reason.
+			r.stopCapture(recordReasonDuration)
+			return
+		case <-r.done:
+			return
+		case <-r.tctx.Done():
+			// The tab closed. The frames survive it — they are held here, not
+			// in the tab — so `record stop` still exports them.
+			r.stopCapture("")
+			return
+		}
+	}
+}
+
+// drainQueue acks and stores everything the event loop has handed over.
+func (r *recorder) drainQueue() {
+	for {
+		r.mu.Lock()
+		if len(r.queue) == 0 || r.stopped {
+			r.mu.Unlock()
+			return
+		}
+		p := r.queue[0]
+		r.queue = r.queue[1:]
+		r.mu.Unlock()
+
+		r.ack(p.sessionID)
+		if !p.ackOnly {
+			r.store(p)
+		}
+	}
+}
+
+// ack tells Chrome the frame arrived. Without it the screencast stops after the
+// first frame, which is why this is the first thing done with every frame —
+// including the ones the bounds discard.
+func (r *recorder) ack(sessionID int64) {
+	ctx, cancel := context.WithTimeout(r.tctx, 5*time.Second)
+	defer cancel()
+	// Best-effort: a failed ack means at worst a stalled screencast, which the
+	// user sees as a short recording — never a failed command.
+	_ = chromedp.Run(ctx, chromedp.ActionFunc(func(actx context.Context) error {
+		return page.ScreencastFrameAck(sessionID).Do(actx)
+	}))
+}
+
+// store retains one frame, applying the cadence throttle and both bounds.
+func (r *recorder) store(p pendingFrame) {
+	now := frameTime(p.meta)
+
+	r.mu.Lock()
+	if r.stopped {
+		r.mu.Unlock()
+		return
+	}
+	// The cadence throttle. A frame skipped here is NOT a dropped frame: the
+	// caller asked for this many frames a second, and counting the surplus as
+	// loss would report every recording of a busy page as truncated.
+	minGap := time.Duration(float64(time.Second) / r.opts.FPS)
+	if !r.lastKept.IsZero() && now.Sub(r.lastKept) < minGap {
+		r.mu.Unlock()
+		return
+	}
+	r.lastKept = now
+	r.mu.Unlock()
+
+	raw, err := base64.StdEncoding.DecodeString(p.data)
+	if err != nil || len(raw) == 0 {
+		return
+	}
+	f := Frame{Data: raw, TS: now}
+	if cfg, _, err := image.DecodeConfig(bytes.NewReader(raw)); err == nil {
+		f.Width, f.Height = cfg.Width, cfg.Height
+	}
+	if p.meta != nil {
+		f.CSSWidth, f.CSSHeight = p.meta.DeviceWidth, p.meta.DeviceHeight
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.stopped {
+		return
+	}
+	r.buf.Add(f)
+	r.size = append(r.size, len(raw))
+	r.bytes += len(raw)
+	if len(r.size) > r.max {
+		r.bytes -= r.size[0]
+		r.size = r.size[1:]
+		r.truncated = true
+		if r.reason == "" {
+			r.reason = recordReasonFrames
+		}
+	}
+	r.enforceBytesLocked()
+}
+
+// enforceBytesLocked shrinks the ring until the retained frames fit the byte
+// ceiling.
+//
+// The ring is REBUILT at a smaller size rather than evicted one frame at a
+// time, because eventbuf's bound is a frame count and this bound is a byte
+// total; converting one into the other is exactly what this does. The smaller
+// size then persists for the rest of the recording, which is the honest reading
+// of the ceiling: this tab's frames are large, so fewer of them fit.
+func (r *recorder) enforceBytesLocked() {
+	if r.maxBytes <= 0 || r.bytes <= r.maxBytes || len(r.size) <= recordMinRetained {
+		return
+	}
+	// How many of the MOST RECENT frames fit — recency is what a recording is
+	// for; the end of a run is the part someone wants to watch.
+	keep, total := 0, 0
+	for i := len(r.size) - 1; i >= 0; i-- {
+		if total+r.size[i] > r.maxBytes && keep >= recordMinRetained {
+			break
+		}
+		total += r.size[i]
+		keep++
+	}
+	keep = max(keep, recordMinRetained)
+	if keep >= len(r.size) {
+		return
+	}
+
+	res := r.buf.Query(eventbuf.Query[Frame]{Limit: keep})
+	// Everything the old ring had evicted, plus what this rebuild discards, is
+	// carried forward: a fresh buffer's counter starts at zero and the total
+	// must not.
+	r.evicted += r.buf.Dropped() + (res.Buffered - len(res.Entries))
+	r.buf = eventbuf.New[Frame](keep)
+	for _, f := range res.Entries {
+		r.buf.Add(f)
+	}
+	r.size = r.size[len(r.size)-len(res.Entries):]
+	r.bytes = 0
+	for _, s := range r.size {
+		r.bytes += s
+	}
+	r.max = keep
+	r.truncated = true
+	r.reason = recordReasonBytes
+}
+
+// finish stops the capture and waits for the pump to leave, so nothing is
+// still writing into the buffer when the caller drains it.
+func (r *recorder) finish(ctx context.Context, reason string) {
+	r.stopCapture(reason)
+	select {
+	case <-r.exited:
+	case <-ctx.Done():
+	case <-time.After(5 * time.Second):
+	}
+}
+
+// stopCapture turns the screencast off, once.
+func (r *recorder) stopCapture(reason string) {
+	r.stopOnce.Do(func() {
+		r.mu.Lock()
+		r.stopped = true
+		if reason != "" {
+			r.truncated, r.reason = true, reason
+		}
+		r.mu.Unlock()
+
+		ctx, cancel := context.WithTimeout(context.WithoutCancel(r.tctx), 5*time.Second)
+		defer cancel()
+		_ = chromedp.Run(ctx, chromedp.ActionFunc(func(actx context.Context) error {
+			return page.StopScreencast().Do(actx)
+		}))
+		close(r.done)
+	})
+}
+
+// drain returns the retained frames with their marks attached, plus the
+// accounting the envelope reports.
+func (r *recorder) drain() ([]Frame, map[string]any) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	res := r.buf.Query(eventbuf.Query[Frame]{})
+	frames := attachMarks(res.Entries, r.marks)
+	m := r.statLocked()
+	m["frames"] = len(frames)
+	return frames, m
+}
+
+// stat is the live snapshot `record status` reports.
+func (r *recorder) stat() map[string]any {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.statLocked()
+}
+
+func (r *recorder) statLocked() map[string]any {
+	dropped := r.evicted + r.buf.Dropped()
+	return map[string]any{
+		"frames":         r.buf.Len(),
+		"dropped_frames": dropped,
+		"truncated":      r.truncated || dropped > 0,
+		"reason":         r.reason,
+		"elapsed_ms":     time.Since(r.started).Milliseconds(),
+		"marks":          len(r.marks),
+		"fps":            r.opts.FPS,
+		"scale":          r.opts.Scale,
+		"annotate":       r.opts.Annotate,
+		"capturing":      !r.stopped,
+	}
+}
+
+// attachMarks distributes the action markers over the frames they overlap.
+//
+// A mark belongs on every frame captured from shortly before the action until
+// recordMarkLinger after it, so the marker is visible at 4fps rather than for a
+// single frame nobody will pause on. When no frame falls in that window — the
+// action changed nothing, so the page produced no frame — it lands on the
+// nearest frame instead: a marker with nowhere to go would silently disappear,
+// which for an annotated recording is indistinguishable from the click not
+// having happened.
+//
+// It is a pure function over frames and marks, and is tested as one.
+func attachMarks(frames []Frame, marks []FrameMark) []Frame {
+	if len(frames) == 0 || len(marks) == 0 {
+		return frames
+	}
+	out := make([]Frame, len(frames))
+	copy(out, frames)
+	for _, m := range marks {
+		hit := false
+		for i := range out {
+			ts := out[i].TS
+			if ts.IsZero() {
+				continue
+			}
+			if !ts.Before(m.TS.Add(-recordMarkPreroll)) && !ts.After(m.TS.Add(recordMarkLinger)) {
+				out[i].Marks = append(out[i].Marks, m)
+				hit = true
+			}
+		}
+		if hit {
+			continue
+		}
+		if i := nearestFrame(out, m.TS); i >= 0 {
+			out[i].Marks = append(out[i].Marks, m)
+		}
+	}
+	return out
+}
+
+// nearestFrame returns the index of the frame closest in time to ts, or -1 when
+// no frame carries a timestamp.
+func nearestFrame(frames []Frame, ts time.Time) int {
+	best, bestD := -1, time.Duration(math.MaxInt64)
+	for i := range frames {
+		if frames[i].TS.IsZero() {
+			continue
+		}
+		d := frames[i].TS.Sub(ts)
+		if d < 0 {
+			d = -d
+		}
+		if d < bestD {
+			best, bestD = i, d
+		}
+	}
+	return best
+}
+
+// frameTime is a screencast frame's wall-clock capture time, defaulting to now
+// for a frame that carries no metadata timestamp.
+func frameTime(meta *page.ScreencastFrameMetadata) time.Time {
+	if meta != nil && meta.Timestamp != nil {
+		if t := meta.Timestamp.Time(); !t.IsZero() {
+			return t.UTC()
+		}
+	}
+	return time.Now().UTC()
+}
