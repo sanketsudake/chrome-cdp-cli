@@ -50,7 +50,7 @@ func (cf *consoleFlags) validate(inSession bool) (chrome.ConsoleOpts, *result.Er
 		return usage("--follow streams forever and --fail-on-match asserts on a finished read; they cannot combine")
 	}
 	if cf.follow && inSession {
-		return usage("console --follow cannot run inside `session`: a streaming command would break session's one-envelope-per-line contract — run it as its own command")
+		return usage("console --follow cannot run inside `session` or a recipe: a streaming command would break the one-envelope-per-line contract a batch promises — run it as its own command")
 	}
 	if cf.grep != "" {
 		if _, err := regexp.Compile(cf.grep); err != nil {

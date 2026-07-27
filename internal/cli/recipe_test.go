@@ -573,6 +573,46 @@ steps:
 	}
 }
 
+// A streaming step is the same usage error inside a recipe that it is inside
+// `session`.
+//
+// A recipe run is a batch with the same one-envelope-per-line contract, but
+// runPlan never marked it as one — so `console --follow` was accepted, blocked
+// for the whole --timeout, buffered every streamed envelope into execStep's
+// in-memory buffer, and then failed to parse as a single envelope and dumped
+// the raw stream with no step or label on it.
+func TestRecipeRefusesAStreamingStep(t *testing.T) {
+	project, _ := isolateRecipes(t)
+	writeRecipe(t, project, "stream", `name: stream
+target: aa11
+steps:
+  - run: ["console", "--follow"]
+    on_error: continue
+  - run: ["net", "--follow"]
+`)
+	var out, errb bytes.Buffer
+	// noCall fails the test on any browser call: the refusal is validation, and
+	// validation happens before anything connects.
+	app := New(noCall(t), &out, &errb)
+	if code := app.Execute("recipe", "run", "stream"); code != 2 {
+		t.Fatalf("exit = %d, want 2 (usage)\nstdout: %s\nstderr: %s", code, out.String(), errb.String())
+	}
+	envs := envelopes(t, out.String())
+	if len(envs) != 3 {
+		t.Fatalf("got %d envelopes, want 2 steps + summary:\n%s", len(envs), out.String())
+	}
+	for i, e := range envs[:2] {
+		errObj, ok := e["error"].(map[string]any)
+		if !ok || errObj["code"] != "usage" {
+			t.Errorf("step %d = %v, want a usage error", i+1, e)
+			continue
+		}
+		if !strings.Contains(errObj["message"].(string), "--follow cannot run") {
+			t.Errorf("step %d message = %q, want it to name --follow", i+1, errObj["message"])
+		}
+	}
+}
+
 // A --set value that looks like a flag arrives as data, and cannot move the
 // step to a different tab.
 //

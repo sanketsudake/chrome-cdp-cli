@@ -499,7 +499,14 @@ func (a *App) runPlan(plan *recipe.Plan) {
 		return
 	}
 	a.inRecipe = true
-	defer func() { a.inRecipe = false }()
+	// A recipe run is a batch with the same one-envelope-per-line contract
+	// `session` promises, so a streaming verb has to reject itself here for the
+	// same reason. Without this, `console --follow` in a step blocked for the
+	// whole --timeout, buffered its stream into execStep's in-memory buffer,
+	// and came out as unparseable output with no step or label on it.
+	wasInSession := a.inSession
+	a.inSession = true
+	defer func() { a.inRecipe, a.inSession = false, wasInSession }()
 
 	start := a.start
 	// Flags are re-registered per Execute, so anything the user set on the

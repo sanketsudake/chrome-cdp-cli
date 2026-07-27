@@ -379,7 +379,7 @@ Raise `console_buffer`, or read closer to the action.
 **`--fail-on-match` exits 1 and still reports the messages** (`error.code` is `assertion_failed`), so a CI log shows *what* failed, not just that something did.
 
 **`--follow`** writes one JSON envelope per line, the same shape `session` streams.
-It cannot combine with `--fail-on-match`, and it is a usage error inside `session`, where it would break the one-envelope-per-line contract.
+It cannot combine with `--fail-on-match`, and it is a usage error inside `session` or a recipe step, where it would break the one-envelope-per-line contract a batch promises.
 
 **`--no-daemon` has no retained history.**
 Without the daemon there was no process alive to receive the tab's earlier events, so the read reports `"buffered": 0` and carries a `note` saying so, rather than passing an empty list off as a quiet page.
@@ -455,7 +455,7 @@ No match before `--timeout` is `target_timeout` / exit 4.
 **`--fail-on-match` exits 1 and still reports the requests** (`error.code` is `assertion_failed`), so `chrome-cdp net --failed --fail-on-match` is a usable CI assertion that shows *what* failed.
 
 **`--follow`** writes one JSON envelope per **completed** request, the same shape `session` streams.
-It cannot combine with `--fail-on-match`, and it is a usage error inside `session`.
+It cannot combine with `--fail-on-match`, and it is a usage error inside `session` or a recipe step.
 
 **`--no-daemon` has no retained history**, exactly as with `console`: the read reports `"buffered": 0` and carries a `note` rather than passing an empty list off as a quiet page.
 
