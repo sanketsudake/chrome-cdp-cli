@@ -96,16 +96,38 @@ func Ensure(sockPath, exePath string, env []string) (*Client, error) {
 	if c := TryConnect(sockPath); c != nil {
 		return c, nil
 	}
+
+	// From here on, exactly one process at a time. Concurrent invocations that
+	// all find no daemon would otherwise each spawn one, and each spawned daemon
+	// attaches to Chrome — which raises a SEPARATE browser-modal "Allow remote
+	// debugging?" prompt. Several stacked prompts is not a slower version of
+	// one: the visible dialog need not be the one holding input, so the whole
+	// browser looks frozen with no button that responds. The daemon exists so
+	// that prompt happens once per session; nothing was making the FIRST attach
+	// single-file.
+	//
+	// The unlinks below are the other half. Outside the lock they can delete a
+	// socket a sibling daemon has just bound, orphaning a live daemon that no
+	// client can ever reach.
+	unlock, err := lockSpawn(sockPath)
+	if err != nil {
+		return nil, err
+	}
+	defer unlock()
+
+	// Re-check under the lock: while we waited, the holder may have started the
+	// daemon we were about to duplicate. This is what makes N callers converge
+	// on one daemon and one prompt.
+	if c := TryConnect(sockPath); c != nil {
+		return c, nil
+	}
+
 	_ = os.Remove(sockPath)          // clear a stale socket file
 	_ = os.Remove(sockPath + ".err") // and a stale error, so we only read THIS spawn's
 
-	cmd := exec.Command(exePath, "__daemon", sockPath)
-	cmd.Env = env
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true} // detach into its own session
-	if err := cmd.Start(); err != nil {
-		return nil, &chrome.ConnectError{Code: result.CodeDaemon, Message: "cannot start daemon: " + err.Error()}
+	if err := spawnDaemon(exePath, sockPath, env); err != nil {
+		return nil, err
 	}
-	_ = cmd.Process.Release()
 
 	for range 100 { // up to ~10s for the first Allow-dialog click
 		time.Sleep(100 * time.Millisecond)
@@ -118,7 +140,43 @@ func Ensure(sockPath, exePath string, env []string) (*Client, error) {
 			return nil, decodeConnectErr(data)
 		}
 	}
-	return nil, &chrome.ConnectError{Code: result.CodeDaemon, Message: "daemon did not start within 10s — did you click Allow in Chrome?"}
+	return nil, &chrome.ConnectError{Code: result.CodeDaemon, Message: "daemon did not start within 10s — Chrome may be waiting on its \"Allow remote debugging?\" prompt; it can hide behind the window, and until it is answered Chrome accepts no other input"}
+}
+
+// spawnDaemon starts the detached daemon process. It is a variable so a test can
+// substitute a spawn it can count, without a real Chrome or a real binary.
+var spawnDaemon = func(exePath, sockPath string, env []string) error {
+	cmd := exec.Command(exePath, "__daemon", sockPath)
+	cmd.Env = env
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true} // detach into its own session
+	if err := cmd.Start(); err != nil {
+		return &chrome.ConnectError{Code: result.CodeDaemon, Message: "cannot start daemon: " + err.Error()}
+	}
+	_ = cmd.Process.Release()
+	return nil
+}
+
+// lockSpawn takes an exclusive advisory lock covering the spawn-and-wait for one
+// socket path, and returns the release. The lock file is never removed: unlinking
+// it would let a later caller lock a different inode and defeat the exclusion.
+//
+// The wait is deliberately unbounded. The holder may be waiting out a consent
+// prompt the user has not clicked yet, and blocking behind it is the correct
+// outcome — spawning our own would add another prompt to the pile, which is the
+// failure this exists to prevent.
+func lockSpawn(sockPath string) (func(), error) {
+	f, err := os.OpenFile(sockPath+".lock", os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return nil, &chrome.ConnectError{Code: result.CodeDaemon, Message: "cannot open the daemon spawn lock: " + err.Error()}
+	}
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
+		_ = f.Close()
+		return nil, &chrome.ConnectError{Code: result.CodeDaemon, Message: "cannot take the daemon spawn lock: " + err.Error()}
+	}
+	return func() {
+		_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+		_ = f.Close()
+	}, nil
 }
 
 // RunDaemon connects Chrome and serves sockPath until idle or stopped. Used by

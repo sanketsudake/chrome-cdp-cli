@@ -23,6 +23,8 @@ Because it drives the real profile, live logins are reused: **type no credential
    `chrome-cdp daemon status --json` shows it; `--no-daemon` bypasses it.
 3. **Avoid re-triggering the consent prompt.**
    A fresh attach (the first command after `daemon stop`, or after a Chrome restart) re-shows Chrome's "Allow remote debugging?" prompt; if it isn't clicked it can wedge Chrome.
+   The prompt is **browser-modal**, so an unanswered one freezes the whole browser, not just the tab — and it can hide behind the window.
+   Answer it before assuming Chrome has crashed.
    Keep the daemon alive — don't `daemon stop` mid-session.
    If a command returns `connection_failed`, its message now says whether to click the Allow prompt (it can hide behind the window) or restart Chrome.
    To skip the prompt entirely, have the user launch Chrome with `--remote-debugging-port=9222` (e.g. `open -a "Google Chrome" --args --remote-debugging-port=9222`).
