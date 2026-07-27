@@ -1,6 +1,6 @@
 # RFC-0014: Coordinate-space interaction — `--at` addressing, `tripleclick`, drop-zone upload, and real window sizing
 
-- **Status:** Accepted (in part) — `--at`, `tripleclick`, and `window` implemented in [#22](https://github.com/sanketsudake/chrome-cdp-cli/pull/22); `upload --drop` still outstanding
+- **Status:** Accepted — `--at`, `tripleclick`, and `window` in [#22](https://github.com/sanketsudake/chrome-cdp-cli/pull/22); `upload --drop` in [#23](https://github.com/sanketsudake/chrome-cdp-cli/pull/23)
 - **Priority:** P0 (coordinate addressing, `tripleclick`) · P1 (drop-zone upload, `window`)
 - **Area:** input
 - **Depends on:** RFC-0005 (extends its `Pointer` primitive), RFC-0006 (extends `upload`)
@@ -183,6 +183,9 @@ All usage errors are rejected before connecting to Chrome, per the standing conv
   Primary approach: inject a temporary hidden `<input type=file>`, attach the files with `DOM.setFileInputFiles` (real CDP file attachment, same as RFC-0006), then in page JS move `input.files` into a `DataTransfer` and dispatch `dragenter` → `dragover` → `drop` on the target, then remove the input.
   The events are untrusted but the `File` objects are real, and drop handlers read `dataTransfer.files` — this is the approach known to work with the common drop-zone libraries.
   `Input.dispatchDragEvent` is the trusted-event alternative; see Open Questions.
+  **As implemented, the input is never ATTACHED to the document** and the target is bound as a remote object rather than marked and re-queried, so the page is not modified at all.
+  That was not a tidiness decision: an attached input fires `change` when the files are set, and `change` bubbles, so a page-global listener would receive the user's real files — an exposure a native drag never creates.
+  Binding to the resolved node also makes the dispatch run in that node's frame, which is what lets a drop zone inside a same-origin iframe work.
 - **`window size` is authorized at the BROWSER level, not per tab.**
   **Added during implementation.** A resize acts on the OS window every tab in it shares, so checking it against the one resolved tab's origin would let a permission granted for one origin reflow another origin's page.
   It is checked with no origin — the same fail-closed treatment `raw --browser` already gets — so an active allow-list refuses it and `--policy-off` remains the deliberate escape hatch.
@@ -297,6 +300,9 @@ VS-13 through the existing `session` harness.
 
 1. Should the drop mechanism prefer `Input.dispatchDragEvent` (trusted events, but file support varies by Chrome version) over injected-input-plus-synthetic-events (untrusted events, real `File` objects, known to work with common libraries)?
    **Recommendation:** ship the injected-input approach first with a fixture per major drop-zone pattern; switch or add `dispatchDragEvent` only if a live fixture proves a target that rejects untrusted events.
+   **SETTLED by fixture evidence, not by choice:** the injected-input approach satisfies all four shapes a drop handler reads — `dataTransfer.files` (with real byte counts), `dataTransfer.items` carrying the correct MIME kind, `items[0].getAsFile()`, and the `dataTransfer.types` `"Files"` guard.
+   `Input.dispatchDragEvent` was therefore not needed and is not used; it produces trusted events but has no way to carry a `FileList`, which is the only part that matters here.
+   A `drop_handled` flag (derived from whether anything called `preventDefault`) reports the one failure this mechanism cannot prevent: a drop that nothing consumed.
 2. Should a coordinate click warn (in the envelope, not by failing) when `hit` resolves to a `disabled` control?
    **Recommendation:** yes — populate `hit.states`; never block, since canvas apps are the whole point.
 3. Should out-of-viewport coordinates offer an explicit `--clamp` escape hatch for pages with scroll-linked layouts?

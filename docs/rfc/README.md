@@ -5,7 +5,7 @@ Design proposals for `chrome-cdp`, written before the code so the CLI surface, t
 Each RFC is self-contained: motivation, user stories with acceptance criteria, the proposed command surface, the envelope shape, and a verification plan that maps to real tests.
 An RFC is `Draft` until someone implements it; the implementing PR flips it to `Accepted` and links itself.
 
-**The first thirteen are implemented and merged.**
+**All fifteen are implemented and merged.**
 They are kept as the design record — what was proposed, why, and what the verification plan was — not as a to-do list.
 Where the implementation departed from the proposal, the RFC's own Open Questions section records the decision, and the PR records the reason.
 
@@ -54,7 +54,7 @@ The reproduction then contradicted the first diagnosis, which is why it is writt
 | [0011](0011-session-recording.md) | Session recording: `record` and GIF export | P2 | capture | Accepted — [#14](https://github.com/sanketsudake/chrome-cdp-cli/pull/14) |
 | [0012](0012-domain-allowlist.md) | Domain allow-list: bounding what the CLI may drive | P2 | safety | Accepted — [#12](https://github.com/sanketsudake/chrome-cdp-cli/pull/12) |
 | [0013](0013-consent-prompt-lifecycle.md) | Surviving Chrome's consent prompt | P0 | connection | Accepted — [#18](https://github.com/sanketsudake/chrome-cdp-cli/pull/18) |
-| [0014](0014-coordinate-space-interaction.md) | Coordinate-space interaction: `--at`, `tripleclick`, drop-zone upload, `window` | P0/P1 | input | Partly accepted — [#22](https://github.com/sanketsudake/chrome-cdp-cli/pull/22) (`upload --drop` outstanding) |
+| [0014](0014-coordinate-space-interaction.md) | Coordinate-space interaction: `--at`, `tripleclick`, drop-zone upload, `window` | P0/P1 | input | Accepted — [#22](https://github.com/sanketsudake/chrome-cdp-cli/pull/22), [#23](https://github.com/sanketsudake/chrome-cdp-cli/pull/23) |
 | [0015](0015-find-element-search.md) | `find`: ranked element search from a plain-language query | P0 | reading | Accepted — [#21](https://github.com/sanketsudake/chrome-cdp-cli/pull/21) |
 
 ## Dependency graph

@@ -75,6 +75,11 @@ const changeWitnessWait = 500 * time.Millisecond
 // answer: is the resolved element really a file input, does it accept several
 // files, and what does it hold afterwards.
 func (c *CDP) Upload(ctx context.Context, id, selector string, paths []string, opts UploadOpts) (map[string]any, error) {
+	// The drop form addresses a target that is not a file input at all, so it
+	// shares none of the checks below (is it an input, does it take multiple).
+	if opts.Drop != "" || opts.DropAt != nil {
+		return c.uploadDrop(ctx, id, paths, opts)
+	}
 	var out map[string]any
 	err := c.run(ctx, id, bringToFront(), chromedp.ActionFunc(func(actx context.Context) error {
 		var nodes []*cdp.Node
@@ -244,13 +249,9 @@ func armChangeWitness(ctx context.Context, objID runtime.RemoteObjectID) error {
 // because an accept/multiple mismatch is the most common reason an upload
 // appears to succeed and then silently does nothing.
 func uploadResult(s fileInputState, sent []string) map[string]any {
-	files := make([]any, 0, len(s.Files))
-	for _, f := range s.Files {
-		files = append(files, map[string]any{"name": f.Name, "size": f.Size, "type": f.Type})
-	}
 	out := map[string]any{
-		"files":        files,
-		"count":        len(files),
+		"files":        filesToAny(s.Files),
+		"count":        len(s.Files),
 		"multiple":     s.Multiple,
 		"accept":       s.Accept,
 		"change_fired": s.Changed,
