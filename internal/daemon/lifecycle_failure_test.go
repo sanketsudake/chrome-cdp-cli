@@ -48,7 +48,7 @@ func TestEnsureNoticesADeadDaemon(t *testing.T) {
 	defer restore()
 
 	start := time.Now()
-	_, err := Ensure(sock, "unused", nil, 60*time.Second)
+	_, err := Ensure(context.Background(), sock, "unused", nil, 60*time.Second)
 	elapsed := time.Since(start)
 
 	if elapsed > 3*time.Second {
@@ -85,7 +85,7 @@ func TestLockSpawnSaysItIsWaiting(t *testing.T) {
 
 	got := make(chan func(), 1)
 	go func() {
-		unlock, err := lockSpawn(sock)
+		unlock, err := lockSpawn(context.Background(), sock)
 		if err != nil {
 			t.Errorf("lockSpawn: %v", err)
 			return

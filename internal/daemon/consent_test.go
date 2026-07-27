@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"context"
 	"errors"
 	"net"
 	"os"
@@ -92,7 +93,7 @@ func TestEnsureWaitsOutTheConsentPrompt(t *testing.T) {
 	defer restore()
 
 	start := time.Now()
-	c, err := Ensure(sock, "unused", nil, 3*time.Second)
+	c, err := Ensure(context.Background(), sock, "unused", nil, 3*time.Second)
 	if err != nil {
 		t.Fatalf("Ensure gave up on a daemon that was waiting for consent: %v", err)
 	}
@@ -123,7 +124,7 @@ func TestEnsureBoundsTheConsentWait(t *testing.T) {
 	defer restore()
 
 	start := time.Now()
-	_, err := Ensure(sock, "unused", nil, 500*time.Millisecond)
+	_, err := Ensure(context.Background(), sock, "unused", nil, 500*time.Millisecond)
 	elapsed := time.Since(start)
 
 	var ce *chrome.ConnectError
@@ -151,7 +152,7 @@ func TestEnsureFailsFastWithoutAPendingPrompt(t *testing.T) {
 	defer restore()
 
 	start := time.Now()
-	_, err := Ensure(sock, "unused", nil, 60*time.Second)
+	_, err := Ensure(context.Background(), sock, "unused", nil, 60*time.Second)
 	elapsed := time.Since(start)
 
 	var ce *chrome.ConnectError

@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"context"
 	"net"
 	"os"
 	"path/filepath"
@@ -63,7 +64,7 @@ func TestEnsureSpawnsOneDaemonUnderConcurrency(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			clients[i], errs[i] = Ensure(sock, "unused", nil, 2*time.Second)
+			clients[i], errs[i] = Ensure(context.Background(), sock, "unused", nil, 2*time.Second)
 		}()
 	}
 	wg.Wait()
@@ -107,7 +108,7 @@ func TestEnsureReusesARunningDaemon(t *testing.T) {
 	})
 	defer restore()
 
-	if _, err := Ensure(sock, "unused", nil, 2*time.Second); err != nil {
+	if _, err := Ensure(context.Background(), sock, "unused", nil, 2*time.Second); err != nil {
 		t.Fatalf("Ensure against a live daemon: %v", err)
 	}
 	if got := spawns.Load(); got != 0 {

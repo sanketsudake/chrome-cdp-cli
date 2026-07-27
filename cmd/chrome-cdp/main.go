@@ -133,7 +133,7 @@ func main() {
 				RecordBuffer: defs.RecordBuffer, RecordMaxBytes: defs.RecordMaxBytes,
 			})
 		}
-		client, err := daemon.Ensure(socketFor(o), exe, daemonEnv(o), o.ConsentTimeout)
+		client, err := daemon.Ensure(ctx, socketFor(o), exe, daemonEnv(o), o.ConsentTimeout)
 		if err != nil {
 			return nil, err
 		}
@@ -143,7 +143,7 @@ func main() {
 	app.WithDaemonCtl(
 		func(o cli.ConnOpts) (map[string]any, error) {
 			sock := socketFor(o)
-			if _, err := daemon.Ensure(sock, exe, daemonEnv(o), o.ConsentTimeout); err != nil {
+			if _, err := daemon.Ensure(context.Background(), sock, exe, daemonEnv(o), o.ConsentTimeout); err != nil {
 				return nil, err
 			}
 			return map[string]any{"started": true, "socket": sock, "endpoint": browser.EndpointKey(portFile, o.Port)}, nil

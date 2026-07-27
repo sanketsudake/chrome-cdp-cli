@@ -130,7 +130,13 @@ func TryConnect(sockPath string) *Client {
 // Chrome's consent prompt. Ensure has to know it too: the daemon's wait is
 // invisible from here, and a client that gave up at ten seconds while its daemon
 // was still holding the connection would report a failure that had not happened.
-func Ensure(sockPath, exePath string, env []string, consentTimeout time.Duration) (*Client, error) {
+// It arrives normalised (see chrome.ClampConsentTimeout).
+//
+// ctx bounds the whole thing, including the wait for the spawn lock. Without
+// it, --timeout stopped applying the moment a command needed a connection: the
+// lock's holder may be sitting on an unanswered prompt for two minutes, and
+// every caller behind it inherited that wait with no way to say otherwise.
+func Ensure(ctx context.Context, sockPath, exePath string, env []string, consentTimeout time.Duration) (*Client, error) {
 	if c := TryConnect(sockPath); c != nil {
 		return c, nil
 	}
@@ -147,7 +153,7 @@ func Ensure(sockPath, exePath string, env []string, consentTimeout time.Duration
 	// The unlinks below are the other half. Outside the lock they can delete a
 	// socket a sibling daemon has just bound, orphaning a live daemon that no
 	// client can ever reach.
-	unlock, err := lockSpawn(sockPath)
+	unlock, err := lockSpawn(ctx, sockPath)
 	if err != nil {
 		return nil, err
 	}
@@ -158,6 +164,19 @@ func Ensure(sockPath, exePath string, env []string, consentTimeout time.Duration
 	// on one daemon and one prompt.
 	if c := TryConnect(sockPath); c != nil {
 		return c, nil
+	}
+
+	// The holder may instead have come back with a verdict, and a FRESH
+	// consent_pending is one to inherit rather than re-derive. Deriving it
+	// again means spawning a daemon, attaching, and raising a second prompt at
+	// a browser that is already holding one — so eight queued callers came to
+	// eight sequential prompts and about seventeen minutes, which is US-5
+	// ("at most one consent request") failing while VS-7 ("never two at once")
+	// passed. Only consent_pending is inherited, and only briefly: every other
+	// failure is per-attempt, and a verdict older than the TTL has probably
+	// been overtaken by the user finding the dialog and clicking Allow.
+	if err := recentConsentVerdict(sockPath); err != nil {
+		return nil, err
 	}
 
 	_ = os.Remove(sockPath)                 // clear a stale socket file
@@ -177,7 +196,11 @@ func Ensure(sockPath, exePath string, env []string, consentTimeout time.Duration
 	deadline := time.Now().Add(startupWait)
 	waiting := false
 	for {
-		time.Sleep(100 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(100 * time.Millisecond):
+		}
 		if c := TryConnect(sockPath); c != nil {
 			return c, nil
 		}
@@ -271,7 +294,7 @@ var spawnDaemon = func(exePath, sockPath string, env []string) (*daemonProc, err
 // used to hang for over two minutes with no output at all, which is the same
 // "my tool has frozen and I do not know why" that US-2 exists to end — arrived
 // at by the fix for US-2.
-func lockSpawn(sockPath string) (func(), error) {
+func lockSpawn(ctx context.Context, sockPath string) (func(), error) {
 	f, err := os.OpenFile(sockPath+lockSuffix, os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
 		return nil, &chrome.ConnectError{Code: result.CodeDaemon, Message: "cannot open the daemon spawn lock: " + err.Error()}
@@ -280,18 +303,75 @@ func lockSpawn(sockPath string) (func(), error) {
 		_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
 		_ = f.Close()
 	}
+	fail := func(err error) (func(), error) {
+		_ = f.Close()
+		return nil, &chrome.ConnectError{Code: result.CodeDaemon, Message: "cannot take the daemon spawn lock: " + err.Error()}
+	}
 	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err == nil {
 		return unlock, nil
 	} else if !errors.Is(err, syscall.EWOULDBLOCK) {
-		_ = f.Close()
-		return nil, &chrome.ConnectError{Code: result.CodeDaemon, Message: "cannot take the daemon spawn lock: " + err.Error()}
+		return fail(err)
 	}
 	notice(lockWaitNotice)
-	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
-		_ = f.Close()
-		return nil, &chrome.ConnectError{Code: result.CodeDaemon, Message: "cannot take the daemon spawn lock: " + err.Error()}
+
+	// flock has no deadline, so the blocking wait runs on its own goroutine and
+	// the context is honoured here. If the context wins, the goroutine may
+	// still acquire the lock afterwards — so it is handed the release to run
+	// itself, rather than being abandoned holding it.
+	// done is UNBUFFERED on purpose: the send succeeds only while this function
+	// is still selecting on it, so "the caller has gone" and "the caller took
+	// the lock" cannot both happen.
+	done := make(chan error)
+	abandoned := make(chan struct{})
+	go func() {
+		err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX)
+		select {
+		case done <- err:
+		case <-abandoned: // nobody is waiting any more: give the lock straight back
+			if err == nil {
+				unlock()
+			} else {
+				_ = f.Close()
+			}
+		}
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			return fail(err)
+		}
+		return unlock, nil
+	case <-ctx.Done():
+		close(abandoned)
+		return nil, ctx.Err()
 	}
-	return unlock, nil
+}
+
+// consentVerdictTTL is how long a consent_pending verdict left by the previous
+// holder is inherited instead of re-derived. Queued callers are released within
+// milliseconds of the verdict being written, so this only has to be long enough
+// to drain a queue — and short, because the moment the user finds the dialog
+// and clicks Allow the verdict is wrong, and a caller told to go looking for a
+// prompt they have already answered is worse off than one that simply retried.
+const consentVerdictTTL = 5 * time.Second
+
+// recentConsentVerdict returns the previous holder's consent_pending failure
+// when it is recent enough to still be true, and nil otherwise.
+func recentConsentVerdict(sockPath string) error {
+	path := sockPath + errSuffix
+	st, err := os.Stat(path)
+	if err != nil || time.Since(st.ModTime()) > consentVerdictTTL {
+		return nil
+	}
+	data, err := os.ReadFile(path)
+	if err != nil || len(data) == 0 {
+		return nil
+	}
+	var ce *chrome.ConnectError
+	if decoded := decodeConnectErr(data); errors.As(decoded, &ce) && ce.Code == result.CodeConsentPending {
+		return decoded
+	}
+	return nil
 }
 
 // connectBrowser is chrome.Connect behind a seam, so RunDaemon's behaviour
