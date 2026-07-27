@@ -5,9 +5,11 @@ Design proposals for `chrome-cdp`, written before the code so the CLI surface, t
 Each RFC is self-contained: motivation, user stories with acceptance criteria, the proposed command surface, the envelope shape, and a verification plan that maps to real tests.
 An RFC is `Draft` until someone implements it; the implementing PR flips it to `Accepted` and links itself.
 
-**All thirteen are now implemented and merged.**
+**The first thirteen are implemented and merged.**
 They are kept as the design record — what was proposed, why, and what the verification plan was — not as a to-do list.
 Where the implementation departed from the proposal, the RFC's own Open Questions section records the decision, and the PR records the reason.
+
+RFCs 0014 and 0015 are a second wave, currently Draft: a capability gap analysis (2026-07-27) against coordinate-first automation surfaces found the remaining holes concentrated in pixel-space interaction and element discovery.
 
 ## Why these, and why in this order
 
@@ -52,6 +54,8 @@ The reproduction then contradicted the first diagnosis, which is why it is writt
 | [0011](0011-session-recording.md) | Session recording: `record` and GIF export | P2 | capture | Accepted — [#14](https://github.com/sanketsudake/chrome-cdp-cli/pull/14) |
 | [0012](0012-domain-allowlist.md) | Domain allow-list: bounding what the CLI may drive | P2 | safety | Accepted — [#12](https://github.com/sanketsudake/chrome-cdp-cli/pull/12) |
 | [0013](0013-consent-prompt-lifecycle.md) | Surviving Chrome's consent prompt | P0 | connection | Accepted — [#18](https://github.com/sanketsudake/chrome-cdp-cli/pull/18) |
+| [0014](0014-coordinate-space-interaction.md) | Coordinate-space interaction: `--at`, `tripleclick`, drop-zone upload, `window` | P0/P1 | input | Draft |
+| [0015](0015-find-element-search.md) | `find`: ranked element search from a plain-language query | P0 | reading | Draft |
 
 ## Dependency graph
 
@@ -67,6 +71,12 @@ The reproduction then contradicted the first diagnosis, which is why it is writt
 
 0004 mcp ──> exposes whatever verbs exist; ships best after 0001/0005/0006/0007
 0012 allowlist ──> should land with or before 0004 (protocol access widens the blast radius)
+
+0005 pointer ──> 0014 --at extends its dispatch primitive; tripleclick joins its verb family
+0006 upload ───> 0014 drop-zone mode extends it (0012's upload allow-list applies unchanged)
+0008 screenshot ──> 0014's coordinate contract is defined against --scale 1 captures
+snap refs ────> 0015 find mints the same e<id> refs and reuses snap's traversal
+0014 --at <──> 0015 find (find's center points feed --at when refs go stale)
 ```
 
 ## Conventions every RFC in this folder inherits
