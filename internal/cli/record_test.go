@@ -492,6 +492,36 @@ func TestRecordStopSurvivesAClosedTab(t *testing.T) {
 	}
 }
 
+// TestRecordSurvivesAFailedCommand is VS-14: a command failing mid-recording
+// does not disturb the recording, and `record stop` afterwards still exports.
+//
+// This is the case the feature is most useful for — the run that went wrong is
+// the one worth having on film — and the case a design that held frames in the
+// commanding process could not serve at all.
+func TestRecordSurvivesAFailedCommand(t *testing.T) {
+	t.Parallel()
+	b := &sessionRecordBrowser{recordBrowser: *newRecordBrowser(t)}
+	out := filepath.Join(t.TempDir(), "failed-run.gif")
+
+	if _, _, code := run(t, b, "record", "start", "--target", "aa11", "--json"); code != 0 {
+		t.Fatal("record start failed")
+	}
+	if _, _, code := run(t, b, "click", "#boom", "--target", "aa11", "--json"); code == 0 {
+		t.Fatal("the failing command reported success; this test proves nothing")
+	}
+	env, _, code := run(t, b, "record", "status", "--target", "aa11", "--json")
+	if code != 0 || resultOf(t, env)["recording"] != true {
+		t.Fatalf("the failed command disturbed the recording: %v", env)
+	}
+	env, _, code = run(t, b, "record", "stop", "-o", out, "--target", "aa11", "--json")
+	if code != 0 {
+		t.Fatalf("stop after a failed command: exit %d, %v", code, env["error"])
+	}
+	if _, err := os.Stat(out); err != nil {
+		t.Errorf("no recording of the failed run was written: %v", err)
+	}
+}
+
 // TestSessionRecord is VS-15: `session --record` writes the file when the batch
 // finishes, reports it in the output, and does so even when a step failed —
 // which is when a recording is worth the most.
