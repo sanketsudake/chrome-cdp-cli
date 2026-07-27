@@ -518,6 +518,12 @@ func TestRecordLive(t *testing.T) {
 	waitViewport(ctx, t, b, id, 800, 600)
 	full := recordOneFrame(ctx, t, b, id, RecordOpts{FPS: 8, Scale: 1})
 	half := recordOneFrame(ctx, t, b, id, RecordOpts{FPS: 8, Scale: 0.5})
+	// Check the precondition before the claim, so a window that moved under the
+	// test says so instead of being reported as a --scale defect.
+	if !within(full.Width, 800, 0.15) || !within(full.Height, 600, 0.15) {
+		t.Fatalf("the scale-1 reference is %dx%d, not the pinned 800x600 — the viewport moved under the test, so this run says nothing about --scale",
+			full.Width, full.Height)
+	}
 	if !within(half.Width, float64(full.Width)*0.5, 0.15) || !within(half.Height, float64(full.Height)*0.5, 0.15) {
 		t.Errorf("--scale 0.5 produced %dx%d against an unscaled %dx%d, want about half",
 			half.Width, half.Height, full.Width, full.Height)
@@ -638,15 +644,22 @@ func waitViewport(ctx context.Context, t *testing.T, b *CDP, id string, w, h int
 	deadline := time.Now().Add(10 * time.Second)
 	var got any
 	for time.Now().Before(deadline) {
-		v, err := b.Eval(ctx, id, "[innerWidth, innerHeight].join('x')", EvalOpts{})
+		// Both measures, because they settle independently and the recorder
+		// sizes from the VISUAL viewport (page.getLayoutMetrics' visualViewport)
+		// while innerWidth/innerHeight is the layout viewport. Waiting on only
+		// one let the other still be mid-resize: CI captured a correct 400x300
+		// scaled frame against a 600x600 "unscaled" reference.
+		v, err := b.Eval(ctx, id,
+			"[innerWidth, innerHeight, Math.round(visualViewport.width), Math.round(visualViewport.height)].join('x')",
+			EvalOpts{})
 		if err != nil {
-			t.Fatalf("Eval innerWidth/innerHeight: %v", err)
+			t.Fatalf("Eval viewport: %v", err)
 		}
 		got = v.(map[string]any)["value"]
-		if got == fmt.Sprintf("%dx%d", w, h) {
+		if got == fmt.Sprintf("%dx%dx%dx%d", w, h, w, h) {
 			return
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
-	t.Fatalf("viewport never reached %dx%d (last %v)", w, h, got)
+	t.Fatalf("viewport never reached %dx%d on both the layout and visual measures (last %v)", w, h, got)
 }
