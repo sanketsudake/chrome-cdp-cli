@@ -82,7 +82,7 @@ func (a *App) newRoot() *cobra.Command {
 	pf.BoolVar(&a.policyOff, "policy-off", false, "policy: do not enforce the configured policy for this command (explicit and logged)")
 
 	root.AddCommand(
-		a.cmdList(), a.cmdOpen(), a.cmdUse(), a.cmdNav(), a.cmdActivate(), a.cmdClose(), a.cmdEval(), a.cmdSnap(),
+		a.cmdList(), a.cmdOpen(), a.cmdUse(), a.cmdNav(), a.cmdActivate(), a.cmdClose(), a.cmdEval(), a.cmdSnap(), a.cmdFind(),
 		a.cmdHTML(), a.cmdText(), a.cmdValue(),
 		a.cmdClick(), a.cmdHover(), a.cmdDblClick(), a.cmdRClick(), a.cmdDrag(), a.cmdKey(),
 		a.cmdType(), a.cmdFill(), a.cmdSelect(), a.cmdUpload(), a.cmdGrid(), a.cmdScroll(), a.cmdAttr(),

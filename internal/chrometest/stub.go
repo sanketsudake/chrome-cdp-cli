@@ -33,6 +33,9 @@ func (StubBrowser) Eval(context.Context, string, string, chrome.EvalOpts) (any, 
 func (StubBrowser) Snapshot(context.Context, string, chrome.SnapOpts) (any, error) {
 	return map[string]any{}, nil
 }
+func (StubBrowser) Find(_ context.Context, _, query string, _ chrome.FindOpts) (map[string]any, error) {
+	return map[string]any{"query": query, "matches": []any{}, "count": 0, "truncated": false}, nil
+}
 func (StubBrowser) CloseTabs(_ context.Context, ids []string) (map[string]any, error) {
 	return map[string]any{"closed": []any{}, "count": len(ids)}, nil
 }

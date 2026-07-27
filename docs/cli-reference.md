@@ -150,6 +150,7 @@ chrome-cdp snap --by name … || { chrome-cdp activate && chrome-cdp snap --by n
 | Command | Returns |
 |---------|---------|
 | `snap [--role <r>] [--grep <re>] [--region <name>] [--dedupe]` | accessibility snapshot: roles + names of actionable nodes, plus `alerts`, `focused`, per-node `states`/`value`/`ref` |
+| `find <query> [--role <r>] [--limit <n>] [--region <name>] [--all] [--dedupe] [--min-score <s>]` | ranked element matches for a plain-language query, each with `ref`, exact name, `states`, `score`, and `center` |
 | `grid [selector]` | a table/grid as `{headers, rows, count}` |
 | `value <selector> [--all]` | a form field's value (`--all`: every match, as a list) |
 | `text <selector>` | visible text of a selector |
@@ -164,6 +165,38 @@ chrome-cdp snap --role button --grep "[AP]M"    # calendar-event buttons only
 chrome-cdp grid                                 # read a table without parsing snap
 chrome-cdp value --all "input.hours"            # every hour cell in one call
 ```
+
+#### `find` — describe the element, get its address
+
+`snap` answers "what is on this page"; `find` answers "where is the thing I already know I want".
+A short query — the element's purpose, a fragment of its text, or its hint text — is ranked against the accessibility tree, and the best matches come back with everything an acting verb needs:
+
+```sh
+chrome-cdp find "login button"
+chrome-cdp find "delete" --region "Invoice 4102" --role button
+chrome-cdp find "time type" --role textbox --limit 3
+```
+
+```json
+{ "ok": true, "command": "find",
+  "result": { "query": "login button",
+    "matches": [
+      { "ref": "e4821", "role": "button", "name": "Sign in to your account",
+        "score": 0.91, "center": {"x": 640, "y": 412},
+        "states": ["focusable"], "visible": true } ],
+    "count": 1, "truncated": false } }
+```
+
+The `ref` feeds `--by ref`, the exact `name` feeds `--by name`, and `center` is a viewport CSS-pixel point.
+This is the cure for verbose accessible names: `find "review"` returns the real name (`"Review Approval: Awaiting Action by …"`) so you never have to guess it.
+
+Matching is a deterministic heuristic — token overlap plus role words (button, link, field, box, bar, checkbox, tab, menu, heading, row, icon) that softly steer the ranking — not a model call.
+It handles descriptive queries, not paraphrase; for "the thing that saves my work" you still read a `snap`.
+Role words are a nudge; `--role` is the hard filter.
+
+Finding nothing is an answer, not an error: `count: 0`, exit 0.
+`--min-score` drops weak matches, `--all` includes hidden/ignored nodes (ranked lower), and `--dedupe` collapses identical role+name pairs in virtualized grids.
+On a backgrounded tab the a11y tree may be throttled; when it yields nothing there, `find` falls back to a DOM-computed pass (`note: "dom_fallback"`) whose matches carry centres but no refs, and `--region` is not honoured.
 
 #### `text --article` — the page without the furniture
 

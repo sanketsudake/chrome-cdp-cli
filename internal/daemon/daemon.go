@@ -306,6 +306,8 @@ func (s *server) dispatch(ctx context.Context, method string, args []json.RawMes
 		return b.Eval(ctx, argStr(args, 0), argStr(args, 1), argEval(args, 2))
 	case "Snapshot":
 		return b.Snapshot(ctx, argStr(args, 0), argSnap(args, 1))
+	case "Find":
+		return b.Find(ctx, argStr(args, 0), argStr(args, 1), argFind(args, 2))
 	case "Key":
 		return b.Key(ctx, argStr(args, 0), argStr(args, 1), argKeys(args, 2), argKeyOpts(args, 3))
 	case "Pointer":
@@ -452,6 +454,7 @@ func argWait(a []json.RawMessage, i int) chrome.WaitCond       { return arg[chro
 func argSel(a []json.RawMessage, i int) chrome.SelectOpts      { return arg[chrome.SelectOpts](a, i) }
 func argScroll(a []json.RawMessage, i int) chrome.ScrollOpts   { return arg[chrome.ScrollOpts](a, i) }
 func argSnap(a []json.RawMessage, i int) chrome.SnapOpts       { return arg[chrome.SnapOpts](a, i) }
+func argFind(a []json.RawMessage, i int) chrome.FindOpts       { return arg[chrome.FindOpts](a, i) }
 func argKeys(a []json.RawMessage, i int) []chrome.KeyStroke    { return arg[[]chrome.KeyStroke](a, i) }
 func argKeyOpts(a []json.RawMessage, i int) chrome.KeyOpts     { return arg[chrome.KeyOpts](a, i) }
 func argPointer(a []json.RawMessage, i int) chrome.PointerOpts { return arg[chrome.PointerOpts](a, i) }
@@ -653,6 +656,10 @@ func (r *remoteBrowser) Eval(ctx context.Context, id, expr string, opts chrome.E
 func (r *remoteBrowser) Snapshot(ctx context.Context, id string, opts chrome.SnapOpts) (any, error) {
 	var out any
 	return out, r.c.call(ctx, "Snapshot", &out, id, opts)
+}
+func (r *remoteBrowser) Find(ctx context.Context, id, query string, opts chrome.FindOpts) (map[string]any, error) {
+	var out map[string]any
+	return out, r.c.call(ctx, "Find", &out, id, query, opts)
 }
 func (r *remoteBrowser) Key(ctx context.Context, id, sel string, keys []chrome.KeyStroke, opts chrome.KeyOpts) (map[string]any, error) {
 	var out map[string]any

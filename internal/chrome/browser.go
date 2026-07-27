@@ -365,6 +365,11 @@ type Browser interface {
 	Reload(ctx context.Context, targetID string, hard bool) (map[string]any, error)
 	Eval(ctx context.Context, targetID, expr string, opts EvalOpts) (any, error)
 	Snapshot(ctx context.Context, targetID string, opts SnapOpts) (any, error)
+	// Find ranks the page's accessibility nodes against a plain-language query
+	// (RFC-0015) and returns the best matches with refs, states, and centre
+	// points. It is a read: it never dispatches input, which is why MCP mode
+	// can expose it under --read-only.
+	Find(ctx context.Context, targetID, query string, opts FindOpts) (map[string]any, error)
 	Key(ctx context.Context, targetID, selector string, keys []KeyStroke, opts KeyOpts) (map[string]any, error)
 	// Pointer dispatches every pointer gesture — click included. There is no
 	// separate Click: one method means one centre resolution and one place
