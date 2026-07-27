@@ -304,9 +304,16 @@ func (a *App) cmdRecipeRun() *cobra.Command {
 // The tree is built on a scratch App: newRoot binds every flag to a field of
 // the receiver, and classifying an argv must not write to the App that is about
 // to run it. Nothing on the scratch tree is ever executed.
+//
+// A FRESH tree per call, deliberately. cobra's Command.Commands() sorts its
+// child slice in place, so a tree shared between goroutines is a data race —
+// and the splitter is a plain func value with nothing stopping two callers
+// holding it at once. Building the tree costs microseconds against a step that
+// is about to drive a browser, so there is no reason to share one.
 func stepSplitter(d config.Defaults) recipe.Splitter {
-	root := (&App{defaults: d}).newRoot()
-	return func(argv []string) ([]int, []int, bool) { return splitStepArgv(root, argv) }
+	return func(argv []string) ([]int, []int, bool) {
+		return splitStepArgv((&App{defaults: d}).newRoot(), argv)
+	}
 }
 
 // splitStepArgv walks a step's argv as written and says which elements the

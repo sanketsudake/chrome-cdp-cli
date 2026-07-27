@@ -770,7 +770,6 @@ steps:
 // recipe fail. It is checked against the real command tree.
 func TestSplitStepArgv(t *testing.T) {
 	t.Parallel()
-	root := (&App{defaults: config.Builtin()}).newRoot()
 	sel := func(argv []string, idx []int) []string {
 		out := make([]string, 0, len(idx))
 		for _, i := range idx {
@@ -804,6 +803,10 @@ func TestSplitStepArgv(t *testing.T) {
 	for name, c := range cases {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
+			// A tree per subtest: cobra's Commands() sorts its child slice in
+			// place, so a shared root would be a data race between parallel
+			// subtests — the same reason stepSplitter builds a fresh one.
+			root := (&App{defaults: config.Builtin()}).newRoot()
 			flagIdx, posIdx, ok := splitStepArgv(root, c.argv)
 			if ok != c.ok {
 				t.Fatalf("ok = %v, want %v", ok, c.ok)
