@@ -230,6 +230,13 @@ func (c *CDP) recorder(id string) *recorder {
 // RecordStart begins recording a tab.
 func (c *CDP) RecordStart(ctx context.Context, id string, opts RecordOpts) (map[string]any, error) {
 	opts = opts.withDefaults(c.recMaxFrames)
+	// Refuse a double start BEFORE touching the tab: bringing a window to the
+	// front and reading its layout are visible to the user, and an invocation
+	// that was always going to be refused should cost them nothing. The
+	// authoritative check is the one under the lock below.
+	if c.recorder(id) != nil {
+		return nil, ErrAlreadyRecording
+	}
 
 	// The tab is attached (and its listener registered) before the recorder is
 	// published, so no frame can arrive with nothing to receive it.
@@ -289,8 +296,12 @@ func (c *CDP) RecordStart(ctx context.Context, id string, opts RecordOpts) (map[
 		"max_frames":      opts.MaxFrames,
 		"max_duration_ms": opts.MaxDuration.Milliseconds(),
 		"annotate":        opts.Annotate,
-		"width":           maxW,
-		"height":          maxH,
+		// The caps requested of Chrome, not a promise about the frames: a
+		// screencast frame is never UPSCALED to fill them, so the real
+		// dimensions are whatever the compositor produces within this box and
+		// are reported per-frame at `record stop`.
+		"max_width":  maxW,
+		"max_height": maxH,
 	}, nil
 }
 
