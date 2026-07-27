@@ -68,6 +68,11 @@ The [logged-in web app guide](docs/scenarios/automating-a-logged-in-web-app.md) 
   One JSON envelope, one [exit-code contract](docs/cli-reference.md#output-contract); a background daemon holds the connection so the consent prompt appears once per session, not per command.
 - **Drives the hard widgets.**
   Portal menus, multi-level cascade prompts, and native `<select>`s that a synthetic click can't open — the [`select`](docs/scenarios/driving-widgets-with-select.md) verb opens them.
+- **Describe what you want.**
+  `find "login button"` ranks the page's elements against a plain-language query and hands back the exact accessible name, a ref, and a centre point — so you stop guessing at names that read nothing like their visible label.
+- **Reaches past the DOM.**
+  Canvas, WebGL, maps, and PDF viewers expose one node to the accessibility tree, so no selector gets inside them: `click --at 512,340` acts at a pixel instead, in the same coordinate space a `screenshot --scale 1` gives you.
+  Drop zones with no file input behind them take `upload --drop`.
 - **Works on modern Chrome.**
   It reads Chrome's `DevToolsActivePort` and connects directly, so it keeps working where the classic `--remote-debugging-port` flag stopped (default profile, Chrome M136+).
 
@@ -81,7 +86,11 @@ chrome-cdp fill --by cell "Mon, 7/13" "8"  # a grid input by its column header
 chrome-cdp fill --by label "Notes" "hi"    # a form control by its visible label
 chrome-cdp select "Time Type" "Projects > Acme: Platform > Project > Time Entry" --role textbox
 chrome-cdp click --by name "Approve" --role button --wait-text "Success"   # act, then confirm
+chrome-cdp find "search bar"                # describe it; get its ref, exact name, centre
+chrome-cdp click --at 512,340              # act at a pixel (canvas, maps, WebGL)
+chrome-cdp upload --drop ".dropzone" ./report.pdf   # a drop zone with no file input
 chrome-cdp wait --idle                     # settle an SPA (network, not a fixed sleep)
+chrome-cdp net --failed --body             # what the page requested, bodies included
 chrome-cdp raw Network.setCacheDisabled '{"cacheDisabled":true}'   # any CDP method
 ```
 
@@ -132,6 +141,9 @@ A live debug endpoint is **full control** of whatever your Chrome is signed into
   It never suppresses Chrome's "Allow debugging?" consent or the automation banner.
 - **Don't pass secrets as arguments.**
   `type <selector> <text>` takes text as a positional argument, visible in `ps` and shell history — don't type passwords through it on a shared machine.
+- **Password fields read back masked.**
+  `value`, `snap`, and `find` report a password input's contents as bullets, and `upload --drop` never attaches its temporary input to the page, so a page-global listener cannot see your files.
+  This is accident-prevention, not a boundary: `eval` still reads whatever the page holds, deliberately — one explicit path beats several incidental ones.
 - **Managed-launch fallback** uses your system Chrome with a dedicated profile and does not disable the sandbox.
 
 ## Documentation
