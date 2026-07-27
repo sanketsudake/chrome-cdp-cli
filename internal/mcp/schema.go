@@ -21,11 +21,15 @@ import (
 // schema renders the tool's arguments as a JSON Schema object.
 //
 // enumFor lets --read-only narrow a grouped tool's discriminator (dropping
-// `open` from `tabs`, say) without a second copy of the tool table.
-func (t *tool) schema(enumFor func(a arg) []string) *jsonschema.Schema {
+// `open` from `tabs`, say) without a second copy of the tool table, and hidden
+// drops an argument a pinned server does not accept at all.
+func (t *tool) schema(enumFor func(a arg) []string, hidden func(a arg) bool) *jsonschema.Schema {
 	props := make(map[string]*jsonschema.Schema, len(t.args))
 	var required []string
 	for _, a := range t.args {
+		if hidden != nil && hidden(a) {
+			continue
+		}
 		s := &jsonschema.Schema{Type: a.typ, Description: a.desc}
 		if a.typ == "array" {
 			s.Items = &jsonschema.Schema{Type: a.items}

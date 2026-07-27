@@ -101,7 +101,7 @@ func New(r Runner, o Options) (*Server, error) {
 			Name:        t.name,
 			Title:       t.title,
 			Description: t.desc,
-			InputSchema: t.schema(s.enumFor(t)),
+			InputSchema: t.schema(s.enumFor(t), s.hidden),
 		}, s.handler(t))
 	}
 	// A call to a tool this server did not expose (hidden by --read-only or
@@ -242,11 +242,15 @@ func (s *Server) enumFor(t *tool) func(arg) []string {
 				return allowed
 			}
 		}
-		if a.name == "target" && s.opts.Target != "" {
-			return a.enum
-		}
 		return a.enum
 	}
+}
+
+// hidden drops arguments this server does not accept. A pinned server offers no
+// `target`: advertising an argument whose only valid value is the one already
+// chosen invites a client to send the wrong one.
+func (s *Server) hidden(a arg) bool {
+	return a.name == "target" && s.opts.Target != ""
 }
 
 // Run serves the protocol over r/w until ctx ends or the client disconnects.

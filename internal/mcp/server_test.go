@@ -529,6 +529,24 @@ func TestPinnedTargetIsInjectedAndConflictsRefused(t *testing.T) {
 	if !out.IsError {
 		t.Fatal("a conflicting target was accepted on a pinned server")
 	}
+	// A pinned server does not advertise an argument whose only valid value is
+	// the one already chosen.
+	tools, err := sess.ListTools(ctxT(t), nil)
+	if err != nil {
+		t.Fatalf("tools/list: %v", err)
+	}
+	for _, tl := range tools.Tools {
+		raw, _ := json.Marshal(tl.InputSchema)
+		var s struct {
+			Properties map[string]any `json:"properties"`
+		}
+		if err := json.Unmarshal(raw, &s); err != nil {
+			t.Fatalf("decode schema for %s: %v", tl.Name, err)
+		}
+		if _, ok := s.Properties["target"]; ok {
+			t.Errorf("pinned server still advertises `target` on %s", tl.Name)
+		}
+	}
 }
 
 func TestArgvMirrorsTheCLISpelling(t *testing.T) {
