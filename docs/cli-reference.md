@@ -692,7 +692,7 @@ chrome-cdp record stop -o demo.gif
 | `-o, --output <path>` | `./record-<timestamp>.<ext>` | output path, or `-` for stdout |
 | `--format` | from the extension, else `gif` | `gif` \| `mp4` \| `webm` \| `frames` |
 | `--max-size <size>` | — | best-effort ceiling, e.g. `2MB` or `1500000` |
-| `--loop <n>` | `0` (forever) | GIF loop count |
+| `--loop <n>` | `0` (forever) | how many times the GIF plays; `--loop 3` plays three times |
 | `--annotate` | from `record start` | draw the action markers |
 
 The result reports `path`, `format`, `frames`, `fps`, `duration_ms`, `width`, `height`, `bytes`, `annotated`, and the capture's own `dropped_frames` / `truncated` / `reason`.

@@ -438,13 +438,33 @@ func delays(frames []Frame, fps float64) []int {
 	return out
 }
 
+// gifLoopCount converts Options.Loop (a PLAY count) into image/gif's LoopCount,
+// which is not one.
+//
+// The stdlib's contract is that an animation plays LoopCount+1 times, that 0
+// means forever, and that a negative LoopCount writes no NETSCAPE block at all —
+// which every viewer renders as a single play. Assigning the play count straight
+// through, as this once did, gives `--loop 3` a GIF that plays four times; the
+// error is invisible in a round-trip test because both ends agree on the wrong
+// number.
+func gifLoopCount(plays int) int {
+	switch {
+	case plays <= 0:
+		return 0 // forever
+	case plays == 1:
+		return -1 // no NETSCAPE block: exactly one play
+	default:
+		return plays - 1
+	}
+}
+
 // encodeGIF writes the animation with a palette shared across every frame.
 func encodeGIF(canvas []*image.RGBA, delay []int, loop int) ([]byte, error) {
 	q := newQuantizer(canvas)
 	g := &gif.GIF{
 		Image:     make([]*image.Paletted, 0, len(canvas)),
 		Delay:     delay,
-		LoopCount: loop,
+		LoopCount: gifLoopCount(loop),
 	}
 	for _, c := range canvas {
 		g.Image = append(g.Image, q.paletted(c))

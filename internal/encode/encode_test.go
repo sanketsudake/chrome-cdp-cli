@@ -3,6 +3,7 @@ package encode
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"image"
 	"image/color"
 	"image/gif"
@@ -104,8 +105,11 @@ func TestGIFRoundTripIsExact(t *testing.T) {
 	if len(g.Image) != 3 {
 		t.Fatalf("decoded frames = %d, want 3 (the envelope reported %d)", len(g.Image), res.Frames)
 	}
-	if g.LoopCount != 3 {
-		t.Errorf("decoded LoopCount = %d, want 3", g.LoopCount)
+	// --loop 3 means three PLAYS, which image/gif spells as LoopCount 2.
+	// TestLoopPlaysExactlyNTimes owns that conversion; this only pins that the
+	// flag reaches the encoder at all.
+	if g.LoopCount != 2 {
+		t.Errorf("decoded LoopCount = %d, want 2 for --loop 3", g.LoopCount)
 	}
 	for i, want := range []color.RGBA{red, green, blue} {
 		if got := rgbaAt(g.Image[i], 5, 5); got != want {
@@ -115,6 +119,41 @@ func TestGIFRoundTripIsExact(t *testing.T) {
 	// 250ms between captures is 25 hundredths of a second.
 	if g.Delay[0] != 25 || g.Delay[1] != 25 {
 		t.Errorf("delays = %v, want the timestamp-derived 25", g.Delay[:2])
+	}
+}
+
+// TestLoopPlaysExactlyNTimes is the documented contract on Options.Loop: "n > 0
+// plays n times".
+//
+// It is asserted through gif.DecodeAll rather than on the raw field, because the
+// stdlib's LoopCount is not a play count — LoopCount+1 is, and LoopCount < 0 is
+// the one-play case that writes no NETSCAPE block at all. Round-tripping the
+// same number through both ends would agree with itself and still hand the user
+// a GIF that plays one time too many.
+func TestLoopPlaysExactlyNTimes(t *testing.T) {
+	t.Parallel()
+	frames := []Frame{
+		{Data: solidPNG(t, 8, 8, red)},
+		{Data: solidPNG(t, 8, 8, blue)},
+	}
+	// plays -> the LoopCount that produces exactly that many plays.
+	cases := map[int]int{1: -1, 2: 1, 3: 2, 10: 9}
+	for plays, want := range cases {
+		t.Run(fmt.Sprintf("%d plays", plays), func(t *testing.T) {
+			t.Parallel()
+			res, err := Encode(frames, Options{Format: FormatGIF, FPS: 4, Loop: plays})
+			if err != nil {
+				t.Fatalf("Encode: %v", err)
+			}
+			g, err := gif.DecodeAll(bytes.NewReader(res.Data))
+			if err != nil {
+				t.Fatalf("decode: %v", err)
+			}
+			if g.LoopCount != want {
+				t.Errorf("--loop %d encoded LoopCount = %d, want %d (the stdlib plays LoopCount+1 times)",
+					plays, g.LoopCount, want)
+			}
+		})
 	}
 }
 
