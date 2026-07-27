@@ -367,6 +367,48 @@ func TestRecordStopToStdoutEmitsOnlyTheArtifact(t *testing.T) {
 	}
 }
 
+// TestRecordFramesDirIsNotLeftWithStalePNGs: a shorter recording written over a
+// longer one must not leave the tail of the old one behind.
+//
+// The directory's whole contract is "a numbered PNG per frame", so stale files
+// make it hold more frames than the envelope reports — and the extra ones come
+// from a different run.
+func TestRecordFramesDirIsNotLeftWithStalePNGs(t *testing.T) {
+	t.Parallel()
+	b := newRecordBrowser(t)
+	dir := filepath.Join(t.TempDir(), "out")
+	keep := filepath.Join(dir, "notes.txt")
+
+	b.frames = 5
+	run(t, b, "record", "start", "--target", "aa11", "--json")
+	if _, _, code := run(t, b, "record", "stop", "--format", "frames", "-o", dir, "--target", "aa11", "--json"); code != 0 {
+		t.Fatal("the first frames export failed")
+	}
+	// Something of the user's, in the same directory. It is theirs to keep.
+	if err := os.WriteFile(keep, []byte("mine"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	b.frames = 2
+	run(t, b, "record", "start", "--target", "aa11", "--json")
+	env, _, code := run(t, b, "record", "stop", "--format", "frames", "-o", dir, "--target", "aa11", "--json")
+	if code != 0 {
+		t.Fatalf("exit = %d: %v", code, env["error"])
+	}
+	pngs, err := filepath.Glob(filepath.Join(dir, "*.png"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := int(resultOf(t, env)["frames"].(float64))
+	if len(pngs) != want {
+		t.Errorf("%d PNGs in the directory, envelope says %d frames — the previous export's tail is still there: %v",
+			len(pngs), want, pngs)
+	}
+	if _, err := os.Stat(keep); err != nil {
+		t.Errorf("the export deleted a file that was not its own: %v", err)
+	}
+}
+
 // TestRecordFormatConflicts is VS-9, plus the cases the RFC's table implies:
 // the extension decides, --format may say so explicitly, and the two
 // disagreeing is an error rather than a guess.

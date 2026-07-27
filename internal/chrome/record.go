@@ -97,6 +97,12 @@ const (
 	// rendering (see poke). Never more often than the capture cadence, and never
 	// faster than this.
 	recordPokeFloor = 100 * time.Millisecond
+
+	// recordStrandedTTL is how long a recording whose TAB has closed is held
+	// before the daemon releases it. Long enough for the `record stop` a human
+	// types after noticing a run died (US-7), short enough that an abandoned
+	// recording is not a permanent 96MB hole in a long-lived daemon.
+	recordStrandedTTL = 10 * time.Minute
 )
 
 // Recording lifecycle errors. They are sentinels because the CLI maps both to
@@ -174,6 +180,11 @@ type recorder struct {
 	// RecordRestore). Non-nil means this recorder never captured anything itself
 	// and must report the original capture's numbers rather than its own.
 	restored map[string]any
+
+	// release forgets this recording from the CDP that owns it, and strandedTTL
+	// is how long after the TAB closes that happens. See pump's tctx.Done case.
+	release     func()
+	strandedTTL time.Duration
 
 	queue     []pendingFrame
 	lastFrame time.Time // when a frame last ARRIVED, retained or not
@@ -267,6 +278,8 @@ func (c *CDP) RecordStart(ctx context.Context, id string, opts RecordOpts) (map[
 	maxH := int64(math.Round(vh * opts.Scale))
 
 	r := newRecorder(opts, tctx, c.recMaxBytes)
+	// Set before the recorder is published, so nothing can read it concurrently.
+	r.release = func() { c.forgetRecorder(id, r) }
 	c.recMu.Lock()
 	if _, ok := c.rec[id]; ok {
 		c.recMu.Unlock()
@@ -286,8 +299,9 @@ func (c *CDP) RecordStart(ctx context.Context, id string, opts RecordOpts) (map[
 		return p.Do(actx)
 	})); err != nil {
 		// A refused screencast must not leave a recording nothing will ever
-		// feed, or the next `record start` would fail with "already recording".
-		c.forgetRecorder(id, r)
+		// feed, or the next `record start` would fail with "already recording" —
+		// nor a screencast running with no recording behind it.
+		c.abandonRecorder(id, r)
 		return nil, err
 	}
 	go r.pump()
@@ -428,6 +442,18 @@ func (c *CDP) forgetRecorder(id string, r *recorder) {
 	}
 }
 
+// abandonRecorder tears down a recording that never got off the ground.
+//
+// Forgetting it is not enough. Page.startScreencast can time out CLIENT side
+// after Chrome has already enabled it, and a screencast nobody acknowledges
+// stays on for the life of the connection — the tab keeps composing frames for a
+// recording that no longer exists. Stopping the capture is best-effort by
+// design: if the call that failed was the enable, there is nothing to turn off.
+func (c *CDP) abandonRecorder(id string, r *recorder) {
+	c.forgetRecorder(id, r)
+	r.stopCapture("")
+}
+
 // noteRecordMark records that an action landed at (x, y) on a tab, if that tab
 // is being recorded.
 //
@@ -444,15 +470,24 @@ func (c *CDP) noteRecordMark(id, command string, x, y float64) {
 
 func newRecorder(opts RecordOpts, tctx context.Context, maxBytes int) *recorder {
 	return &recorder{
-		opts:     opts,
-		started:  time.Now(),
-		tctx:     tctx,
-		buf:      eventbuf.New[Frame](opts.MaxFrames),
-		max:      opts.MaxFrames,
-		maxBytes: maxBytes,
-		wake:     make(chan struct{}, 1),
-		done:     make(chan struct{}),
-		exited:   make(chan struct{}),
+		opts:        opts,
+		started:     time.Now(),
+		tctx:        tctx,
+		buf:         eventbuf.New[Frame](opts.MaxFrames),
+		max:         opts.MaxFrames,
+		maxBytes:    maxBytes,
+		strandedTTL: recordStrandedTTL,
+		wake:        make(chan struct{}, 1),
+		done:        make(chan struct{}),
+		exited:      make(chan struct{}),
+	}
+}
+
+// releaseAfter forgets this recording once d has passed, if the CDP that owns it
+// registered a way to.
+func (r *recorder) releaseAfter(d time.Duration) {
+	if r.release != nil && d > 0 {
+		time.AfterFunc(d, r.release)
 	}
 }
 
@@ -525,8 +560,13 @@ func (r *recorder) pump() {
 			return
 		case <-r.tctx.Done():
 			// The tab closed. The frames survive it — they are held here, not
-			// in the tab — so `record stop` still exports them.
+			// in the tab — so `record stop` still exports them. But not forever:
+			// nothing else would ever remove this recording, and an abandoned
+			// one holds up to record_max_bytes (96MB by default) for the life of
+			// the daemon. The grace period is generous because the `record stop`
+			// this exists for is the one a human types after a run died.
 			r.stopCapture("")
+			r.releaseAfter(r.strandedTTL)
 			return
 		}
 	}
@@ -611,12 +651,17 @@ func (r *recorder) store(p pendingFrame) {
 	// The cadence throttle. A frame skipped here is NOT a dropped frame: the
 	// caller asked for this many frames a second, and counting the surplus as
 	// loss would report every recording of a busy page as truncated.
+	//
+	// lastKept is deliberately NOT advanced here: the clock measures the gap
+	// since the last RETAINED frame, and a frame that turns out to be
+	// undecodable or a byte-for-byte duplicate (which is what a static page
+	// answers a nudge with) retains nothing. Charging those to the budget
+	// throttles away the genuine change arriving in the next gap.
 	minGap := time.Duration(float64(time.Second) / r.opts.FPS)
 	if !r.lastKept.IsZero() && now.Sub(r.lastKept) < minGap {
 		r.mu.Unlock()
 		return
 	}
-	r.lastKept = now
 	r.mu.Unlock()
 
 	raw, err := base64.StdEncoding.DecodeString(p.data)
@@ -642,6 +687,8 @@ func (r *recorder) store(p pendingFrame) {
 	if bytes.Equal(r.lastData, raw) {
 		return
 	}
+	// Retained: now the cadence clock advances.
+	r.lastKept = now
 	r.lastData = raw
 	r.buf.Add(f)
 	r.size = append(r.size, len(raw))

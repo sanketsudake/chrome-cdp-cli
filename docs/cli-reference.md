@@ -720,6 +720,10 @@ A frame the encoder cannot read is skipped and counted in `decode_failures` rath
 
 **Frames live in the daemon, not in the command that started the recording.**
 That is what makes a run which crashed half way still have a recording of the failure: `record stop` afterwards writes it, and it writes it even when the tab itself has since closed (the result then says `tab_closed: true`).
+A recording whose tab closed is held for ten minutes and then released, so an abandoned one does not stay a hole in a long-lived daemon.
+
+**`--format frames` replaces the previous export's PNGs.**
+A shorter recording written over a longer one removes the `frame-NNNNN.png` files the last export left, so the directory holds exactly the frames the result reports; anything else you keep in that directory is untouched.
 
 **Capture is a screencast, not a screenshot loop.**
 Chrome pushes a frame only when the page actually changes, so a static page costs almost nothing and `--fps` throttles a busy one rather than polling a quiet one.

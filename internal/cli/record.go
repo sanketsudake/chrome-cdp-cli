@@ -602,6 +602,9 @@ func (a *App) writeExport(res encode.Result, opts exportOpts) (string, bool, err
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			return "", false, err
 		}
+		if err := clearFrameDir(dir); err != nil {
+			return "", false, err
+		}
 		for _, f := range res.Files {
 			if err := os.WriteFile(filepath.Join(dir, f.Name), f.Data, 0o644); err != nil {
 				return "", false, err
@@ -626,6 +629,30 @@ func (a *App) writeExport(res encode.Result, opts exportOpts) (string, bool, err
 		return "", false, err
 	}
 	return path, false, nil
+}
+
+// clearFrameDir removes the numbered PNGs a previous export left in dir.
+//
+// A shorter recording written over a longer one would otherwise leave the tail
+// of the old one in place, and the directory — whose whole contract is "a
+// numbered PNG per frame" — would hold more frames than the envelope reports,
+// with the extra ones coming from a different run. Only the exact names this
+// command writes are removed, and only if they are files: anything else the
+// user keeps in that directory is theirs.
+func clearFrameDir(dir string) error {
+	old, err := filepath.Glob(filepath.Join(dir, "frame-[0-9]*.png"))
+	if err != nil {
+		return err
+	}
+	for _, p := range old {
+		if fi, err := os.Lstat(p); err != nil || !fi.Mode().IsRegular() {
+			continue
+		}
+		if err := os.Remove(p); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // toEncodeFrames converts the driver's frames into the encoder's. The two types

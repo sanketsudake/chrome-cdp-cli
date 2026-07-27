@@ -166,6 +166,95 @@ func TestCadenceThrottleIsNotLoss(t *testing.T) {
 	}
 }
 
+// TestDiscardedFrameDoesNotSpendTheCadenceBudget: the 1/fps clock advances when
+// a frame is KEPT, not when one arrives.
+//
+// A nudged static page answers with a byte-identical frame that store() throws
+// away as a duplicate. Charging that non-frame to the cadence budget throttles
+// away the genuine change that arrives in the next gap — so the one thing the
+// recording exists to show is the thing that gets dropped.
+func TestDiscardedFrameDoesNotSpendTheCadenceBudget(t *testing.T) {
+	t.Parallel()
+	base := time.Unix(1700000000, 0).UTC()
+	r := testRecorder(t, RecordOpts{FPS: 4, MaxFrames: 100}, 0) // 250ms cadence
+
+	first := synthFrame(t, base, 8, 6, 10)
+	r.store(first)
+
+	// A nudge 300ms in: the page did not change, so this is the same bytes.
+	dup := first
+	dup.meta = synthFrame(t, base.Add(300*time.Millisecond), 8, 6, 10).meta
+	r.store(dup)
+
+	// A real change 400ms in — 400ms after the last KEPT frame, so well past the
+	// 250ms cadence, but only 100ms after the duplicate.
+	r.store(synthFrame(t, base.Add(400*time.Millisecond), 8, 6, 200))
+
+	frames, _ := r.drain()
+	if len(frames) != 2 {
+		t.Fatalf("retained %d frames, want 2 — the discarded duplicate consumed the cadence budget", len(frames))
+	}
+	if !frames[1].TS.Equal(base.Add(400 * time.Millisecond)) {
+		t.Errorf("second frame ts = %v, want the genuine change at +400ms", frames[1].TS)
+	}
+}
+
+// TestAbandonedStartStopsTheScreencast: a `record start` that fails after Chrome
+// has already enabled the screencast must turn it back off.
+//
+// Forgetting the recorder alone leaves the tab pushing frames nobody
+// acknowledges for the life of the connection.
+func TestAbandonedStartStopsTheScreencast(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // no browser behind it; stopCapture's CDP call is best-effort
+	r := newRecorder(RecordOpts{FPS: 4, MaxFrames: 10}.withDefaults(10), ctx, 0)
+	c := &CDP{rec: map[string]*recorder{"aa11": r}}
+
+	c.abandonRecorder("aa11", r)
+
+	if c.recorder("aa11") != nil {
+		t.Error("the recorder was not forgotten")
+	}
+	r.mu.Lock()
+	stopped := r.stopped
+	r.mu.Unlock()
+	if !stopped {
+		t.Error("the capture was not stopped: the tab keeps an unacked screencast running")
+	}
+	select {
+	case <-r.done:
+	default:
+		t.Error("done was not closed")
+	}
+}
+
+// TestStrandedRecordingIsReleased: the frames outlive the tab (US-7) but not the
+// daemon.
+//
+// Nothing removed c.rec[id] when a tab closed, so an abandoned recording held up
+// to record_max_bytes — 96MB by default — per tab until the daemon exited.
+func TestStrandedRecordingIsReleased(t *testing.T) {
+	t.Parallel()
+	tctx, closeTab := context.WithCancel(context.Background())
+	r := newRecorder(RecordOpts{FPS: 4, MaxFrames: 10}.withDefaults(10), tctx, 0)
+	r.strandedTTL = 10 * time.Millisecond
+	c := &CDP{rec: map[string]*recorder{"aa11": r}}
+	r.release = func() { c.forgetRecorder("aa11", r) }
+
+	go r.pump()
+	closeTab() // the tab goes away
+	<-r.exited
+
+	deadline := time.Now().Add(2 * time.Second)
+	for c.recorder("aa11") != nil {
+		if time.Now().After(deadline) {
+			t.Fatal("the stranded recording was still held after its grace period")
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
 // TestRecordRestoreMakesTheExportRetryable is the driver half of "a failed
 // export must not cost the recording": RecordStop is destructive, so the CLI
 // hands the frames back when the write fails, and the next `record stop` gets
@@ -413,7 +502,7 @@ func TestRecordLive(t *testing.T) {
 	}
 
 	// VS-1: what came back really is an animation.
-	res, err := encode.Encode(toEncodeFrames(got), encode.Options{Format: encode.FormatGIF, FPS: 8})
+	res, err := encode.Encode(t.Context(), toEncodeFrames(got), encode.Options{Format: encode.FormatGIF, FPS: 8})
 	if err != nil {
 		t.Fatalf("encode the captured frames: %v", err)
 	}
