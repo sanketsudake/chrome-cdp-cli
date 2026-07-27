@@ -75,6 +75,11 @@ const changeWitnessWait = 500 * time.Millisecond
 // answer: is the resolved element really a file input, does it accept several
 // files, and what does it hold afterwards.
 func (c *CDP) Upload(ctx context.Context, id, selector string, paths []string, opts UploadOpts) (map[string]any, error) {
+	// The drop form addresses a target that is not a file input at all, so it
+	// shares none of the checks below (is it an input, does it take multiple).
+	if opts.Drop != "" || opts.DropAt != nil {
+		return c.uploadDrop(ctx, id, paths, opts)
+	}
 	var out map[string]any
 	err := c.run(ctx, id, bringToFront(), chromedp.ActionFunc(func(actx context.Context) error {
 		var nodes []*cdp.Node

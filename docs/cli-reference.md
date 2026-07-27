@@ -286,6 +286,7 @@ A never-settling promise is bounded by `--timeout` (exit 4), and the connection 
 | `fill <selector> <value>` | set a field, **replacing** its content (clears, then types) |
 | `select <field> <option>` | choose an option in a prompt / combobox / cascade / native `<select>` |
 | `upload <selector> <path> [<path>...]` | attach local files to an `<input type=file>` |
+| `upload (--drop <sel> \| --drop-at <x,y>) <path>...` | deliver files by drag-and-drop to a drop zone with no file input |
 | `scroll [selector] [--dx <p>] [--dy <p>] [--to] [--wheel] [--at <x,y>]` | scroll by a delta, `--to` a selector into view, or a real `--wheel` (anchored with `--at`) |
 | `window size <w> <h>` / `window info` | resize or report the **real** Chrome window (not viewport emulation) |
 | `attr get\|list\|set\|rm <selector> [name] [value]` | read/write element attributes |
@@ -382,6 +383,37 @@ chrome-cdp upload --by label "Receipt" ./receipt.pdf
 chrome-cdp upload "#attachments" a.pdf b.png c.csv         # a `multiple` input
 chrome-cdp upload "input[type=file]" ~/docs/report.pdf --wait-text "Uploaded"
 ```
+
+#### `upload --drop` — drop zones with no file input
+
+`upload` sets a real `<input type=file>`, which is the correct and reliable path whenever one exists — including the hidden input behind most styled drop zones.
+Some apps have no input at all: the only affordance is a `div` with a `drop` listener.
+`--drop` targets those.
+
+```sh
+chrome-cdp upload --drop "[data-testid=dropzone]" ./report.pdf
+chrome-cdp upload --drop-at 400,300 ./report.pdf
+```
+
+**The files are real; only the drag is synthesized.**
+A temporary hidden input is injected, the files are attached to it with the same CDP call the ordinary path uses, and page JS moves those `File` objects into a `DataTransfer` before dispatching `dragenter` → `dragover` → `drop`.
+A handler therefore sees genuine files whichever way it reads them — `dataTransfer.files`, `dataTransfer.items`, `items[0].getAsFile()`, or the `dataTransfer.types` `"Files"` guard most libraries gate on.
+The temporary input and its marker attribute are removed before the call returns, including when a handler throws.
+
+The result reports **`drop_handled`**:
+
+```json
+{ "ok": true, "command": "upload",
+  "result": { "mode": "drop", "count": 1, "drop_handled": true,
+              "dropped_on": {"tag": "div", "name": "Upload files"},
+              "files": [{"name": "report.pdf", "size": 48213, "type": "application/pdf"}] } }
+```
+
+A drop handler that means to accept files calls `preventDefault`, so an uncancelled drop means nothing consumed it — the files went nowhere.
+That is reported as `drop_handled: false` with an explanatory `note`, at exit 0, because the dispatch itself succeeded; it is the difference between "delivered" and "dispatched into the void", and the usual cause is addressing the wrong element.
+
+`--drop` takes no selector argument — every positional is a path.
+It does not combine with `--append` (a drop delivers a fresh set each time), and the `upload_roots` allow-list bounds it exactly as it bounds a file input: a drop is still a file leaving the machine.
 
 #### Acting at a coordinate — `--at x,y`
 

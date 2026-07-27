@@ -23,6 +23,7 @@ import (
 
 func (a *App) cmdUpload() *cobra.Command {
 	var appendFiles bool
+	var drop, dropAt string
 	c := &cobra.Command{
 		Use:   "upload <selector> <path> [<path>...]",
 		Short: "Attach local files to a file input (never opens the OS file dialog)",
@@ -37,18 +38,54 @@ func (a *App) cmdUpload() *cobra.Command {
 			"hidden.\n\n" +
 			"  chrome-cdp upload --by label \"Receipt\" ./receipt.pdf\n" +
 			"  chrome-cdp upload \"#attachments\" a.pdf b.png c.csv\n" +
-			"  chrome-cdp upload \"input[type=file]\" ~/docs/report.pdf --wait-text \"Uploaded\"",
+			"  chrome-cdp upload \"input[type=file]\" ~/docs/report.pdf --wait-text \"Uploaded\"\n\n" +
+			"--drop targets an element that has NO file input behind it — the drop zone\n" +
+			"many apps now offer instead. The files are real (attached via CDP, then moved\n" +
+			"into a DataTransfer); only the drag events are synthesized. The result reports\n" +
+			"`drop_handled`, because a drop nothing consumed looks identical to one that\n" +
+			"worked:\n\n" +
+			"  chrome-cdp upload --drop \"[data-testid=dropzone]\" ./report.pdf\n" +
+			"  chrome-cdp upload --drop-at 400,300 ./report.pdf",
 		Args: cobra.ArbitraryArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			switch len(args) {
-			case 0:
+			// The drop forms address a target that is not a file input, so they
+			// take the paths as ALL the positional args — there is no selector
+			// among them.
+			dropForm := drop != "" || dropAt != ""
+			var selector string
+			var pathArgs []string
+			switch {
+			case dropForm && drop != "" && dropAt != "":
+				a.emitErr("upload", result.CodeUsage, "upload takes --drop <selector> or --drop-at x,y, not both", nil)
+				return nil
+			case dropForm && len(args) == 0:
+				a.emitErr("upload", result.CodeUsage, "no paths given: upload --drop <selector> <path> [<path>...]", nil)
+				return nil
+			case dropForm:
+				pathArgs = args
+			case len(args) == 0:
 				a.emitErr("upload", result.CodeUsage, "upload needs a selector and at least one file path: upload <selector> <path> [<path>...]", nil)
 				return nil
-			case 1:
+			case len(args) == 1:
 				a.emitErr("upload", result.CodeUsage, "no paths given: upload <selector> <path> [<path>...]", nil)
 				return nil
+			default:
+				selector, pathArgs = args[0], args[1:]
 			}
-			paths, rerr := resolveUploadPaths(args[1:], a.uploadRoots(), homeDir())
+			var dropPoint *chrome.Point
+			if dropAt != "" {
+				p, perr := parsePoint(dropAt)
+				if perr != nil {
+					a.emitErr("upload", result.CodeUsage, "--drop-at "+perr.Error(), nil)
+					return nil
+				}
+				dropPoint = &p
+			}
+			if dropForm && appendFiles {
+				a.emitErr("upload", result.CodeUsage, "--append applies to a file input; a drop delivers a fresh set of files each time", nil)
+				return nil
+			}
+			paths, rerr := resolveUploadPaths(pathArgs, a.uploadRoots(), homeDir())
 			if rerr != nil {
 				a.emitErr("upload", rerr.Code, rerr.Message, rerr.Details)
 				return nil
@@ -61,10 +98,16 @@ func (a *App) cmdUpload() *cobra.Command {
 			if !cmd.Flags().Changed("wait") {
 				q.Wait = "ready"
 			}
-			a.runUpload(args[0], paths, chrome.UploadOpts{Append: appendFiles, Query: q})
+			a.runUpload(selector, paths, chrome.UploadOpts{
+				Append: appendFiles, Drop: drop, DropAt: dropPoint, Query: q,
+			})
 			return nil
 		},
 	}
+	c.Flags().StringVar(&drop, "drop", "",
+		"deliver the files by drag-and-drop onto this element instead of a file input — for drop zones with no <input type=file> behind them")
+	c.Flags().StringVar(&dropAt, "drop-at", "",
+		"deliver the files by drag-and-drop at this viewport coordinate \"x,y\"")
 	c.Flags().BoolVar(&appendFiles, "append", false,
 		"add to the files THIS session set on the input, instead of replacing them (refused when the input's current files are unknown)")
 	return a.withWaitText(c)

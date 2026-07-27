@@ -81,6 +81,9 @@ Clean up after yourself: **`close`** the tabs you opened, since this is the user
   Coordinates are CSS pixels and match a `screenshot --scale 1` capture 1:1, so the loop is: `screenshot --scale 1` → read the pixel → `click --at x,y`.
   Outside the viewport is an error (`coordinate_out_of_bounds`, exit 4) with the measured viewport, never a silent clamp — `scroll` first, then act.
   The result carries `hit` (what sat under the point), because a coordinate click is deliberately not occlusion-checked.
+- **`upload --drop "<sel>" <path>`** (or `--drop-at x,y`) — for a drop zone with NO `<input type=file>` behind it.
+  Prefer plain `upload "<sel>" <path>` whenever an input exists (including the hidden one behind most styled drop zones); `--drop` is for the apps that have none.
+  Check `drop_handled` in the result: `false` means nothing consumed the drop (you addressed the wrong element) even though the command succeeded.
 - **`window size <w> <h>` / `window info`** — the REAL Chrome window, unlike `emulate viewport` which only lies to the page.
   Set it before a coordinate workflow so pixel coordinates are reproducible across runs.
 - **`value --all "<css>"`** — the value/text of every match as a list (a whole row of hour cells, a set of pills) in one call.

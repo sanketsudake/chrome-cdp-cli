@@ -469,17 +469,33 @@ func uploadTool() *tool {
 			"Paths must be absolute, existing and readable, and are checked before Chrome is contacted; under a configured policy they must also sit under a configured `upload_roots` directory. The result reports the files read back off the input, so a silent no-op is visible." + addressingHelp,
 		verbs: []string{"upload"},
 		args: concat([]arg{
-			{name: "selector", typ: "string", pos: true, required: true, desc: "the file input (see Addressing)."},
+			{name: "selector", typ: "string", pos: true, desc: "the file input (see Addressing). Required unless `drop`/`drop_at` is given."},
+			{name: "drop", typ: "string", flag: "drop",
+				desc: "deliver the files by drag-and-drop onto this element instead of a file input — for drop zones with no <input type=file> behind them. The files are real; only the drag events are synthesized."},
+			{name: "drop_at", typ: "string", flag: "drop-at",
+				desc: "deliver the files by drag-and-drop at this viewport coordinate \"x,y\"."},
 			{name: "paths", typ: "array", items: "string", pos: true, required: true, desc: "absolute paths of the files to attach."},
 			{name: "append", typ: "boolean", flag: "append", desc: "add to the files this session set on the input instead of replacing them."},
 		}, actArgs()[:1], queryArgs(), targetArgs()),
 		build: func(c *call) (string, []string, []string, error) {
+			hasSel, hasDrop := c.has("selector"), c.has("drop") || c.has("drop_at")
+			switch {
+			case hasSel && hasDrop:
+				return "", nil, nil, usagef("upload takes `selector` or `drop`/`drop_at`, not both — a drop addresses a target with no file input")
+			case !hasSel && !hasDrop:
+				return "", nil, nil, usagef("upload needs `selector`, or `drop`/`drop_at` to deliver onto a drop zone")
+			}
 			paths, err := c.stringList("paths")
 			if err != nil {
 				return "", nil, nil, err
 			}
 			if len(paths) == 0 {
 				return "", nil, nil, usagef("upload needs at least one path in `paths`")
+			}
+			// The drop form has no selector among the positionals: the CLI reads
+			// every positional as a path there.
+			if hasDrop {
+				return "upload", c.flags("selector", "paths"), paths, nil
 			}
 			return "upload", c.flags("selector", "paths"), append([]string{c.str("selector")}, paths...), nil
 		},

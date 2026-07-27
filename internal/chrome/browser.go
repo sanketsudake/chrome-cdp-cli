@@ -165,6 +165,17 @@ type UploadOpts struct {
 	// a usage error rather than a guess.
 	Append bool
 
+	// Drop delivers the files by synthesized drag-and-drop onto an element
+	// instead of setting a file input's FileList — for the growing number of
+	// apps whose only upload affordance is a drop zone with no <input
+	// type=file> behind it. DropAt does the same at a viewport coordinate.
+	//
+	// The events are synthesized but the File objects are real: they come from
+	// DOM.setFileInputFiles on a temporary hidden input, so a handler reading
+	// dataTransfer.files gets genuine file data, not a stub.
+	Drop   string
+	DropAt *Point
+
 	Query QueryOpts
 }
 
