@@ -6,6 +6,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -125,6 +126,169 @@ func TestConsoleStreamRPCPropagatesAFailure(t *testing.T) {
 	// halfway has still told the caller something true.
 	if n != 1 {
 		t.Errorf("emitted %d values before the failure, want 1", n)
+	}
+}
+
+// blockingStreamBrowser holds a stream open until its context ends, and reports
+// when the stream started and stopped — the shape of a real `--follow` on a page
+// that says nothing.
+type blockingStreamBrowser struct {
+	chrometest.StubBrowser
+	started chan struct{}
+	stopped chan struct{}
+	once    sync.Once
+}
+
+func (b *blockingStreamBrowser) Console(context.Context, string, chrome.ConsoleOpts) (any, error) {
+	return map[string]any{"messages": []any{}, "count": 0}, nil
+}
+
+func (b *blockingStreamBrowser) ConsoleStream(ctx context.Context, _ string, _ chrome.ConsoleOpts, _ func(any) error) error {
+	b.once.Do(func() { close(b.started) })
+	<-ctx.Done()
+	close(b.stopped)
+	return nil
+}
+
+// THE regression test for the streaming mutex.
+//
+// A --follow stream runs for as long as the caller asked; holding the dispatch
+// mutex for that whole window made `console --follow` in one terminal wedge
+// `click` in another for the full --timeout. That defeats the literal user story
+// the feature exists for (RFC-0002 US-2, "watch console output WHILE I exercise
+// the page"), and it is invisible until two terminals are open at once.
+func TestAStreamDoesNotBlockUnaryCalls(t *testing.T) {
+	b := &blockingStreamBrowser{started: make(chan struct{}), stopped: make(chan struct{})}
+	c := serveBrowser(t, b)
+	rb := Remote(c)
+
+	streamCtx, cancelStream := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancelStream()
+	done := make(chan error, 1)
+	go func() {
+		done <- rb.ConsoleStream(streamCtx, "aa11", chrome.ConsoleOpts{}, func(any) error { return nil })
+	}()
+
+	select {
+	case <-b.started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the stream never reached the browser")
+	}
+
+	// With the stream in flight, an ordinary read must still be answered
+	// promptly — it is a different command in a different terminal.
+	start := time.Now()
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+	defer cancel()
+	if _, err := rb.Console(ctx, "aa11", chrome.ConsoleOpts{}); err != nil {
+		t.Fatalf("a unary Console during a live stream failed: %v", err)
+	}
+	if took := time.Since(start); took > time.Second {
+		t.Fatalf("a unary call waited %v for a live --follow to finish; "+
+			"streaming must not hold the mutex that serialises unary dispatch", took)
+	}
+	cancelStream()
+	<-done
+}
+
+// A Ctrl-C'd --follow must be noticed when the client goes away, not when the
+// daemon next writes — which on a quiet page is never, so the stream held on for
+// the client's whole TimeoutMs after nobody was left to read it.
+func TestAStreamEndsWhenTheClientHangsUp(t *testing.T) {
+	b := &blockingStreamBrowser{started: make(chan struct{}), stopped: make(chan struct{})}
+	c := serveBrowser(t, b)
+
+	// Dial by hand: the point is a client that disappears mid-stream, which the
+	// Remote wrapper has no way to express.
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	conn, err := c.dial(ctx, "ConsoleStream", []any{"aa11", chrome.ConsoleOpts{}})
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	select {
+	case <-b.started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the stream never reached the browser")
+	}
+	_ = conn.Close()
+
+	select {
+	case <-b.stopped:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the stream outlived its client: a Ctrl-C'd --follow on a quiet page " +
+			"would hold the daemon for the client's whole timeout")
+	}
+}
+
+// A stream must keep the idle timer alive. The timer is otherwise reset only on
+// Accept, which a stream does exactly once — so a --follow longer than the idle
+// window had the listener closed under it, and the client saw EOF, exit 0, and
+// no indication it had been cut short.
+func TestALiveStreamHoldsOffTheIdleTimeout(t *testing.T) {
+	b := &blockingStreamBrowser{started: make(chan struct{}), stopped: make(chan struct{})}
+	dir, err := os.MkdirTemp("", "cdpd")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	sock := filepath.Join(dir, "d.sock")
+	ln, err := net.Listen("unix", sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+
+	s := &server{b: b, activity: make(chan struct{}, 1), stopCh: make(chan struct{}), pingEvery: 50 * time.Millisecond}
+	pings := make(chan struct{}, 8)
+	// Stand in for the idle goroutine, so the test asserts on the ping rather
+	// than on a real 30-minute window.
+	go func() {
+		for {
+			select {
+			case <-s.activity:
+				select {
+				case pings <- struct{}{}:
+				default:
+				}
+			case <-s.stopCh:
+				return
+			}
+		}
+	}()
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			s.ping()
+			go s.handle(conn)
+		}
+	}()
+	t.Cleanup(s.stop)
+
+	c := &Client{path: sock}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	conn, err := c.dial(ctx, "ConsoleStream", []any{"aa11", chrome.ConsoleOpts{}})
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.Close()
+	select {
+	case <-b.started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the stream never reached the browser")
+	}
+	<-pings // the Accept ping
+
+	// The stream itself must go on reporting activity.
+	select {
+	case <-pings:
+	case <-time.After(5 * time.Second):
+		t.Fatal("a live stream never pinged the idle timer; a --follow longer than the idle " +
+			"window would have its listener closed mid-stream")
 	}
 }
 

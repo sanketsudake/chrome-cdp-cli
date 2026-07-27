@@ -49,6 +49,11 @@ type server struct {
 	activity chan struct{} // activity pings, to reset the idle timer
 	stopCh   chan struct{}
 	stopOnce sync.Once
+
+	// pingEvery is how often a live stream reports itself to the idle timer.
+	// Zero means defaultStreamPing; a test sets it so it can assert on the
+	// behaviour without waiting out a production interval.
+	pingEvery time.Duration
 }
 
 func (s *server) stop() { s.stopOnce.Do(func() { close(s.stopCh) }) }
@@ -121,18 +126,91 @@ func (s *server) handle(conn net.Conn) {
 		ctx, cancel = context.WithTimeout(ctx, time.Duration(req.TimeoutMs)*time.Millisecond)
 		defer cancel()
 	}
-	s.mu.Lock()
-	// A streaming method writes its own responses as they arrive; a unary one
-	// answers once. Both hold the dispatch mutex for their whole run, exactly
-	// as a long `wait` already does.
-	if handled, serr := s.streamDispatch(ctx, conn, req.Method, req.Args); handled {
-		s.mu.Unlock()
+	// A STREAMING method runs for the client's whole --follow window, so it must
+	// NOT hold the mutex that serialises unary calls: holding it made
+	// `console --follow` in one terminal wedge `click` in another for the full
+	// timeout, which defeats the user story the feature exists for (RFC-0002
+	// US-2, "watch console output WHILE I exercise the page").
+	//
+	// Dropping the mutex here is safe because a stream is not the kind of thing
+	// the mutex protects. It exists so multi-step chromedp action sequences on
+	// one connection do not interleave; a stream issues one idempotent domain
+	// enable, then only reads event buffers that hold their own locks. The
+	// attach it may trigger is serialised by the CDP object's own mutex, and
+	// chromedp targets are safe for concurrent use. See streamDispatch.
+	if isStreamMethod(req.Method) {
+		ctx, cancel := context.WithCancel(ctx)
+		defer cancel()
+		// A --follow stream is the one call that can outlive the idle window,
+		// and the one that has to notice its client leaving.
+		go s.pingWhile(ctx)
+		go watchHangup(ctx, conn, cancel)
+		_, serr := s.streamDispatch(ctx, conn, req.Method, req.Args)
 		finishStream(conn, serr)
 		return
 	}
+	s.mu.Lock()
 	res, err := s.dispatch(ctx, req.Method, req.Args)
 	s.mu.Unlock()
 	reply(conn, res, err)
+}
+
+// defaultStreamPing is how often a live stream reports itself to the idle timer.
+// Well under any sane idle window, so a long --follow cannot have the listener
+// closed from under it: the client would see EOF, the stream would return nil,
+// and the command would exit 0 with no indication it had been cut short.
+const defaultStreamPing = 30 * time.Second
+
+// pingWhile keeps the idle timer alive for as long as a stream is running. The
+// timer is otherwise reset only on Accept, which a stream does exactly once.
+func (s *server) pingWhile(ctx context.Context) {
+	every := s.pingEvery
+	if every <= 0 {
+		every = defaultStreamPing
+	}
+	t := time.NewTicker(every)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			s.ping()
+		}
+	}
+}
+
+// watchHangup cancels a stream when its client goes away.
+//
+// The protocol is one request per connection, so the client never writes again:
+// any read that completes means the far end closed. Without this a Ctrl-C'd
+// --follow is noticed only when the daemon next WRITES to the socket — which on
+// a quiet page is never, so the stream ran for the client's whole TimeoutMs
+// after nobody was left to read it.
+func watchHangup(ctx context.Context, conn net.Conn, cancel context.CancelFunc) {
+	defer cancel()
+	buf := make([]byte, 1)
+	for {
+		if _, err := conn.Read(buf); err != nil {
+			return
+		}
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+	}
+}
+
+// isStreamMethod reports whether a method is served by streamDispatch. It is the
+// same list, kept next to it deliberately: a method that streams but is not
+// named here would take the dispatch mutex for its whole window.
+func isStreamMethod(method string) bool {
+	switch method {
+	case "ConsoleStream", "NetStream":
+		return true
+	}
+	return false
 }
 
 // reply writes a Response for a dispatch result to conn.
@@ -156,8 +234,12 @@ func reply(conn net.Conn, res any, err error) {
 // Each emitted value is written as its own Response on the same connection;
 // finishStream writes the terminator.
 //
-// It reports false for anything that is not a streaming method, so the caller
-// falls through to dispatch.
+// It runs WITHOUT the dispatch mutex (see handle) and must stay that way: it is
+// the only dispatch path whose duration is the caller's choice rather than the
+// action's.
+//
+// It reports false for anything that is not a streaming method; isStreamMethod
+// is the same list, and the two must agree.
 func (s *server) streamDispatch(ctx context.Context, conn net.Conn, method string, args []json.RawMessage) (bool, error) {
 	enc := json.NewEncoder(conn)
 	emit := func(v any) error {
