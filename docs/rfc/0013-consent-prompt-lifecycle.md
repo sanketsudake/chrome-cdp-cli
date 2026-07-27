@@ -62,6 +62,7 @@ As a user, I want a tool that asks for consent to still be there when I answer, 
 **US-2 — Tell me what is happening.**
 As a user staring at an unresponsive browser, I want to be told a consent prompt is pending and where to find it, so that I know this is a dialog and not a crash.
 *Acceptance:* while the upgrade is hanging, the CLI reports a distinct pending state naming the prompt, not a generic connection failure.
+This holds on every path that can wait: the daemon, `--no-daemon`, and a second command queued behind the first — which says it is queueing rather than blocking in silence.
 
 **US-3 — Do not ask at all when you do not have to.**
 As a user, I want to be steered to the launch flag that skips consent entirely, so that routine use never involves a modal.
@@ -73,7 +74,9 @@ As a user whose browser is already wedged, I want to be told the actual remedy, 
 
 **US-5 — One prompt, not many.**
 As a user running several commands at once, I want at most one consent request.
-*Acceptance:* covered by #17; this RFC keeps it true.
+*Acceptance:* covered by #17 for concurrent spawns; this RFC keeps it true across the wait as well.
+Serialising the spawn only guarantees one prompt *at a time*: without more, each queued caller in turn cleared the previous verdict and raised its own, so eight commands became eight sequential prompts.
+A `consent_pending` verdict is inherited by callers released within a few seconds of it, so a queue drains on one answer.
 
 ## Proposed changes
 
@@ -94,10 +97,21 @@ That last clause is the part a user cannot deduce, and is why a frozen browser r
 
 ### 3. Make `doctor` probe
 
-`doctor` must attempt the upgrade rather than trusting the port file, and report one of: no endpoint, consent pending, or ready.
+`doctor` must attempt the upgrade rather than trusting the port file, and report one of: no endpoint, consent pending, or ready (plus `unverified`, which is what `--no-probe` reports and is explicitly not an answer).
 A diagnostic that reports readiness without testing it is worse than no diagnostic, because it sends the user looking somewhere else.
 
 Probing is itself a connection request, so `doctor` must reuse a live daemon when one exists rather than raising a prompt of its own.
+"Live" means the daemon has just completed a round trip to Chrome, not that its socket answered: the socket outlives the connection by up to the daemon's whole idle window, so `running: true` is the same unverified claim as the port file, one level up.
+
+Two consequences of `doctor` being the first thing many callers run:
+
+- It reports a **count** of open tabs, never their titles or URLs.
+  The Agent Skill makes `doctor --json` step 1 of every session, and a diagnostic that answers "can I connect?" with a list of the user's OAuth callbacks and reset tokens is answering a question nobody asked.
+- A `ready` reached by probing says what it cost.
+  The probe closes its own connection, so on the toggle path the next command is a fresh attach and prompts again — a verdict falsified by the act of producing it, unless it is disclosed.
+
+`doctor` resolves `--port` like every other verb.
+Diagnosing a different browser than the one the flag names is the same class of error as diagnosing one nobody connected to.
 
 ### 4. Prefer the path that never prompts
 
@@ -120,9 +134,17 @@ Given a listener that never completes the upgrade, when `consent_timeout` elapse
 
 **VS-5 — `doctor` distinguishes all three states.**
 Table over: no endpoint, open-but-hanging, and ready — each reported distinctly, and the ready case verified by a completed upgrade rather than by the port file alone.
+"Verified" excludes every proxy for a completed round trip, including a daemon that is merely running.
 
 **VS-6 — `doctor` does not raise its own prompt.**
 Given a running daemon, when `doctor` runs, then it answers through the daemon and initiates no new connection.
+
+**VS-8 — the probe reads what it is owed and no more.**
+Given a listener that accepts and then streams bytes with no newline, the probe classifies it as refused at its read limit rather than accumulating for the whole consent budget.
+Chrome's debug port is a loopback port any local process can bind, and the budget this RFC introduces is what turns an unbounded read into gigabytes.
+
+**VS-9 — a 101 that is not our handshake is not ready.**
+Given a listener answering `101` without a valid `Sec-WebSocket-Accept` for the key we sent, the endpoint is classified refused.
 
 **VS-7 — Concurrency stays at one prompt.**
 The guard from #17, restated here so this RFC's changes cannot regress it.
@@ -154,5 +176,7 @@ Note for anyone extending this: a long `t.TempDir()` path breaks a Unix socket b
 2. Is 120s the right consent timeout?
    Long enough for a hidden dialog, short enough that a genuinely dead endpoint is not mistaken for a slow human.
    **Recommendation:** 120s, as a config key so it can be argued with.
+   **Resolved:** 120s, clamped to `[1s, 10m]` and normalised once where flag, environment and config file resolve.
+   The clamp is not tidiness: `0s` meant "the default" to one layer and "do not wait" to another, which restored the orphaned-prompt failure through the parameter's own zero value, and an inherited `CHROME_CDP_CONSENT_TIMEOUT=8760h` would hold the spawn lock — and therefore every other command — for a year.
 3. Should `doctor` be able to probe *without* a daemon, accepting that it may raise a prompt?
    **Recommendation:** yes, but say so before doing it, since the user ran a diagnostic and did not ask to connect.

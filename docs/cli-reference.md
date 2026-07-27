@@ -878,7 +878,7 @@ chrome-cdp raw Browser.getVersion --browser                  # browser-level met
 
 | Command | Does |
 |---------|------|
-| `doctor` | probe the connection, report `no_endpoint` \| `consent_pending` \| `ready`, and print the exact fix (`--no-probe` to connect to nothing) |
+| `doctor` | probe the connection, report `ready` \| `consent_pending` \| `no_endpoint` \| `unverified`, and print the exact fix (`--no-probe` to connect to nothing) |
 | `daemon start\|stop\|status` | manage the background connection |
 | `policy init` | write a starter [`[policy]`](#policy) table allow-listing the current tab's origin (`--wildcard`, `--print`, `-o`) |
 | `exit-codes` | print the exit-code table |
@@ -923,19 +923,35 @@ Three things about it are worth knowing before it happens:
 If the wait runs out you get exit 3 with `error.code: consent_pending` and a message naming the dialog.
 A **refused** endpoint is unaffected by any of this and still fails in milliseconds — only an open port whose upgrade is hanging earns the long wait.
 
+While the prompt is up, `chrome-cdp` says so on stderr rather than waiting silently, on the daemon path and with `--no-daemon` alike.
+A second command started during the wait says that it is queueing behind the first rather than opening a second connection, and if the first gives up with `consent_pending` the ones behind it inherit that answer instead of each raising a fresh prompt.
+
+`--consent-timeout` (config key `consent_timeout`) is clamped to between `1s` and `10m`.
+`0s` or a negative value means the 120s default rather than "do not wait", which would abandon the prompt the moment it was raised; the ceiling exists because the value is also how long a queued command can be held up.
+
 ### `doctor`
 
-`chrome-cdp doctor` answers "can I connect?" by connecting, and reports one of three states:
+`chrome-cdp doctor` answers "can I connect?" by connecting, and reports one of four states:
 
 | `state` | Means | Envelope |
 |---------|-------|----------|
-| `ready` | the WebSocket upgrade completed | `ok: true` |
+| `ready` | the WebSocket upgrade completed, or a running daemon answered a live CDP round trip | `ok: true` |
 | `consent_pending` | the port accepted and went silent — Chrome is holding the prompt | exit 3, `consent_pending` |
 | `no_endpoint` | nothing usable answered (no port file, a stale one, or another process on the port) | exit 3, `connection_failed` |
+| `unverified` | `--no-probe`: an endpoint exists and nothing was checked | `ok: true` |
 
-When the daemon is running, `doctor` answers **through it** (`via: "daemon"`) and opens no new connection — probing is itself a connection request, and on the toggle path that is what raises the prompt.
+When the daemon is running AND it has just proved its connection to Chrome, `doctor` answers **through it** (`via: "daemon"`) and opens no new connection — probing is itself a connection request, and on the toggle path that is what raises the prompt.
+A daemon that is merely *running* is not an answer: it holds its socket for its whole idle window, so quitting Chrome leaves a reachable daemon with a dead connection behind it, and `doctor` falls through to the probe rather than reporting ready.
 Otherwise it says on stderr that it is about to connect, then probes (`via: "probe"`).
 `--no-probe` reports only what the port file says, clearly marked `state: "unverified"`.
+
+`doctor` honours `--port` like every other verb: `doctor --port 9333` diagnoses the Chrome on that port, not whichever one the `DevToolsActivePort` file names.
+
+A `ready` verdict reached by probing says so: the probe's own connection is closed once it has its answer, so on the toggle path the next command is a fresh attach and can prompt again.
+Run `chrome-cdp daemon start` to be asked once per session instead.
+
+The result carries `state`, `via`, `probed`, and the endpoint it looked at (`endpoint`, plus `port_file` and `ws` where they apply).
+The daemon-backed answer adds `running`, `connected`, `socket`, and `target_count` — a **count**, not the tab list: `doctor --json` is the first thing many callers run, and open tab titles and URLs are not an answer to "can I connect?".
 
 ## Policy
 
@@ -1098,7 +1114,7 @@ Persist flags you'd otherwise retype in `$XDG_CONFIG_HOME/chrome-cdp/config.toml
 ```toml
 json = true            # default to machine-readable output
 timeout = "10s"
-consent_timeout = "2m" # how long to wait for Chrome's consent prompt
+consent_timeout = "2m" # how long to wait for Chrome's consent prompt (1s-10m; 0 means the 120s default)
 by = "search"          # default selector syntax
 target = "url:github"  # default tab when neither --target nor `use` is set
 ```

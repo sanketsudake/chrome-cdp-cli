@@ -15,7 +15,7 @@ Because it drives the real profile, live logins are reused: **type no credential
 ## Setup (once)
 
 1. Confirm the binary and connection: `chrome-cdp doctor --json`.
-   It probes for real (or answers through a running daemon) and reports `result.state` / `error.state`:
+   It probes for real (or answers through a daemon that has just proved its connection) and reports `result.state` / `error.state`:
    - `ready` → proceed.
    - `consent_pending` → Chrome is holding an **"Allow remote debugging?"** dialog.
      Tell the user it is **modal to the whole browser**, that it can sit **behind** the Chrome window, and that Chrome will accept no other input until they click Allow — a browser that looks frozen is this dialog, not a crash.
@@ -23,14 +23,20 @@ Because it drives the real profile, live logins are reused: **type no credential
    - `no_endpoint` → ask the user to relaunch Chrome with **`--remote-debugging-port=9222`** (`open -a "Google Chrome" --args --remote-debugging-port=9222` on macOS), which never prompts.
      Only if they must attach to an already-running default-profile Chrome, have them enable **`chrome://inspect/#remote-debugging`** — that path prompts on every fresh attach.
      Do **not** work around consent.
+   - `unverified` → only from `--no-probe`; nothing was checked, so it is not an answer.
+
+   `doctor` reports the endpoint it looked at and, on the daemon path, a `target_count`.
+   It does not report open tab titles or URLs, so this step tells you whether you can connect and nothing about what the user has open.
+   Use `tabs --json` when you actually need the tab list.
 2. A background daemon holds the connection, so the consent prompt appears once per session, not per command.
    It starts on first use.
    `chrome-cdp daemon status --json` shows it; `--no-daemon` bypasses it.
 3. **Avoid re-triggering the consent prompt.**
    On the `chrome://inspect` path a fresh attach (the first command after `daemon stop`, or after a Chrome restart) re-shows the prompt.
    Keep the daemon alive — don't `daemon stop` mid-session.
-   The CLI now **waits** for the prompt rather than abandoning it: it holds the connection open for `--consent-timeout` (default 120s) and connects the moment Allow is clicked, so a late answer still works.
+   The CLI now **waits** for the prompt rather than abandoning it: it holds the connection open for `--consent-timeout` (default 120s, clamped to 1s-10m) and connects the moment Allow is clicked, so a late answer still works.
    If it runs out you get exit 3 with `error.code: consent_pending`; the recovery is to click Allow and retry, not to restart Chrome.
+   Do not retry in a loop while a prompt is pending: a retry started within a few seconds of a `consent_pending` inherits that answer rather than asking again, and one started later raises a second dialog at a browser that is already holding one.
    Launching Chrome with `--remote-debugging-port=9222` skips the prompt entirely — prefer recommending that.
 
 ## The loop
