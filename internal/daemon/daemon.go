@@ -286,8 +286,20 @@ func (s *server) dispatch(ctx context.Context, method string, args []json.RawMes
 		// `doctor --json`, which the Agent Skill runs as step 1 of every
 		// session — that is a transcript full of OAuth callbacks and reset
 		// tokens for a question that was only ever "can I connect?".
+		//
+		// The daemon's own build goes out with the answer. A daemon outlives
+		// the binary that spawned it, so after an upgrade -- or a rebuild
+		// during development -- the process actually serving every command is
+		// running the OLD code while `chrome-cdp version` reports the new one.
+		// Nothing observable distinguishes the two, so a fix that has already
+		// landed can appear not to work at all. The caller compares this
+		// against its own version and says so.
 		tabs, err := b.List(ctx)
-		return map[string]any{"connected": err == nil, "target_count": len(tabs)}, nil
+		return map[string]any{
+			"connected":    err == nil,
+			"target_count": len(tabs),
+			"version":      BuildVersion,
+		}, nil
 	case "List":
 		return b.List(ctx)
 	case "Open":
@@ -579,7 +591,14 @@ func (c *Client) Status() error {
 	return c.call(ctx, "__status", nil)
 }
 
-// StatusInfo returns the daemon's status payload: {connected, target_count}.
+// BuildVersion is the version of the binary this daemon process is running,
+// set by main from the same ldflags-injected value the CLI reports. It travels
+// in every __status answer so a caller can notice it is talking to a daemon
+// older than itself -- see the __status dispatch for why that is worth saying
+// out loud.
+var BuildVersion = "dev"
+
+// StatusInfo returns the daemon's status payload: {connected, target_count, version}.
 func (c *Client) StatusInfo() (map[string]any, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()

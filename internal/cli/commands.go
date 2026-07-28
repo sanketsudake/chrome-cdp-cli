@@ -838,6 +838,37 @@ func (a *App) withWaitText(c *cobra.Command) *cobra.Command {
 	return c
 }
 
+// withDaemonVersionSkew annotates a daemon status payload when the daemon is
+// running a different build from the CLI asking.
+//
+// A daemon outlives the binary that spawned it: it is started on first use and
+// then held for the rest of the session, so an upgrade — or a rebuild while
+// working on this tool — leaves the OLD process serving every command while
+// `chrome-cdp version` reports the new one. Nothing observable distinguishes
+// the two, and because commands forward over the socket, a fix that has
+// genuinely landed can appear to have no effect at all. Saying it costs one
+// field and removes a whole class of wasted debugging.
+//
+// Only a KNOWN mismatch is reported. A daemon predating this field sends no
+// version, and "unknown" is not "stale" — claiming skew there would be the same
+// unverified assertion this avoids.
+func withDaemonVersionSkew(res map[string]any) map[string]any {
+	if res == nil {
+		return res
+	}
+	dv, ok := res["version"].(string)
+	if !ok || dv == "" || dv == Version {
+		return res
+	}
+	res["stale"] = true
+	res["cli_version"] = Version
+	res["status"] = "this daemon is running " + dv + " but the CLI is " + Version +
+		" — it was started by an older binary and is still serving every command, " +
+		"so changes in the newer build are not in effect; restart it with " +
+		"`chrome-cdp daemon stop` (the next command starts a fresh one)"
+	return res
+}
+
 func (a *App) cmdDaemon() *cobra.Command {
 	daemon := &cobra.Command{Use: "daemon", Short: "Manage the background CDP connection"}
 	emit := func(res map[string]any, err error) {
@@ -877,7 +908,8 @@ func (a *App) cmdDaemon() *cobra.Command {
 					a.emitOK("daemon", nil, map[string]any{"mode": "direct-connect"})
 					return nil
 				}
-				emit(a.daemonStatus(a.connOpts()))
+				res, err := a.daemonStatus(a.connOpts())
+				emit(withDaemonVersionSkew(res), err)
 				return nil
 			},
 		},

@@ -38,6 +38,10 @@ func main() {
 			RecordBuffer:    env.RecordBuffer,
 			RecordMaxBytes:  env.RecordMaxBytes,
 		}
+		// Report the build we are actually running, so a caller talking to a
+		// daemon left over from an older binary is told rather than left to
+		// wonder why a landed fix has no effect.
+		daemon.BuildVersion = cli.Version
 		if err := daemon.RunDaemon(os.Args[2], opts, 30*time.Minute); err != nil {
 			fmt.Fprintln(os.Stderr, "chrome-cdp daemon:", err)
 			os.Exit(1)
