@@ -51,6 +51,12 @@ list ─▶ use ─▶ snap ─▶ act ─▶ verify
 1. **`list`** — enumerate tabs (`id`, `title`, `url`); pick the one you want (`list --url <substr>` / `--title <substr>` filters, so you don't grep the whole list).
    No tab for the app yet?
    **`open <url>`** creates one, navigates, returns its id, and makes it current.
+   **Known bug — `open` does not wait for the navigation.**
+   It returns as soon as the target is created, so it reports the URL it was ASKED for rather than the tab's actual location, and the tab can still be on `about:blank`.
+   A `wait --idle` run immediately after therefore settles on `about:blank`, because nothing is in flight yet.
+   `nav` is unaffected — it waits for load and reports the observed location.
+   Follow `open` with `wait --url "<substr>"` (a condition tied to the destination), not `wait --idle`.
+   The fix is not a one-liner and is deliberately not in yet: the only reliable "has it loaded" signal needs a page attach, and attaching inside `open` would start `console`/`net` capture early and destroy the pre-attach backlog those verbs exist to recover.
 2. **`use <target>`** — set the sticky current tab (or pass `--target` per command).
    Target grammar: `idprefix | url:<substr> | title:<substr> | @N`.
 3. **`snap`** — accessibility-tree snapshot: the reliable way to *see* actionable controls by role + accessible name (it crosses shadow DOM and iframes).
@@ -83,7 +89,9 @@ Clean up after yourself: **`close`** the tabs you opened, since this is the user
 - **`grid [selector]`** — read a table/grid as `{headers, rows, count}` from the accessibility structure.
   Use this for the calendar / task-list / timesheet grids instead of hand-parsing `snap` or screenshotting.
   `selector` optionally picks the grid by accessible name; empty = the first grid.
-- `text "<sel>"` / `html "<sel>"` — text / outer-HTML of a selector (or the page).
+- `text "<sel>"` — text of a selector; a selector is required.
+  Running `text` with none is a usage error (`text needs a selector, or --article to extract the page's main content`) — use `--article` for the whole page (below).
+- `html "<sel>"` — outer-HTML of a selector (or the page).
 - **`text --article`** (add `--markdown` to keep headings/lists/links) — the page's main readable content, Reader-Mode style: navigation, footers, and cookie banners dropped.
   Use it to *read* a documentation page, article, or long confluence/wiki page instead of dumping `html` or a full `snap`.
   It is honest about the heuristic: below `--min-chars` it returns the FULL page text with `extracted: false` and a `reason`, never a plausible-looking fragment.
@@ -100,6 +108,9 @@ The action verbs, beyond `click`/`type`/`fill`/`select`:
 
 - **`key [selector] <keyspec>`** — press what isn't literal text: `Escape` to dismiss a modal or autocomplete, `Tab` to move focus when the next field has no stable selector, `ArrowDown`/`Enter` to drive a keyboard-only listbox, `cmd+a` to select all before retyping in an editor `fill` can't clear.
   Works with **no selector at all**, which is what makes it usable when nothing is addressable.
+  `type`, by contrast, REQUIRES a selector.
+  Calling `type "" "text"` fails with a raw `cdp_error: DOM Error while querying (-32000)` rather than a usage error, so there is no way to type literal text into just the focused element.
+  When only focus is available, drive it with `key` (digits and letters are valid key names) or address the element once it becomes focusable.
   A sequence runs left to right: `key "End shift+Home Backspace"` empties the focused field.
   `--repeat N` (1–100) and `--delay` for apps that debounce.
   An unknown key name is a usage error, never typed out letter by letter — use `type` for literal text.
@@ -171,6 +182,8 @@ chrome-cdp select "Actions" "Enter Time by Type" --role button --json
 ```
 
 - The field is addressed by accessible name by default (`--role textbox` disambiguates an input from a same-named column header; an explicit `--by` overrides).
+  Passing a CSS selector without `--by css` fails with a bare `field "<selector>" not found`, which reads like the element is missing rather than like the selector was interpreted as an accessible name.
+  A native `<select>` with no accessible name (its label is a separate text node) needs the explicit override, e.g. `chrome-cdp select "[name=QuickAddActivityCategory]" "Direct Revenue" --by css --json`.
 - The option is a **`>`-separated cascade path** (`--sep` changes the separator); each segment is matched by **substring** (`--option-match exact|contains|regex`).
   Give every level a real Workday cascade needs — the tree can be several deep, and a segment that resolves to a category rather than a leaf makes `select` **error** (never a false success).
 - `--filter "<text>"` types into the prompt to narrow a long list before selecting.
