@@ -918,6 +918,16 @@ func cellQuery(cellSel string) func(context.Context, *cdp.Node) ([]cdp.NodeID, e
 // (case-insensitive substring) — restricted to the data row whose text matches
 // the row header when one is given. Args: %[1]s column-header JSON, %[2]s
 // row-header JSON (empty = any row).
+//
+// A field is located through its CELL's geometry, not its own. Workday's time
+// grid mounts each hour input at 0x0 and only gives it a box once the cell is
+// focused, so filtering candidates by their own rect — which is what this did —
+// found nothing on exactly the grid `--by cell` exists for, returned null every
+// poll, and timed out as a bare "context deadline exceeded". Cells are always
+// laid out, so matching on the cell and falling back to the cell element itself
+// when its field has no box lets the caller's pointer sequence land on the cell,
+// which is what mounts the input. Grids whose inputs are already visible still
+// resolve to the input, so nothing that worked before changes.
 const cellLocatorJS = `(() => {
   const col = %[1]s, row = %[2]s;
   const norm = s => (s || "").replace(/\s+/g, " ").trim();
@@ -928,19 +938,29 @@ const cellLocatorJS = `(() => {
   if (!hdr) return null;
   const hr = hdr.getBoundingClientRect();
   const colX = hr.left + hr.width / 2, tol = Math.max(hr.width / 2, 30);
-  const fields = "input,textarea,select,[contenteditable=true],[role=textbox],[role=spinbutton]";
-  let cands = [...document.querySelectorAll(fields)].filter(el => {
-    if (!vis(el)) return false;
+  const inCol = el => {
     const r = el.getBoundingClientRect();
     return Math.abs((r.left + r.width / 2) - colX) <= tol;
-  });
-  if (row) {
-    cands = cands.filter(el => {
-      const tr = el.closest("[role=row],tr");
-      return tr && has(tr.textContent, row);
-    });
+  };
+  const inRow = el => {
+    if (!row) return true;
+    const tr = el.closest("[role=row],tr");
+    return tr && has(tr.textContent, row);
+  };
+  const fields = "input,textarea,select,[contenteditable=true],[role=textbox],[role=spinbutton]";
+  // A field with its own box: the original path, and still the preferred one.
+  const direct = [...document.querySelectorAll(fields)]
+    .filter(el => vis(el) && inCol(el) && inRow(el));
+  if (direct.length) return direct[0];
+  // Otherwise find the cell by ITS box and hand back whichever of the field or
+  // the cell can actually be pointed at.
+  const cells = [...document.querySelectorAll("[role=gridcell],[role=cell],td")]
+    .filter(el => vis(el) && inCol(el) && inRow(el));
+  for (const cell of cells) {
+    const f = cell.querySelector(fields);
+    if (f) return vis(f) ? f : cell;
   }
-  return cands[0] || null;
+  return null;
 })()`
 
 // labelQuery resolves a FORM CONTROL by its visible label text — for forms whose

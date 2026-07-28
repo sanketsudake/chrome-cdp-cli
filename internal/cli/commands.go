@@ -564,21 +564,52 @@ func (a *App) runResolved(command string, fn func(ctx context.Context, b chrome.
 	})(nil, nil)
 }
 
+// needSelector rejects an empty selector BEFORE a target is resolved or Chrome
+// is contacted, the way every other malformed invocation here is rejected.
+//
+// An empty string is a well-formed cobra argument, so `type "" "8"` used to
+// reach the browser and come back as `cdp_error: DOM Error while querying
+// (-32000)` — a leaked protocol error that names neither the argument at fault
+// nor the fix, and arrives as exit 5 (a CDP failure) rather than exit 2. It is
+// an easy call to make because `key` deliberately DOES work with no selector,
+// so "type into whatever is focused" looks like it should be spelled this way.
+// It is not; the message says which verb to reach for instead.
+func (a *App) needSelector(command, selector string) bool {
+	if strings.TrimSpace(selector) != "" {
+		return true
+	}
+	a.emitErr(command, result.CodeUsage,
+		command+" needs a selector — an empty one is not \"the focused element\"; "+
+			"use `key` to drive whatever currently has focus (it takes no selector), "+
+			"or address the element with --by name/ref/cell/label/css", nil)
+	return false
+}
+
 func (a *App) cmdType() *cobra.Command {
 	return a.withWaitText(&cobra.Command{
 		Use: "type <selector> <text>", Short: "Type text via real keystrokes (appends)", Args: cobra.ExactArgs(2),
-		RunE: a.targetAction("type", func(ctx context.Context, b chrome.Browser, id string, args []string) (any, error) {
-			return b.Type(ctx, id, args[0], args[1], a.queryOpts())
-		}),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if !a.needSelector("type", args[0]) {
+				return nil
+			}
+			return a.targetAction("type", func(ctx context.Context, b chrome.Browser, id string, args []string) (any, error) {
+				return b.Type(ctx, id, args[0], args[1], a.queryOpts())
+			})(cmd, args)
+		},
 	})
 }
 
 func (a *App) cmdFill() *cobra.Command {
 	return a.withWaitText(&cobra.Command{
 		Use: "fill <selector> <value>", Short: "Set a field to a value, replacing existing content (clears then types)", Args: cobra.ExactArgs(2),
-		RunE: a.targetAction("fill", func(ctx context.Context, b chrome.Browser, id string, args []string) (any, error) {
-			return b.Fill(ctx, id, args[0], args[1], a.queryOpts())
-		}),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if !a.needSelector("fill", args[0]) {
+				return nil
+			}
+			return a.targetAction("fill", func(ctx context.Context, b chrome.Browser, id string, args []string) (any, error) {
+				return b.Fill(ctx, id, args[0], args[1], a.queryOpts())
+			})(cmd, args)
+		},
 	})
 }
 
@@ -807,6 +838,37 @@ func (a *App) withWaitText(c *cobra.Command) *cobra.Command {
 	return c
 }
 
+// withDaemonVersionSkew annotates a daemon status payload when the daemon is
+// running a different build from the CLI asking.
+//
+// A daemon outlives the binary that spawned it: it is started on first use and
+// then held for the rest of the session, so an upgrade — or a rebuild while
+// working on this tool — leaves the OLD process serving every command while
+// `chrome-cdp version` reports the new one. Nothing observable distinguishes
+// the two, and because commands forward over the socket, a fix that has
+// genuinely landed can appear to have no effect at all. Saying it costs one
+// field and removes a whole class of wasted debugging.
+//
+// Only a KNOWN mismatch is reported. A daemon predating this field sends no
+// version, and "unknown" is not "stale" — claiming skew there would be the same
+// unverified assertion this avoids.
+func withDaemonVersionSkew(res map[string]any) map[string]any {
+	if res == nil {
+		return res
+	}
+	dv, ok := res["version"].(string)
+	if !ok || dv == "" || dv == Version {
+		return res
+	}
+	res["stale"] = true
+	res["cli_version"] = Version
+	res["status"] = "this daemon is running " + dv + " but the CLI is " + Version +
+		" — it was started by an older binary and is still serving every command, " +
+		"so changes in the newer build are not in effect; restart it with " +
+		"`chrome-cdp daemon stop` (the next command starts a fresh one)"
+	return res
+}
+
 func (a *App) cmdDaemon() *cobra.Command {
 	daemon := &cobra.Command{Use: "daemon", Short: "Manage the background CDP connection"}
 	emit := func(res map[string]any, err error) {
@@ -846,7 +908,8 @@ func (a *App) cmdDaemon() *cobra.Command {
 					a.emitOK("daemon", nil, map[string]any{"mode": "direct-connect"})
 					return nil
 				}
-				emit(a.daemonStatus(a.connOpts()))
+				res, err := a.daemonStatus(a.connOpts())
+				emit(withDaemonVersionSkew(res), err)
 				return nil
 			},
 		},
