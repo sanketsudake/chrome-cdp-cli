@@ -345,7 +345,7 @@ func writeUpgradeRequest(conn net.Conn, wsURL, hostport string) (key string, err
 }
 
 // wsGUID is RFC 6455's fixed accept-key salt.
-const wsGUID = "258EAFA5-E914-47DA-95CA-5AB0DC85B11A"
+const wsGUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 
 // acceptFor is the Sec-WebSocket-Accept a correct server must return for key.
 func acceptFor(key string) string {
