@@ -564,21 +564,52 @@ func (a *App) runResolved(command string, fn func(ctx context.Context, b chrome.
 	})(nil, nil)
 }
 
+// needSelector rejects an empty selector BEFORE a target is resolved or Chrome
+// is contacted, the way every other malformed invocation here is rejected.
+//
+// An empty string is a well-formed cobra argument, so `type "" "8"` used to
+// reach the browser and come back as `cdp_error: DOM Error while querying
+// (-32000)` — a leaked protocol error that names neither the argument at fault
+// nor the fix, and arrives as exit 5 (a CDP failure) rather than exit 2. It is
+// an easy call to make because `key` deliberately DOES work with no selector,
+// so "type into whatever is focused" looks like it should be spelled this way.
+// It is not; the message says which verb to reach for instead.
+func (a *App) needSelector(command, selector string) bool {
+	if strings.TrimSpace(selector) != "" {
+		return true
+	}
+	a.emitErr(command, result.CodeUsage,
+		command+" needs a selector — an empty one is not \"the focused element\"; "+
+			"use `key` to drive whatever currently has focus (it takes no selector), "+
+			"or address the element with --by name/ref/cell/label/css", nil)
+	return false
+}
+
 func (a *App) cmdType() *cobra.Command {
 	return a.withWaitText(&cobra.Command{
 		Use: "type <selector> <text>", Short: "Type text via real keystrokes (appends)", Args: cobra.ExactArgs(2),
-		RunE: a.targetAction("type", func(ctx context.Context, b chrome.Browser, id string, args []string) (any, error) {
-			return b.Type(ctx, id, args[0], args[1], a.queryOpts())
-		}),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if !a.needSelector("type", args[0]) {
+				return nil
+			}
+			return a.targetAction("type", func(ctx context.Context, b chrome.Browser, id string, args []string) (any, error) {
+				return b.Type(ctx, id, args[0], args[1], a.queryOpts())
+			})(cmd, args)
+		},
 	})
 }
 
 func (a *App) cmdFill() *cobra.Command {
 	return a.withWaitText(&cobra.Command{
 		Use: "fill <selector> <value>", Short: "Set a field to a value, replacing existing content (clears then types)", Args: cobra.ExactArgs(2),
-		RunE: a.targetAction("fill", func(ctx context.Context, b chrome.Browser, id string, args []string) (any, error) {
-			return b.Fill(ctx, id, args[0], args[1], a.queryOpts())
-		}),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if !a.needSelector("fill", args[0]) {
+				return nil
+			}
+			return a.targetAction("fill", func(ctx context.Context, b chrome.Browser, id string, args []string) (any, error) {
+				return b.Fill(ctx, id, args[0], args[1], a.queryOpts())
+			})(cmd, args)
+		},
 	})
 }
 
