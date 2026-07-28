@@ -285,3 +285,30 @@ func TestAwaitUpgradeVerifiesTheHandshake(t *testing.T) {
 		})
 	}
 }
+
+// TestAcceptForMatchesRFCVector pins the Sec-WebSocket-Accept computation to
+// RFC 6455 section 1.3's published key/accept pair.
+//
+// The GUID was once mistyped (the C leading the final group transposed to the
+// end: ...95CA-5AB0DC85B11A instead of ...95CA-C5AB0DC85B11). It is the right
+// shape and the right length, so it survives every reading, and because
+// probetest's fake server salted with the SAME wrong string, client and server
+// agreed and every test here passed. Chrome did not agree: readHandshakeResponse
+// rejected its correct accept header, AwaitUpgrade classified a live browser as
+// WSRefused, and every command — not just doctor — failed with "nothing usable
+// answered". An external vector is the only assertion that catches this, because
+// it is the only one this package cannot satisfy by being consistently wrong.
+func TestAcceptForMatchesRFCVector(t *testing.T) {
+	const (
+		rfcKey    = "dGhlIHNhbXBsZSBub25jZQ=="
+		rfcAccept = "s3pPLMBiTxaQ9kYGzzhZRbK+xOo="
+	)
+	if got := acceptFor(rfcKey); got != rfcAccept {
+		t.Errorf("acceptFor(%q) = %q, want RFC 6455's %q", rfcKey, got, rfcAccept)
+	}
+	// The fake server has to be checked against the same external vector, not
+	// against acceptFor — that comparison is what failed to catch this.
+	if got := probetest.AcceptFor(rfcKey); got != rfcAccept {
+		t.Errorf("probetest.AcceptFor(%q) = %q, want RFC 6455's %q", rfcKey, got, rfcAccept)
+	}
+}
