@@ -51,10 +51,12 @@ list ─▶ use ─▶ snap ─▶ act ─▶ verify
 1. **`list`** — enumerate tabs (`id`, `title`, `url`); pick the one you want (`list --url <substr>` / `--title <substr>` filters, so you don't grep the whole list).
    No tab for the app yet?
    **`open <url>`** creates one, navigates, returns its id, and makes it current.
-   **Known bug (being fixed, not intended behaviour):** `open` returns as soon as the target is created, before navigation commits, so it reports the URL it was asked for rather than the tab's actual location.
+   **Known bug — `open` does not wait for the navigation.**
+   It returns as soon as the target is created, so it reports the URL it was ASKED for rather than the tab's actual location, and the tab can still be on `about:blank`.
    A `wait --idle` run immediately after therefore settles on `about:blank`, because nothing is in flight yet.
    `nav` is unaffected — it waits for load and reports the observed location.
    Follow `open` with `wait --url "<substr>"` (a condition tied to the destination), not `wait --idle`.
+   The fix is not a one-liner and is deliberately not in yet: the only reliable "has it loaded" signal needs a page attach, and attaching inside `open` would start `console`/`net` capture early and destroy the pre-attach backlog those verbs exist to recover.
 2. **`use <target>`** — set the sticky current tab (or pass `--target` per command).
    Target grammar: `idprefix | url:<substr> | title:<substr> | @N`.
 3. **`snap`** — accessibility-tree snapshot: the reliable way to *see* actionable controls by role + accessible name (it crosses shadow DOM and iframes).
