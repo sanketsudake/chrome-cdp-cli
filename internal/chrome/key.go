@@ -40,11 +40,7 @@ func (c *CDP) Key(ctx context.Context, id, selector string, keys []KeyStroke, op
 
 	core := chromedp.ActionFunc(func(actx context.Context) error {
 		if selector != "" {
-			nid, err := resolveNodeReady(actx, selector, opts.Query)
-			if err != nil {
-				return err
-			}
-			if err := coordClickNode(actx, nid); err != nil {
+			if err := coordClickSelector(actx, selector, opts.Query, 1); err != nil {
 				return err
 			}
 		}

@@ -107,6 +107,14 @@ func (a *App) classifyWithTabHint(b chrome.Browser, id string, err error) (strin
 	if chrome.IsOccluded(err) {
 		return result.CodeTargetTimeout, err.Error(), map[string]any{"occluded": true}
 	}
+	// The page replaced the element while we waited on it and the replacement
+	// never settled before the deadline. Also a timeout, but the fix is
+	// different again: the page is churning (a grid re-rendering after a
+	// commit), so wait for it to settle (`wait --stable`) rather than dismiss
+	// an overlay or change a selector.
+	if chrome.IsDetached(err) {
+		return result.CodeTargetTimeout, err.Error(), map[string]any{"detached": true}
+	}
 	// A coordinate outside the viewport is its own failure: the caller named a
 	// PLACE that does not exist on this page, which is a different fix from a
 	// selector that did not resolve. The viewport goes in the details so an

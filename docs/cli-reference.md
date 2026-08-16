@@ -92,7 +92,7 @@ On real apps, prefer `name` — it reads the accessibility tree, skips hidden/ut
 | `id` | an element id | |
 | `name` | an ARIA accessible name | prefer on real apps; pair with `--role` / `--nth` / `--match` |
 | `ref` | a `snap`-issued `e<id>` ref | act on the exact node `snap` reported, no re-resolve |
-| `cell` | a `[row\|]column` grid header | resolves the editable input in that grid cell |
+| `cell` | a `[row\|]column` grid header | resolves the editable input in that grid cell; a candidate in the header's own grid beats one elsewhere on the page, and an unoccluded one beats a covered one |
 | `label` | a form control's visible label | for controls whose label isn't wired (no `aria-label` / `<label for>`) |
 | `search` | DevTools text/XPath/CSS search | broad; first match wins |
 | `jspath` | a JS path | |
@@ -292,7 +292,8 @@ A never-settling promise is bounded by `--timeout` (exit 4), and the connection 
 | `attr get\|list\|set\|rm <selector> [name] [value]` | read/write element attributes |
 
 `click`, `hover`, `dblclick`, `rclick` and `drag` are one driver method behind five names: they resolve the identical occlusion-verified centre and all take `--modifiers` (`ctrl`/`shift`/`alt`/`cmd`, joined with `+`) — `click --modifiers cmd` is the multi-select in a table.
-An element that resolves but never presents an unoccluded centre fails as `target_timeout` with `occluded: true`, so it's distinguishable from "not found".
+An element that resolves but never presents an unoccluded centre fails as `target_timeout` with `occluded: true`, so it's distinguishable from "not found"; the message names what sat on top (`its centre is covered by DIV name="modalOverlay"`) or says the element measured 0x0, so the next step — dismiss an overlay, wait out a tooltip, re-check the selector — is read from the envelope rather than reproduced under instrumentation.
+If the page replaces the element while a verb waits on it (a grid re-rendering its row after a commit), the verb re-resolves the selector and continues on the replacement; only when the replacement never settles either does it fail, as `target_timeout` with `detached: true` — the page is churning, so `wait --stable` before retrying.
 
 `key` takes a named key, a printable character, a chord, or a space-separated sequence of those, and works with no selector at all — which is what makes it usable when nothing is addressable:
 

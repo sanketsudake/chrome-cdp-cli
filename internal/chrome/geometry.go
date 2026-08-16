@@ -45,12 +45,24 @@ type nodeBox struct {
 	// Occluded means the aim point resolved to something else (an overlay, a
 	// covering panel). Reported rather than fatal for reads.
 	Occluded bool `json:"occluded"`
+	// Detached means the element is no longer in the document: the page swapped
+	// it out (a grid re-rendering its row after a commit) between resolution and
+	// this measurement. A detached node has no geometry and never will again, so
+	// waiting on it is pointless — the caller must re-resolve.
+	Detached bool `json:"detached"`
+	// At describes what elementFromPoint found at the aim point when it was NOT
+	// this element — the evidence behind Occluded. Nil when it was this element,
+	// or when there was no box to test.
+	At map[string]any `json:"at,omitempty"`
 }
 
 // axBoxCoreJS measures `this` and hit-tests its centre. It is a statement list
 // spliced into a function body, so both variants below share every line of the
 // measurement and differ only in what happens before it.
 const axBoxCoreJS = `
+  if (!this.isConnected) {
+    return { ok: false, x: 0, y: 0, cx: 0, cy: 0, w: 0, h: 0, occluded: false, detached: true };
+  }
   const r = this.getBoundingClientRect();
   if (r.width < 1 || r.height < 1) {
     return { ok: false, x: 0, y: 0, cx: 0, cy: 0, w: r.width, h: r.height, occluded: false };
@@ -60,7 +72,12 @@ const axBoxCoreJS = `
   const cy = Math.max(0, Math.min(Math.round(ty), window.innerHeight - 1));
   const at = document.elementFromPoint(cx, cy);
   const hit = !!at && (at === this || this.contains(at));
-  return { ok: hit, x: cx, y: cy, cx: tx, cy: ty, w: r.width, h: r.height, occluded: !hit };
+  const desc = (!hit && at) ? {
+    tag: at.tagName, id: at.id || undefined,
+    role: at.getAttribute("role") || undefined,
+    name: (at.getAttribute("aria-label") || at.getAttribute("data-automation-id") || "").trim() || undefined,
+  } : undefined;
+  return { ok: hit, x: cx, y: cy, cx: tx, cy: ty, w: r.width, h: r.height, occluded: !hit, at: desc };
 `
 
 // nodeCoordJS scrolls the element into view, then measures — the pointer path.

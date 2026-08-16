@@ -928,6 +928,19 @@ func cellQuery(cellSel string) func(context.Context, *cdp.Node) ([]cdp.NodeID, e
 // when its field has no box lets the caller's pointer sequence land on the cell,
 // which is what mounts the input. Grids whose inputs are already visible still
 // resolve to the input, so nothing that worked before changes.
+//
+// Candidates are RANKED, not just filtered, because "in this column" is a
+// geometric test and the page has fields outside the grid that happen to share
+// an x-range with a column. Workday's global "Search Workday" box sits above
+// its Enter Time dialog with its centre inside one day column's tolerance;
+// document-order-first picked it (it comes before the grid), it was under the
+// modal overlay, and `fill --by cell "Tue, …"` failed as `occluded` on that one
+// column and no other. So a candidate inside the header's own grid ranks ahead
+// of one outside it, and one whose centre hit-tests to itself ranks ahead of
+// one that is covered; document order breaks ties. Off-grid candidates are kept
+// as the last resort rather than dropped, because some grids split header and
+// body into separate tables and the header's `closest` container then holds no
+// inputs at all.
 const cellLocatorJS = `(() => {
   const col = %[1]s, row = %[2]s;
   const norm = s => (s || "").replace(/\s+/g, " ").trim();
@@ -947,15 +960,27 @@ const cellLocatorJS = `(() => {
     const tr = el.closest("[role=row],tr");
     return tr && has(tr.textContent, row);
   };
+  // Rank: the header's own grid beats the rest of the page; a centre that
+  // hit-tests to the element beats one under an overlay; then document order
+  // (Array.prototype.sort is stable).
+  const grid = hdr.closest("table,[role=grid],[role=treegrid],[role=table]");
+  const inGrid = el => !grid || grid.contains(el);
+  const hitSelf = el => {
+    const r = el.getBoundingClientRect();
+    const at = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+    return !!at && (at === el || el.contains(at));
+  };
+  const rank = el => (inGrid(el) ? 0 : 2) + (hitSelf(el) ? 0 : 1);
+  const byRank = list => list.map((el, i) => ({ el, i, r: rank(el) })).sort((a, b) => a.r - b.r || a.i - b.i).map(x => x.el);
   const fields = "input,textarea,select,[contenteditable=true],[role=textbox],[role=spinbutton]";
   // A field with its own box: the original path, and still the preferred one.
-  const direct = [...document.querySelectorAll(fields)]
-    .filter(el => vis(el) && inCol(el) && inRow(el));
+  const direct = byRank([...document.querySelectorAll(fields)]
+    .filter(el => vis(el) && inCol(el) && inRow(el)));
   if (direct.length) return direct[0];
   // Otherwise find the cell by ITS box and hand back whichever of the field or
   // the cell can actually be pointed at.
-  const cells = [...document.querySelectorAll("[role=gridcell],[role=cell],td")]
-    .filter(el => vis(el) && inCol(el) && inRow(el));
+  const cells = byRank([...document.querySelectorAll("[role=gridcell],[role=cell],td")]
+    .filter(el => vis(el) && inCol(el) && inRow(el)));
   for (const cell of cells) {
     const f = cell.querySelector(fields);
     if (f) return vis(f) ? f : cell;
@@ -1324,11 +1349,7 @@ func withDialogResult(res map[string]any, sink *dialogSink) map[string]any {
 // then sends the text as real keystrokes to the focused element.
 func (c *CDP) Type(ctx context.Context, id, selector, text string, q QueryOpts) (map[string]any, error) {
 	core := chromedp.ActionFunc(func(actx context.Context) error {
-		nid, err := resolveNodeReady(actx, selector, q)
-		if err != nil {
-			return err
-		}
-		if err := coordClickNode(actx, nid); err != nil {
+		if err := coordClickSelector(actx, selector, q, 1); err != nil {
 			return err
 		}
 		return chromedp.KeyEvent(text).Do(actx)
@@ -1346,12 +1367,8 @@ func (c *CDP) Type(ctx context.Context, id, selector, text string, q QueryOpts) 
 // a timesheet "0" hour cell) to a new value in one call.
 func (c *CDP) Fill(ctx context.Context, id, selector, value string, q QueryOpts) (map[string]any, error) {
 	core := chromedp.ActionFunc(func(actx context.Context) error {
-		nid, err := resolveNodeReady(actx, selector, q)
-		if err != nil {
-			return err
-		}
 		// Triple-click selects all text in the field; typing then replaces it.
-		if err := coordClickNodeN(actx, nid, 3); err != nil {
+		if err := coordClickSelector(actx, selector, q, 3); err != nil {
 			return err
 		}
 		return chromedp.KeyEvent(value).Do(actx)

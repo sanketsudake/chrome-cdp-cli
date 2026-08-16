@@ -39,6 +39,8 @@ Because it drives the real profile, live logins are reused: **type no credential
    If it runs out you get exit 3 with `error.code: consent_pending`; the recovery is to click Allow and retry, not to restart Chrome.
    Do not retry in a loop while a prompt is pending: a retry started within a few seconds of a `consent_pending` inherits that answer rather than asking again, and one started later raises a second dialog at a browser that is already holding one.
    Launching Chrome with `--remote-debugging-port=9222` skips the prompt entirely — prefer recommending that.
+4. **A daemon that lost Chrome fails every command instantly** with `connection_failed: context canceled` while `chrome-cdp doctor` still says `ready` and `daemon status` shows `connected: false`.
+   That is a stale daemon, not a Chrome problem: `chrome-cdp daemon stop && chrome-cdp daemon start`, then retry — the fresh attach may raise the consent prompt once on the `chrome://inspect` path.
 
 ## The loop
 
@@ -112,6 +114,7 @@ The action verbs, beyond `click`/`type`/`fill`/`select`:
   Calling `type "" "text"` fails with a raw `cdp_error: DOM Error while querying (-32000)` rather than a usage error, so there is no way to type literal text into just the focused element.
   When only focus is available, drive it with `key` (digits and letters are valid key names) or address the element once it becomes focusable.
   A sequence runs left to right: `key "End shift+Home Backspace"` empties the focused field.
+  Inside a dirty dialog `Escape` is not free: apps like Workday answer it with an in-page "Discard Changes?" (`Continue` keeps the data, `Discard` throws it away), so read `snap.alerts` after an Escape rather than assuming a transient popover closed.
   `--repeat N` (1–100) and `--delay` for apps that debounce.
   An unknown key name is a usage error, never typed out letter by letter — use `type` for literal text.
 - **`hover <selector>`** — reveal a row's action buttons, a nav flyout, or a tooltip that only renders on `mouseover`.
@@ -133,6 +136,8 @@ Selector syntax is chosen with `--by`:
 - **`--by ref "e<id>"`** — act on the exact element a prior `snap` reported, without re-resolving by name (the ref is stable for the document's lifetime).
 - **`--by cell "[row|]column header"`** — resolve the editable input in a grid cell by its column header (and optional row header): `fill --by cell "Mon, 7/13" "8"`.
   Kills mapping grid inputs by coordinate; use `"Regular|Mon, 7/13"` to disambiguate a row in a multi-row grid.
+  Candidates are ranked, not just filtered: an input inside the header's own grid beats one elsewhere on the page that merely shares the column's x-range (an app's global search box above a dialog), and one whose centre hit-tests to itself beats one under an overlay — so a whole-row fill no longer fails `occluded` on the one column a stray off-grid field overlaps.
+  If a cell still resists, read the input's DOM id with `eval` and `fill '[id="…"]'` it — the read-back (`value --all`) is what proves the row, either way.
 - **`--by label "<visible label text>"`** — resolve a **form control** (input/select/textarea) by the label text shown next to it, for forms whose labels aren't wired to the control (no `aria-label`, no `<label for>` — e.g. a native `<select>` with a sibling `<span>` label).
   `select --by label "Activity Category" "…"`, `fill --by label "Notes" "…"`.
   Resolves via `querySelector`, so it isn't a11y-throttled on a hidden tab.
@@ -168,6 +173,8 @@ Two consequences worth knowing:
 `--by name` also falls back to a DOM accessible-name match on a hidden tab, so it often still works — but **`--by css` is the reliable choice when driving a background tab you can't foreground.**
 
 An element that resolves but is covered by an overlay now fails as `target_timeout` with **`occluded: true`**, distinct from "no such element" — dismiss whatever is on top (often `chrome-cdp key Escape`) rather than rewriting a selector that was already correct.
+The message names the cover (`its centre is covered by DIV name="modalOverlay"`) or says the element measured 0x0, so read it before choosing between "dismiss", "wait", and "re-address".
+A page that swaps the element out mid-wait (a grid re-rendering its row after a commit) is re-resolved automatically; a `detached: true` timeout means even the replacement never settled — `wait --stable`, then retry.
 
 ### `select` — prompt / combobox / cascade widgets
 

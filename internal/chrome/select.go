@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -238,30 +239,18 @@ func resolveNodeReady(ctx context.Context, selector string, q QueryOpts) (cdp.No
 	return nodes[0].NodeID, nil
 }
 
-// coordClickNode clicks a resolved node at its live, occlusion-verified centre via
-// a coordinate pointer sequence. Unlike chromedp's node-click it computes geometry
-// in JS (getBoundingClientRect / elementFromPoint work even when the tab is
-// hidden) and dispatches Input events — so it lands on a background/inactive tab
-// (after bringToFront) where a box-model node-click would poll until it times out.
-// It waits for the centre to settle on the target (or a descendant) — an occluding
-// overlay or a mid-animation element is waited out rather than mis-clicked.
-func coordClickNode(ctx context.Context, nid cdp.NodeID) error {
-	return coordClickNodeN(ctx, nid, 1)
-}
-
-// coordClickNodeN is coordClickNode with a click count (3 = triple-click to
-// select all text in an input).
-func coordClickNodeN(ctx context.Context, nid cdp.NodeID, count int64) error {
-	x, y, err := settledNodePoint(ctx, nid)
-	if err != nil {
-		return err
-	}
-	return coordClickN(ctx, x, y, count)
-}
+// coordClickSelector (below) is the click primitive every verb uses: it owns
+// resolution so it can re-resolve when the page swaps the node out mid-wait. It
+// computes geometry in JS (getBoundingClientRect / elementFromPoint work even
+// when the tab is hidden) and dispatches Input events — so it lands on a
+// background/inactive tab (after bringToFront) where a box-model node-click
+// would poll until it times out. It waits for the centre to settle on the target
+// (or a descendant) — an occluding overlay or a mid-animation element is waited
+// out rather than mis-clicked.
 
 // settledNodePoint waits for a node's centre to settle on the node itself (or a
 // descendant) and returns that viewport point. It is the geometry half of
-// coordClickNode, factored out so every pointer verb — click, hover, dblclick,
+// coordClickSelector, factored out so every pointer verb — click, hover, dblclick,
 // right-click, and both ends of a drag — targets the identical, occlusion-
 // verified point rather than each recomputing its own.
 //
@@ -287,26 +276,65 @@ func settledNodePoint(ctx context.Context, nid cdp.NodeID) (float64, float64, er
 	// the classification stable under load rather than only on an idle machine.
 	var sawOccluded bool
 	var lastErr error
+	var coveredBy map[string]any
 	for {
-		x, y, ok, err := nodeCoord(ctx, obj.ObjectID)
+		b, err := measureNode(ctx, obj.ObjectID, nodeCoordJS)
 		switch {
-		case err == nil && ok:
-			return x, y, nil
+		case err == nil && b.Detached:
+			// The node left the document; no amount of waiting brings it back.
+			// Hand the decision up: a caller holding the selector re-resolves.
+			return 0, 0, ErrDetached
+		case err == nil && b.OK:
+			return b.X, b.Y, nil
 		case err == nil:
 			sawOccluded = true
+			coveredBy = b.At
 		default:
 			lastErr = err
 		}
 		select {
 		case <-ctx.Done():
 			if sawOccluded || lastErr == nil {
-				return 0, 0, ErrOccluded
+				return 0, 0, &OccludedError{CoveredBy: coveredBy}
 			}
 			return 0, 0, lastErr
 		case <-t.C:
 		}
 	}
 }
+
+// OccludedError is ErrOccluded carrying the evidence: what elementFromPoint
+// found at the element's centre on the last clean measurement. A caller that
+// sees `occluded: true` next needs to know WHAT is on top — an app overlay to
+// dismiss, a tooltip anchored on the cell it just edited, or nothing at all
+// (the element measured 0x0) — and without this it has to reproduce the failure
+// under instrumentation to find out. The evidence rides in the MESSAGE, not a
+// structured field, because errors cross the daemon RPC as strings and the
+// envelope must read the same on both paths; the message still starts with
+// ErrOccluded's text, so IsOccluded keeps matching.
+type OccludedError struct {
+	// CoveredBy describes the element under the centre (tag, id, role, name as
+	// available). Nil when the element had no box to test.
+	CoveredBy map[string]any
+}
+
+func (e *OccludedError) Error() string {
+	if e.CoveredBy == nil {
+		return ErrOccluded.Error() + "; it measured 0x0 (no box to click)"
+	}
+	desc := fmt.Sprint(e.CoveredBy["tag"])
+	if id, _ := e.CoveredBy["id"].(string); id != "" {
+		desc += "#" + id
+	}
+	for _, k := range []string{"role", "name"} {
+		if v, _ := e.CoveredBy[k].(string); v != "" {
+			desc += " " + k + "=" + strconv.Quote(v)
+		}
+	}
+	return ErrOccluded.Error() + "; its centre is covered by " + desc
+}
+
+func (e *OccludedError) Unwrap() error { return ErrOccluded }
 
 // ErrOccluded reports that an element resolved but never presented an unoccluded
 // centre — it is covered by an overlay, or it never stopped animating. Pointer
@@ -315,14 +343,54 @@ func settledNodePoint(ctx context.Context, nid cdp.NodeID) (float64, float64, er
 // errors.Is at call sites.
 var ErrOccluded = errors.New("element has no settled, unoccluded clickable centre")
 
-// nodeCoord returns the element's clamped centre and whether that point is
-// hit-testable on the element (or a descendant) — i.e. not occluded.
-func nodeCoord(ctx context.Context, objID runtime.RemoteObjectID) (float64, float64, bool, error) {
-	b, err := measureNode(ctx, objID, nodeCoordJS)
-	if err != nil {
-		return 0, 0, false, err
+// ErrDetached reports that the element a selector resolved to was removed from
+// the document before its centre settled — the page re-rendered it (a grid
+// swapping out its row's inputs after a neighbouring cell commits). Verbs that
+// hold the selector re-resolve on this; it only reaches a caller when the
+// replacement never settled either, and then it is a timeout with `detached:
+// true`, so the caller knows the page churned rather than covered the element.
+var ErrDetached = errors.New("element was replaced by the page before its centre settled (timeout waiting for the replacement)")
+
+// settledPointFor is resolveNodeReady + settledNodePoint with one addition: when
+// the resolved node is detached mid-wait, it re-resolves the selector and waits
+// on the replacement, until the context expires.
+//
+// This is what a grid that re-renders after a commit needs. Workday's time grid
+// rebuilds the row's inputs when a cell's edit commits (their ids change), so a
+// node the NEXT fill resolved a moment earlier can be gone by the time it is
+// measured. Polling a detached node measured 0x0 until the deadline and
+// surfaced as `occluded`, sending callers after an overlay that did not exist —
+// with the wait bounded by the caller's timeout and no way to tell it apart from
+// a real cover. Re-resolving costs one extra query and only runs on detachment.
+func settledPointFor(ctx context.Context, selector string, q QueryOpts) (float64, float64, error) {
+	t := time.NewTicker(100 * time.Millisecond)
+	defer t.Stop()
+	for {
+		nid, err := resolveNodeReady(ctx, selector, q)
+		if err != nil {
+			return 0, 0, err
+		}
+		x, y, err := settledNodePoint(ctx, nid)
+		if !errors.Is(err, ErrDetached) {
+			return x, y, err
+		}
+		select {
+		case <-ctx.Done():
+			return 0, 0, ErrDetached
+		case <-t.C:
+		}
 	}
-	return b.X, b.Y, b.OK, nil
+}
+
+// coordClickSelector resolves selector to a settled, unoccluded centre — re-
+// resolving if the page swaps the node out while it waits — and clicks there
+// count times.
+func coordClickSelector(ctx context.Context, selector string, q QueryOpts, count int64) error {
+	x, y, err := settledPointFor(ctx, selector, q)
+	if err != nil {
+		return err
+	}
+	return coordClickN(ctx, x, y, count)
 }
 
 // locateResult is the coordinate + occlusion verdict returned by the JS option
