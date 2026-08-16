@@ -131,3 +131,151 @@ func TestCellAddressingZeroSizeInput(t *testing.T) {
 		}
 	}
 }
+
+// TestCellAddressingPrefersGridOverOffGridField covers the second shape --by
+// cell met in the wild: a field OUTSIDE the grid whose centre-x happens to fall
+// inside one column's tolerance. Workday's global "Search Workday" box sits
+// above its Enter Time dialog, its centre inside the Tue column's band; being
+// earlier in document order it was picked first, it was under the modal
+// overlay, and `fill --by cell "Tue, …"` failed as `occluded` on that column and
+// no other, in every week.
+//
+// The fixture makes the off-grid input hit-testable (not covered), which turns
+// the old behaviour into the WORSE failure — the value lands in the search box
+// and the grid cell stays 0 — so the assertion is deterministic either way:
+// ranking the header's own grid first is what makes the grid cell win.
+func TestCellAddressingPrefersGridOverOffGridField(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping live-Chrome integration in -short mode")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	b, err := launch(true, tmpProfile(t), 0)
+	if err != nil {
+		t.Skipf("cannot launch a managed headless Chrome here: %v", err)
+	}
+	defer b.Close()
+
+	// #search is centred over the Tue column (x 310..390 → centre 350) and comes
+	// before the table in document order.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		fmt.Fprint(w, `<!doctype html><title>OffGrid</title>
+<style>
+  body{margin:0}
+  #search{position:absolute;left:310px;top:8px;width:80px;height:28px}
+  table{position:absolute;left:0;top:80px;border-collapse:collapse}
+  th,td{width:100px;height:32px;padding:0;text-align:center}
+  td input{width:80px;box-sizing:border-box}
+</style>
+<body>
+<input id="search" placeholder="Search">
+<table>
+<thead><tr><th>Task</th><th>Sun, 7/12</th><th>Mon, 7/13</th><th>Tue, 7/14</th></tr></thead>
+<tbody>
+<tr><th>Regular</th><td><input id="r_sun" value="0"></td><td><input id="r_mon" value="0"></td><td><input id="r_tue" value="0"></td></tr>
+</tbody></table></body>`)
+	}))
+	defer srv.Close()
+
+	id := firstTab(ctx, t, b)
+	if _, err := b.Navigate(ctx, id, srv.URL); err != nil {
+		t.Fatalf("Navigate: %v", err)
+	}
+
+	if _, err := b.Fill(ctx, id, "Tue, 7/14", "8", QueryOpts{By: "cell"}); err != nil {
+		t.Fatalf("Fill cell Tue, 7/14: %v", err)
+	}
+	for cellID, want := range map[string]string{"r_tue": "8", "r_sun": "0", "r_mon": "0", "search": ""} {
+		got := evalString(ctx, t, b, id, fmt.Sprintf("document.getElementById('%s').value", cellID))
+		if got != want {
+			t.Errorf("%s = %q, want %q", cellID, got, want)
+		}
+	}
+}
+
+// TestCellAddressingReResolvesReplacedNode covers the third shape --by cell met
+// in the wild: a grid that RE-RENDERS its row after a cell commits. Workday's
+// time grid does this after every hour entry, so the input the next fill
+// resolved a moment earlier is gone by the time it is measured. Polling that
+// node measured 0x0 until the deadline and surfaced as `occluded` — one column
+// in five, every row, with no overlay anywhere to dismiss.
+//
+// The fixture commits on `input`: it covers the row with a "saving" overlay for
+// a beat (so the next fill's first measurement is genuinely occluded and it has
+// to poll), then rebuilds every input in the row and lifts the overlay. The
+// second fill therefore resolves the OLD Tue input, watches it get detached, and
+// must re-resolve to the replacement to succeed.
+func TestCellAddressingReResolvesReplacedNode(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping live-Chrome integration in -short mode")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	b, err := launch(true, tmpProfile(t), 0)
+	if err != nil {
+		t.Skipf("cannot launch a managed headless Chrome here: %v", err)
+	}
+	defer b.Close()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		fmt.Fprint(w, `<!doctype html><title>Rerender</title>
+<style>
+  body{margin:0}
+  table{position:absolute;left:0;top:40px;border-collapse:collapse}
+  th,td{width:100px;height:32px;padding:0;text-align:center}
+  td input{width:80px;box-sizing:border-box}
+  #veil{position:absolute;left:0;top:0;width:100vw;height:100vh;background:rgba(0,0,0,.05);display:none}
+</style>
+<body>
+<table>
+<thead><tr><th>Task</th><th>Sun, 7/12</th><th>Mon, 7/13</th><th>Tue, 7/14</th></tr></thead>
+<tbody>
+<tr id="row"><th>Regular</th><td><input id="r_sun" value="0"></td><td><input id="r_mon" value="0"></td><td><input id="r_tue" value="0"></td></tr>
+</tbody></table>
+<div id="veil"></div>
+<script>
+  // Commit = veil the grid, then rebuild the row's inputs (new elements, same
+  // ids and values) and lift the veil — the grid under test's shape.
+  const arm = () => document.querySelectorAll("#row input").forEach(i => i.addEventListener("input", commit, {once: true}));
+  const commit = () => {
+    document.getElementById("veil").style.display = "block";
+    setTimeout(() => {
+      document.querySelectorAll("#row input").forEach(old => {
+        const fresh = document.createElement("input");
+        fresh.id = old.id; fresh.value = old.value;
+        old.replaceWith(fresh);
+      });
+      arm();
+      document.getElementById("veil").style.display = "none";
+    }, 400);
+  };
+  arm();
+</script></body>`)
+	}))
+	defer srv.Close()
+
+	id := firstTab(ctx, t, b)
+	if _, err := b.Navigate(ctx, id, srv.URL); err != nil {
+		t.Fatalf("Navigate: %v", err)
+	}
+
+	if _, err := b.Fill(ctx, id, "Mon, 7/13", "8", QueryOpts{By: "cell"}); err != nil {
+		t.Fatalf("Fill Mon, 7/13: %v", err)
+	}
+	// Straight into the next cell while the row is mid-commit. Bounded so the
+	// failure mode (polling a detached node until the deadline) fails the test
+	// in seconds, not the suite's minute.
+	fctx, fcancel := context.WithTimeout(ctx, 8*time.Second)
+	defer fcancel()
+	if _, err := b.Fill(fctx, id, "Tue, 7/14", "8", QueryOpts{By: "cell"}); err != nil {
+		t.Fatalf("Fill Tue, 7/14 across the row re-render: %v", err)
+	}
+	for cellID, want := range map[string]string{"r_mon": "8", "r_tue": "8", "r_sun": "0"} {
+		got := evalString(ctx, t, b, id, fmt.Sprintf("document.getElementById('%s').value", cellID))
+		if got != want {
+			t.Errorf("%s = %q, want %q", cellID, got, want)
+		}
+	}
+}

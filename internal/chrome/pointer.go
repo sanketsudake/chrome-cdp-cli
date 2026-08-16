@@ -37,6 +37,9 @@ func errIs(err, target error) bool {
 // IsOccluded reports whether err is ErrOccluded.
 func IsOccluded(err error) bool { return errIs(err, ErrOccluded) }
 
+// IsDetached reports whether err is ErrDetached.
+func IsDetached(err error) bool { return errIs(err, ErrDetached) }
+
 // Pointer dispatches one pointer gesture — click, hover, double-click,
 // right-click, or drag — at an element's live, occlusion-verified centre.
 //
@@ -149,11 +152,7 @@ func dragDestination(ctx context.Context, x, y float64, opts PointerOpts, gate *
 	if opts.To == "" {
 		return x + opts.Dx, y + opts.Dy, nil
 	}
-	nid, err := resolveNodeReady(ctx, opts.To, opts.ToQuery)
-	if err != nil {
-		return 0, 0, err
-	}
-	return settledNodePoint(ctx, nid)
+	return settledPointFor(ctx, opts.To, opts.ToQuery)
 }
 
 // dragResult builds the drag envelope payload: both endpoints, the step count
@@ -287,11 +286,7 @@ func pointerOrigin(ctx context.Context, selector string, opts PointerOpts, gate 
 		}
 		return opts.At.X, opts.At.Y, hit, nil
 	}
-	nid, err := resolveNodeReady(ctx, selector, opts.Query)
-	if err != nil {
-		return 0, 0, nil, err
-	}
-	x, y, err = settledNodePoint(ctx, nid)
+	x, y, err = settledPointFor(ctx, selector, opts.Query)
 	return x, y, nil, err
 }
 

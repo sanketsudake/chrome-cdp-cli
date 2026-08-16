@@ -8,6 +8,7 @@ package chrome
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -534,5 +535,44 @@ func TestOccludedSurvivesDeadlineDuringGeometryRead(t *testing.T) {
 		if !IsOccluded(err) {
 			t.Errorf("deadline %s: err = %v, want one IsOccluded recognises", d, err)
 		}
+	}
+}
+
+// The occluded error carries its evidence in the MESSAGE (errors cross the daemon
+// as strings), while still matching IsOccluded — so both the human and the agent
+// learn what sat on top without re-running under instrumentation.
+func TestOccludedErrorMessage(t *testing.T) {
+	t.Parallel()
+	cases := map[string]struct {
+		err  error
+		want string
+	}{
+		"no box": {
+			err:  &OccludedError{},
+			want: "element has no settled, unoccluded clickable centre; it measured 0x0 (no box to click)",
+		},
+		"covered by an overlay": {
+			err:  &OccludedError{CoveredBy: map[string]any{"tag": "DIV", "id": "", "name": "modalOverlay"}},
+			want: `element has no settled, unoccluded clickable centre; its centre is covered by DIV name="modalOverlay"`,
+		},
+		"covered by an identified element": {
+			err:  &OccludedError{CoveredBy: map[string]any{"tag": "INPUT", "id": "q", "role": "textbox"}},
+			want: `element has no settled, unoccluded clickable centre; its centre is covered by INPUT#q role="textbox"`,
+		},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			if got := tc.err.Error(); got != tc.want {
+				t.Errorf("Error() = %q, want %q", got, tc.want)
+			}
+			if !IsOccluded(tc.err) {
+				t.Errorf("IsOccluded(%v) = false, want true", tc.err)
+			}
+			// And after a trip through the daemon, where only the string survives.
+			if !IsOccluded(errors.New(tc.err.Error())) {
+				t.Errorf("IsOccluded(string-only copy) = false, want true")
+			}
+		})
 	}
 }
