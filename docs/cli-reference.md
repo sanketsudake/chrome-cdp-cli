@@ -310,6 +310,7 @@ If the page replaces the element while a verb waits on it (a grid re-rendering i
 | `--delay <dur>` | pause between repeats, for apps that debounce |
 
 `cmd` maps to Meta on every platform — the *page* decides which modifier it listens for, so the CLI never rewrites `cmd` to `ctrl` for you.
+The result reports `focused` (role and accessible name of what has focus after the press) and, when that element has one, `focused_id` (its DOM id) — the disambiguator for grids whose inputs all read as `textbox ""`, so a stroke that landed in the wrong cell shows in the envelope rather than only in a later value read-back.
 `shift+<character>` presses the character that key actually produces, so `shift+a` is the same press as `A` (and `shift+1` is `!`) rather than a lowercase `a` with a Shift bit set.
 An unknown key name is a `usage` error rather than being typed as literal characters.
 

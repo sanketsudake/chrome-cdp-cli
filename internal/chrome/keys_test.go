@@ -457,6 +457,11 @@ func TestKeyLive(t *testing.T) {
 		} else if !strings.Contains(f, "textbox") || !strings.Contains(f, "Field") {
 			t.Errorf("focused = %q, want it to describe the focused textbox", f)
 		}
+		// focused_id names the element by DOM id — the disambiguator for grids
+		// whose inputs all read as `textbox ""`.
+		if fid, _ := res["focused_id"].(string); fid != "q" {
+			t.Errorf("focused_id = %q, want %q", fid, "q")
+		}
 		if log := readLog(t); len(log) != 1 || log[0].Key != "a" || log[0].Code != "KeyA" {
 			t.Errorf("keydown log = %+v, want one {key:a, code:KeyA} — a page reading event.code must still see the press", log)
 		}

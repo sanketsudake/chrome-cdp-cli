@@ -114,6 +114,7 @@ The action verbs, beyond `click`/`type`/`fill`/`select`:
   Calling `type "" "text"` fails with a raw `cdp_error: DOM Error while querying (-32000)` rather than a usage error, so there is no way to type literal text into just the focused element.
   When only focus is available, drive it with `key` (digits and letters are valid key names) or address the element once it becomes focusable.
   A sequence runs left to right: `key "End shift+Home Backspace"` empties the focused field.
+  The result's `focused` (role + name) and `focused_id` (DOM id, when the element has one) say where the stroke landed — check them after a `key` that follows a coordinate click, since a grid's inputs all read as `textbox ""` and a wrong cell is otherwise invisible until the value read-back.
   Inside a dirty dialog `Escape` is not free: apps like Workday answer it with an in-page "Discard Changes?" (`Continue` keeps the data, `Discard` throws it away), so read `snap.alerts` after an Escape rather than assuming a transient popover closed.
   `--repeat N` (1–100) and `--delay` for apps that debounce.
   An unknown key name is a usage error, never typed out letter by letter — use `type` for literal text.

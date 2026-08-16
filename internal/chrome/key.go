@@ -70,6 +70,9 @@ func (c *CDP) Key(ctx context.Context, id, selector string, keys []KeyStroke, op
 	if f := c.focusedDesc(ctx, id); f != "" {
 		res["focused"] = f
 	}
+	if fid := c.focusedID(ctx, id); fid != "" {
+		res["focused_id"] = fid
+	}
 	return withDialogResult(res, sink), nil
 }
 
@@ -170,6 +173,25 @@ func unmodifiedText(k KeyStroke) string {
 // the FIRST node carrying the focused state, and the document root carries it
 // whenever the window has focus — which bringToFront has just arranged. The
 // useful answer is the element inside the document, which appears later.
+// focusedID is the DOM id of the element that has focus after the press, when
+// it has one — the disambiguator `focused` lacks. Grid cells and other unlabelled
+// inputs all read as `textbox ""` in the accessibility tree, so a stroke that
+// landed in the wrong cell of a row is invisible in `focused` and only shows up
+// in the value read-back; a page that gives its inputs ids (Workday's time grid
+// does) makes the target checkable straight from the envelope. Best-effort like
+// `focused`: any failure, or an element with no id, omits the field.
+func (c *CDP) focusedID(ctx context.Context, id string) string {
+	fctx, cancel := context.WithTimeout(ctx, focusedReadTimeout)
+	defer cancel()
+	var fid string
+	err := c.run(fctx, id, chromedp.Evaluate(
+		`(() => { const a = document.activeElement; return a && a !== document.body ? (a.id || "") : ""; })()`, &fid))
+	if err != nil {
+		return ""
+	}
+	return fid
+}
+
 func (c *CDP) focusedDesc(ctx context.Context, id string) string {
 	fctx, cancel := context.WithTimeout(ctx, focusedReadTimeout)
 	defer cancel()
