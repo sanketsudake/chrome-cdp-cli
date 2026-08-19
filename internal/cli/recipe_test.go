@@ -714,6 +714,41 @@ steps:
 	}
 }
 
+// TestRecipeRunFreezesSession is TestRecipeRunFreezesEndpoint's sibling for
+// --session: it is exactly as connection-shaped as --endpoint, and an
+// unfrozen Session would key steps after the first under the wrong (unset)
+// session namespace.
+func TestRecipeRunFreezesSession(t *testing.T) {
+	project, _ := isolateRecipes(t)
+	writeRecipe(t, project, "twousesess", `name: twousesess
+target: aa11
+steps:
+  - run: ["use", "aa11"]
+  - run: ["use", "aa11"]
+`)
+	const wantSession = "task-a"
+	var gotSessions []string
+
+	var out, errb bytes.Buffer
+	app := New(&recordingBrowser{}, &out, &errb)
+	app.WithStickyTarget(
+		func(ConnOpts) string { return "" },
+		func(o ConnOpts, id string) error { gotSessions = append(gotSessions, o.Session); return nil },
+	)
+
+	if code := app.Execute("recipe", "run", "twousesess", "--session", wantSession); code != 0 {
+		t.Fatalf("exit = %d\nstdout: %s\nstderr: %s", code, out.String(), errb.String())
+	}
+	if len(gotSessions) != 2 {
+		t.Fatalf("stickySet called %d times, want 2 (one per step)", len(gotSessions))
+	}
+	for i, got := range gotSessions {
+		if got != wantSession {
+			t.Errorf("step %d: ConnOpts.Session = %q, want the frozen --session %q", i+1, got, wantSession)
+		}
+	}
+}
+
 func TestRecipeRestoresTheAppDefaults(t *testing.T) {
 	project, _ := isolateRecipes(t)
 	writeRecipe(t, project, "three", threeStep)

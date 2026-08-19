@@ -37,7 +37,12 @@ type App struct {
 	port           int
 	// endpoint is an explicit --endpoint URL (ws:// or http://); wins over
 	// port and the DevToolsActivePort file. See browser.FindEndpoint.
-	endpoint    string
+	endpoint string
+	// session namespaces the sticky current tab (--session /
+	// CHROME_CDP_SESSION / TOML session), so several agents can share one
+	// Chrome without stealing each other's current tab. It does NOT
+	// namespace the daemon connection: see ConnOpts.Session.
+	session     string
 	byFlag      string
 	waitFlag    string
 	roleFlag    string
@@ -148,6 +153,13 @@ type ConnOpts struct {
 	ProfileDir string
 	Port       int
 	NoDaemon   bool
+	// Session namespaces the sticky current tab (--session /
+	// CHROME_CDP_SESSION), so the caller building a state.Store key can
+	// append it to the endpoint key. It does NOT key the daemon socket:
+	// sessions on the same endpoint share one connection and its
+	// console/net event buffers by design (see cmd/chrome-cdp/main.go's
+	// socketFor, which reads Endpoint/Port only).
+	Session string
 	// ConsentTimeout travels with the connection options because it is the
 	// daemon that does the waiting, and the daemon is spawned from these. It is
 	// always normalised — see connOpts.
@@ -157,7 +169,7 @@ type ConnOpts struct {
 func (a *App) connOpts() ConnOpts {
 	return ConnOpts{
 		NoLaunch: a.noLaunch, ProfileDir: a.profileDir, Port: a.port, Endpoint: a.endpoint,
-		NoDaemon: a.noDaemon,
+		NoDaemon: a.noDaemon, Session: a.session,
 		// The flag is the last of the three ways this value gets set (config
 		// resolution clamps the file and the environment), so it is clamped
 		// here — with the same function, so no layer can read the number

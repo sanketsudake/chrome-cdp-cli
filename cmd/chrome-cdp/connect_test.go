@@ -47,6 +47,19 @@ func TestDirectConnectOptionsThreadsEndpoint(t *testing.T) {
 // (config.Defaults.BrowserBin) rather than cli.ConnOpts — the same path as
 // the ConsoleBuffer-style capture bounds, not the same path as --endpoint or
 // --port.
+// TestSessionSuffix pins the exact shape stateFor builds its state.New key
+// from: sessionSuffix("") == "" (a no-session invocation keys its sticky
+// target exactly as before this flag existed) and sessionSuffix("a") == "/a"
+// (the separator state.go's sanitize proof assumes).
+func TestSessionSuffix(t *testing.T) {
+	if got := sessionSuffix(""); got != "" {
+		t.Errorf("sessionSuffix(\"\") = %q, want empty", got)
+	}
+	if got := sessionSuffix("a"); got != "/a" {
+		t.Errorf("sessionSuffix(\"a\") = %q, want \"/a\"", got)
+	}
+}
+
 func TestDirectConnectOptionsThreadsBrowserBin(t *testing.T) {
 	var buf bytes.Buffer
 	defs := config.Builtin()

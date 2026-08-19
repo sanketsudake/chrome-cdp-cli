@@ -37,3 +37,17 @@ func directConnectOptions(portFile string, o cli.ConnOpts, defs config.Defaults,
 		RecordBuffer: defs.RecordBuffer, RecordMaxBytes: defs.RecordMaxBytes,
 	}
 }
+
+// sessionSuffix turns --session into the extra path segment stateFor appends
+// to the endpoint key, so state.New's sanitize sees the two joined by "/"
+// exactly once and two sessions on the same endpoint never collide (see the
+// proof on sanitize in internal/state/state.go). An unset session appends
+// nothing, so a no-session invocation keys its sticky target exactly as it
+// always has — this is what makes upgrading to a --session-aware binary a
+// no-op for anyone who never passes the flag.
+func sessionSuffix(session string) string {
+	if session == "" {
+		return ""
+	}
+	return "/" + session
+}

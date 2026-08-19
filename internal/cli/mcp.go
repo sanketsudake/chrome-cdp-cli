@@ -322,6 +322,7 @@ func (a *App) newMCPRunner() *mcpRunner {
 	a.defaults.ProfileDir = a.profileDir
 	a.defaults.Port = a.port
 	a.defaults.Endpoint = a.endpoint
+	a.defaults.Session = a.session
 	a.defaults.JSON = true
 
 	// From here on every Execute is a tool call, and the policy flags stop

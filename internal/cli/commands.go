@@ -15,6 +15,7 @@ import (
 	"github.com/sanketsudake/chrome-cdp-cli/internal/browser"
 	"github.com/sanketsudake/chrome-cdp-cli/internal/chrome"
 	"github.com/sanketsudake/chrome-cdp-cli/internal/result"
+	"github.com/sanketsudake/chrome-cdp-cli/internal/state"
 )
 
 // Version is set at build time via -ldflags.
@@ -58,6 +59,14 @@ func (a *App) newRoot() *cobra.Command {
 				a.emitErr(a.verbPath, result.CodeUsage, err.Error(), nil)
 				return err
 			}
+			// --session gets the same treatment, in the same hook, for the same
+			// reason: a malformed session namespace is usage/exit 2 with Chrome
+			// never touched, rather than surfacing later as a confusing sticky-
+			// target failure.
+			if err := state.ValidateSession(a.session); err != nil {
+				a.emitErr(a.verbPath, result.CodeUsage, err.Error(), nil)
+				return err
+			}
 			return nil
 		},
 	}
@@ -74,6 +83,7 @@ func (a *App) newRoot() *cobra.Command {
 	pf.StringVar(&a.profileDir, "profile-dir", d.ProfileDir, "managed-launch Chrome profile dir (else $CHROME_CDP_PROFILE or ~/.cache/chrome-cdp/profile)")
 	pf.IntVar(&a.port, "port", d.Port, "explicit Chrome debug port to attach to / launch with (0 = auto)")
 	pf.StringVar(&a.endpoint, "endpoint", d.Endpoint, "explicit Chrome debug endpoint: ws://host:port/devtools/browser/<id> or http://host:port (wins over --port and the DevToolsActivePort file; no wss:// or https:// — TLS endpoints are not supported)")
+	pf.StringVar(&a.session, "session", d.Session, "name a sticky-target namespace so several agents can share one Chrome without stealing each other's current tab (or CHROME_CDP_SESSION)")
 	pf.StringVar(&a.byFlag, "by", d.By, "selector syntax: css|id|search|jspath|css-all|name|ref|cell|label (name = ARIA accessible name; ref = snap e<id>; cell = grid input by [row|]column header; label = form control by visible label text)")
 	pf.StringVar(&a.waitFlag, "wait", d.Wait, "selector wait condition: visible|ready|enabled")
 	pf.StringVar(&a.roleFlag, "role", "", "with --by name: constrain to an ARIA role (button|link|textbox|…)")
@@ -214,7 +224,7 @@ func (a *App) cmdList() *cobra.Command {
 				}
 				rows = append(rows, a.redactTab(tabRow{Idx: i + 1, ID: t.ID, Title: t.Title, URL: t.URL}))
 			}
-			a.emitOK("list", nil, map[string]any{"tabs": rows})
+			a.emitOK("list", nil, map[string]any{"tabs": rows, "current_session": a.session})
 			return nil
 		},
 	}
@@ -244,7 +254,7 @@ func (a *App) cmdUse() *cobra.Command {
 				a.emitErr("use", "generic", "cannot persist the current tab: "+err.Error(), nil)
 				return nil
 			}
-			a.emitOK("use", tgt, map[string]any{"current": tgt.ID})
+			a.emitOK("use", tgt, map[string]any{"current": tgt.ID, "session": a.session})
 			return nil
 		},
 	}
@@ -974,6 +984,30 @@ func (a *App) cmdSession() *cobra.Command {
 				a.emitErr("session", rerr.Code, rerr.Message, rerr.Details)
 				return nil
 			}
+			// Flags are re-registered per Execute — each stdin line below is a
+			// fresh a.Execute(argv) that rebuilds the command tree via newRoot,
+			// which re-registers every persistent flag with a.defaults as its
+			// default. A line with no --session/--port/--endpoint of its own
+			// (every real line) would otherwise silently reset to the config
+			// default on line 1 already, the same failure runPlan's freeze
+			// (recipe.go) exists to prevent for `recipe run`. So the connection-
+			// shaped flags this invocation was actually given are folded into
+			// a.defaults for the duration of the batch, and restored after —
+			// the defaults are BORROWED, not changed, the same way runPlan
+			// borrows and restores them.
+			//
+			// Selector semantics (--by, --role, …) are deliberately NOT frozen:
+			// they belong in each line's own argv, where a reader of the batch
+			// can see them, not in a value hidden on the App.
+			savedDefaults := a.defaults
+			defer func() { a.defaults = savedDefaults }()
+			a.defaults.Endpoint = a.endpoint
+			a.defaults.Port = a.port
+			a.defaults.ProfileDir = a.profileDir
+			a.defaults.NoLaunch = a.noLaunch
+			a.defaults.NoDaemon = a.noDaemon
+			a.defaults.ConsentTimeout = a.consentTimeout
+			a.defaults.Session = a.session
 			// Each result line is a JSON envelope (NDJSON) regardless of the global
 			// --json default. inSession marks the re-entrant runs below, so a
 			// streaming verb rejects itself rather than interleaving many lines

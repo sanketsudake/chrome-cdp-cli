@@ -668,6 +668,67 @@ func TestBrowserBinPrecedence(t *testing.T) {
 	}
 }
 
+// TestSessionPrecedence: --session's namespace can come from the config file
+// or CHROME_CDP_SESSION, and the env wins, matching TestEndpointPrecedence.
+func TestSessionPrecedence(t *testing.T) {
+	t.Parallel()
+
+	// Built-in: unset.
+	d, _ := ResolveFrom(filepath.Join(t.TempDir(), "absent.toml"), noEnv)
+	if d.Session != "" {
+		t.Errorf("built-in session = %q, want empty", d.Session)
+	}
+
+	p := writeConfig(t, `session = "task-a"`+"\n")
+	d, err := ResolveFrom(p, noEnv)
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if d.Session != "task-a" {
+		t.Errorf("config session = %q, want task-a", d.Session)
+	}
+
+	// Env beats the file.
+	d, _ = ResolveFrom(p, envFrom(map[string]string{"CHROME_CDP_SESSION": "task-b"}))
+	if d.Session != "task-b" {
+		t.Errorf("env session should win, got %q", d.Session)
+	}
+}
+
+// TestMalformedSessionIsDroppedNotFatal: an invalid session name in
+// config.toml or CHROME_CDP_SESSION must not brick the CLI. Session becomes
+// the --session flag's DEFAULT, and the CLI validates that flag ahead of
+// every command (including ones that never touch Chrome) — so an unvalidated
+// bad value here would turn one stray config line into a usage failure across
+// the whole CLI, the same reasoning TestMalformedEndpointIsDroppedNotFatal
+// documents for --endpoint.
+func TestMalformedSessionIsDroppedNotFatal(t *testing.T) {
+	t.Parallel()
+
+	p := writeConfig(t, `session = "has a space"`+"\n") // fails ^[A-Za-z0-9._-]{1,64}$
+	d, err := ResolveFrom(p, noEnv)
+	if err != nil {
+		t.Fatalf("a malformed session value must not fail the whole config: %v", err)
+	}
+	if d.Session != "" {
+		t.Errorf("malformed file session = %q, want dropped (empty)", d.Session)
+	}
+
+	// A malformed env value must not clobber a valid file value either.
+	valid := writeConfig(t, `session = "task-a"`+"\n")
+	d, _ = ResolveFrom(valid, envFrom(map[string]string{"CHROME_CDP_SESSION": "bad value"}))
+	if d.Session != "task-a" {
+		t.Errorf("a malformed env session should leave the file value alone, got %q", d.Session)
+	}
+
+	// A malformed env value with no file underneath leaves the built-in
+	// (empty) alone.
+	d, _ = ResolveFrom(filepath.Join(t.TempDir(), "absent.toml"), envFrom(map[string]string{"CHROME_CDP_SESSION": "bad value"}))
+	if d.Session != "" {
+		t.Errorf("malformed env session with no file = %q, want dropped (empty)", d.Session)
+	}
+}
+
 // TestMalformedEndpointIsDroppedNotFatal: a bad scheme in config.toml or
 // CHROME_CDP_ENDPOINT must not brick the CLI. Endpoint becomes the --endpoint
 // flag's DEFAULT, and the CLI validates that flag ahead of every command

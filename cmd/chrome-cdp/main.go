@@ -59,8 +59,12 @@ func main() {
 	socketFor := func(o cli.ConnOpts) string {
 		return daemon.SocketPath(browser.EndpointKey(o.Endpoint, portFile, o.Port))
 	}
+	// stateFor is per-session, socketFor deliberately is not: the daemon
+	// connection and its console/net event buffers are shared across sessions
+	// on the same endpoint by design, and only the sticky current tab is
+	// namespaced.
 	stateFor := func(o cli.ConnOpts) (*state.Store, error) {
-		return state.New(browser.EndpointKey(o.Endpoint, portFile, o.Port))
+		return state.New(browser.EndpointKey(o.Endpoint, portFile, o.Port) + sessionSuffix(o.Session))
 	}
 
 	// Resolve persistent defaults (config file + CHROME_CDP_* env); a malformed

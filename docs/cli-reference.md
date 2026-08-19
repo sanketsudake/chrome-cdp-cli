@@ -58,6 +58,7 @@ These apply to every command.
 | `--port <n>` | auto | explicit Chrome debug port |
 | `--endpoint <url>` | — | explicit debug endpoint, `ws://host:port/devtools/browser/<id>` or `http://host:port` (wins over `--port` and the `DevToolsActivePort` file; see [Explicit endpoint](#explicit-endpoint)) |
 | `--profile-dir <dir>` | default | managed-launch Chrome profile dir |
+| `--session <name>` | — | namespace the sticky current tab, so several agents can share one Chrome without stealing each other's tab (see [Several agents, one Chrome](#several-agents-one-chrome)) |
 | `--no-color` | off | plain output (also honors `$NO_COLOR`) |
 | `-q, --quiet` | off | suppress non-essential output |
 | `-v, --verbose` | off | verbose diagnostics on stderr |
@@ -81,6 +82,24 @@ A command acts on one tab, chosen (highest precedence first) by `--target`, then
 chrome-cdp use url:github     # set the sticky tab once…
 chrome-cdp snap               # …then omit --target on later commands
 ```
+
+### Several agents, one Chrome
+
+`--session <name>` (config key `session`, env `CHROME_CDP_SESSION`) namespaces the sticky current tab, so several agents driving the same Chrome each keep their own "current tab" instead of stealing each other's.
+Set it once and every command in that shell inherits it:
+
+```sh
+export CHROME_CDP_SESSION=<task>   # before the first command
+chrome-cdp use url:github          # sets THIS session's sticky tab, not any other's
+```
+
+A session name must match `^[A-Za-z0-9._-]{1,64}$`; a malformed `--session` is `usage`/exit 2 before Chrome is touched, and a malformed `CHROME_CDP_SESSION` or config `session` is dropped the same way a malformed `endpoint` is.
+
+The daemon socket is **not** per session: every session on the same endpoint shares one connection and its console/net event buffers by design, so `console`/`net` capture across sessions the same way they always have.
+Only the sticky current tab is namespaced.
+
+A sticky tab that was closed is not silently swapped for another tab — it resolves to `target_not_found`, the same `tab_gone` behaviour the `agent-browser` tool documents.
+Run `use` again to point the session at a live tab.
 
 ## Addressing elements
 
@@ -1305,6 +1324,7 @@ consent_timeout = "2m" # how long to wait for Chrome's consent prompt (1s-10m; 0
 by = "search"          # default selector syntax
 target = "url:github"  # default tab when neither --target nor `use` is set
 endpoint = "ws://127.0.0.1:9222/devtools/browser/<id>" # explicit debug endpoint; see Explicit endpoint
+session = "task-a"     # namespace the sticky current tab; see Several agents, one Chrome
 browser_bin = "/usr/bin/chromium" # binary the managed-launch fallback execs instead of Chrome; env CHROME_CDP_BROWSER_BIN; see Which browsers
 ```
 

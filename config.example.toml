@@ -33,6 +33,12 @@
 #                       # not supported). Wins over port and the DevToolsActivePort file —
 #                       # use it to reach a Chrome this tool cannot discover on its own (a
 #                       # container, an SSH-forwarded port, another machine).
+# session = ""          # namespace the sticky current tab (env CHROME_CDP_SESSION), so
+#                       # several agents can share one Chrome without stealing each
+#                       # other's current tab. Must match ^[A-Za-z0-9._-]{1,64}$; a
+#                       # malformed value here is dropped, like a malformed endpoint.
+#                       # Does NOT namespace the daemon connection or its console/net
+#                       # event buffers — those are shared across sessions by design.
 # profile_dir = ""      # managed-launch Chrome profile directory
 # browser_bin = ""      # binary the managed-launch fallback execs instead of Chrome
 #                       # (env CHROME_CDP_BROWSER_BIN). No --browser-bin flag; Chrome,

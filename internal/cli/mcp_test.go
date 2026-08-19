@@ -861,6 +861,34 @@ func TestMCPRunnerFreezesEndpoint(t *testing.T) {
 	}
 }
 
+// TestMCPRunnerFreezesSession is TestMCPRunnerFreezesEndpoint's sibling for
+// --session: it is exactly as connection-shaped as --port and --endpoint, and
+// newMCPRunner has to freeze it into a.defaults the same way, or an
+// operator's `chrome-cdp mcp --session agent-1` would parse fine at startup
+// and then silently lose the session on the very first tool call.
+func TestMCPRunnerFreezesSession(t *testing.T) {
+	t.Parallel()
+	const wantSession = "agent-1"
+	var got ConnOpts
+	b := &fakeBrowser{tabs: mcpTabs}
+	app := New(nil, &bytes.Buffer{}, &bytes.Buffer{}).WithConnector(func(_ context.Context, o ConnOpts) (chrome.Browser, error) {
+		got = o
+		return b, nil
+	})
+	// Simulates the state right after cobra parsed a genuine `--session` flag
+	// on the `mcp` invocation itself, before newMCPRunner freezes it.
+	app.session = wantSession
+	runner := app.newMCPRunner()
+
+	env, exit := runner.Run(mcpCtx(t), []string{"list", "--json"})
+	if exit != result.ExitOK {
+		t.Fatalf("list: exit = %d, want %d: %s", exit, result.ExitOK, env)
+	}
+	if got.Session != wantSession {
+		t.Errorf("ConnOpts.Session on a tool call = %q, want the frozen --session %q", got.Session, wantSession)
+	}
+}
+
 // The allow-list bounds `close` when an MCP client is driving, per tab.
 //
 // `close` is Exempt in the classification table, so checkPolicy returns before

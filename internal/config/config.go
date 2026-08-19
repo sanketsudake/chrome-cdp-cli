@@ -17,6 +17,7 @@ import (
 
 	"github.com/sanketsudake/chrome-cdp-cli/internal/browser"
 	"github.com/sanketsudake/chrome-cdp-cli/internal/chrome"
+	"github.com/sanketsudake/chrome-cdp-cli/internal/state"
 )
 
 // Defaults are the effective global-flag defaults after the config file and
@@ -37,6 +38,12 @@ type Defaults struct {
 	// Port and the DevToolsActivePort file (config key endpoint, env
 	// CHROME_CDP_ENDPOINT). See browser.FindEndpoint.
 	Endpoint string
+	// Session namespaces the sticky current tab (config key session, env
+	// CHROME_CDP_SESSION), so several agents can share one Chrome without
+	// stealing each other's current tab. It does NOT namespace the daemon
+	// socket: the connection and its console/net event buffers are shared
+	// across sessions by design. See state.ValidateSession for the grammar.
+	Session string
 	// BrowserBin is a non-Chrome binary the managed-launch fallback execs
 	// instead of Chrome (config key browser_bin, env CHROME_CDP_BROWSER_BIN).
 	// There is no --browser-bin flag: a managed-launch fallback is already the
@@ -143,6 +150,7 @@ type file struct {
 	Target         *string `toml:"target"`
 	Port           *int    `toml:"port"`
 	Endpoint       *string `toml:"endpoint"`
+	Session        *string `toml:"session"`
 	BrowserBin     *string `toml:"browser_bin"`
 	ProfileDir     *string `toml:"profile_dir"`
 	NoLaunch       *bool   `toml:"no_launch"`
@@ -312,6 +320,14 @@ func applyFile(d *Defaults, path string) error {
 			d.Endpoint = *f.Endpoint
 		}
 	}
+	if f.Session != nil {
+		// Same reasoning as Endpoint just above: a malformed session name is
+		// dropped, not fatal, and validated here rather than left for the
+		// CLI's flag-level check, which runs for EVERY command.
+		if err := state.ValidateSession(*f.Session); err == nil {
+			d.Session = *f.Session
+		}
+	}
 	if f.BrowserBin != nil {
 		d.BrowserBin = *f.BrowserBin
 	}
@@ -465,6 +481,12 @@ func applyEnv(d *Defaults, getenv func(string) string) {
 		// function (setInt/setBool leave the prior value alone too).
 		if err := browser.ValidateEndpoint(v); err == nil {
 			d.Endpoint = v
+		}
+	}
+	if v := getenv("CHROME_CDP_SESSION"); v != "" {
+		// Same reasoning as CHROME_CDP_ENDPOINT above: dropped, not fatal.
+		if err := state.ValidateSession(v); err == nil {
+			d.Session = v
 		}
 	}
 	if v := getenv("CHROME_CDP_BROWSER_BIN"); v != "" {
