@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -16,11 +17,14 @@ func (a *App) cmdSkill() *cobra.Command {
 	var full bool
 	c := &cobra.Command{
 		Use:   "skill",
-		Short: "Print the agent skill doc that matches this binary",
-		Long: "Print the drive-chrome-cdp agent skill embedded in this binary, so the\n" +
-			"doc an agent reads always matches the CLI it is driving.\n" +
-			"With no flag, prints the core loop; --full adds every reference.\n" +
-			"`skill list` names the references and `skill get <name>` prints one.",
+		Short: "Print an agent skill doc embedded in this binary",
+		Long: "Print an agent skill embedded in this binary, so the doc an agent reads\n" +
+			"always matches the CLI it is driving: drive-chrome-cdp plus the scenario\n" +
+			"skills built on it.\n" +
+			"With no flag, prints the drive-chrome-cdp core loop; --full adds every\n" +
+			"reference.\n" +
+			"`skill list` names every skill and reference; `skill get <name>` prints\n" +
+			"one (a reference, a skill, or `<skill>/<reference>`).",
 		Args: cobra.NoArgs,
 		RunE: func(*cobra.Command, []string) error {
 			content, err := skills.Core()
@@ -28,7 +32,9 @@ func (a *App) cmdSkill() *cobra.Command {
 				content, err = skills.Full()
 			}
 			if err != nil {
-				a.emitErr("skill", result.CodeUsage, err.Error(), nil)
+				// A read failure here is the embedded FS misbehaving, not a
+				// bad invocation — this command takes no args to get wrong.
+				a.emitErr("skill", result.CodeGeneric, err.Error(), nil)
 				return nil
 			}
 			if a.jsonOut {
@@ -49,17 +55,38 @@ func (a *App) cmdSkill() *cobra.Command {
 	return c
 }
 
+// cmdSkillList lists the embedded skills and, for drive-chrome-cdp, its
+// reference names. In human mode: skills first (drive-chrome-cdp pinned to
+// the top, since every other skill here builds on it — Skills() would
+// otherwise sort check-logged-in ahead of it), a blank line, then the
+// references.
 func (a *App) cmdSkillList() *cobra.Command {
 	return &cobra.Command{
 		Use:   "list",
-		Short: "List the skill's reference names",
+		Short: "List the embedded skill and reference names",
 		Args:  cobra.NoArgs,
 		RunE: func(*cobra.Command, []string) error {
+			names := skills.Skills()
 			refs := skills.References()
 			if a.jsonOut {
-				a.emitOK("skill", nil, map[string]any{"name": "drive-chrome-cdp", "references": refs})
+				a.emitOK("skill", nil, map[string]any{
+					"name":       "drive-chrome-cdp",
+					"skills":     names,
+					"references": refs,
+				})
 				return nil
 			}
+			// drive-chrome-cdp leads the human listing — it is the skill
+			// every other one here builds on — even though it does not
+			// necessarily sort first among the rest.
+			fmt.Fprintln(a.out, "drive-chrome-cdp")
+			for _, n := range names {
+				if n == "drive-chrome-cdp" {
+					continue
+				}
+				fmt.Fprintln(a.out, n)
+			}
+			fmt.Fprintln(a.out)
 			for _, r := range refs {
 				fmt.Fprintln(a.out, r)
 			}
@@ -69,19 +96,23 @@ func (a *App) cmdSkillList() *cobra.Command {
 	}
 }
 
+// cmdSkillGet resolves <name> to a document in this order: a drive-chrome-cdp
+// reference (e.g. "core"), else a skill name (e.g. "check-logged-in"), else
+// the explicit "<skill>/<reference>" form (e.g. "drive-chrome-cdp/core").
+// Anything else is a usage error before touching Chrome.
 func (a *App) cmdSkillGet() *cobra.Command {
 	return &cobra.Command{
-		Use:   "get <reference>",
-		Short: "Print one reference file",
+		Use:   "get <name>",
+		Short: "Print one skill or drive-chrome-cdp reference",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(_ *cobra.Command, args []string) error {
-			content, err := skills.Reference(args[0])
+			name, ref, content, err := resolveSkillGet(args[0])
 			if err != nil {
 				a.emitErr("skill", result.CodeUsage, err.Error(), nil)
 				return nil
 			}
 			if a.jsonOut {
-				a.emitOK("skill", nil, map[string]any{"name": args[0], "content": string(content)})
+				a.emitOK("skill", nil, map[string]any{"name": name, "reference": ref, "content": string(content)})
 				return nil
 			}
 			fmt.Fprint(a.out, string(content))
@@ -89,4 +120,22 @@ func (a *App) cmdSkillGet() *cobra.Command {
 			return nil
 		},
 	}
+}
+
+// resolveSkillGet implements the resolution order documented on
+// cmdSkillGet, returning the skill name, the reference name (empty when
+// arg names a whole skill), and the resolved content.
+func resolveSkillGet(arg string) (name, ref string, content []byte, err error) {
+	if b, e := skills.Reference(arg); e == nil {
+		return "drive-chrome-cdp", arg, b, nil
+	}
+	if b, e := skills.Skill(arg); e == nil {
+		return arg, "", b, nil
+	}
+	if skillPart, refPart, ok := strings.Cut(arg, "/"); ok && skillPart == "drive-chrome-cdp" {
+		if b, e := skills.Reference(refPart); e == nil {
+			return "drive-chrome-cdp", refPart, b, nil
+		}
+	}
+	return "", "", nil, fmt.Errorf("unknown skill or reference %q", arg)
 }

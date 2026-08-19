@@ -1052,14 +1052,16 @@ chrome-cdp raw Browser.getVersion --browser                  # browser-level met
 | `policy init` | write a starter [`[policy]`](#policy) table allow-listing the current tab's origin (`--wildcard`, `--print`, `-o`) |
 | `exit-codes` | print the exit-code table |
 | `version` | print the version |
-| `skill [--full]\|list\|get <name>` | print the embedded drive-chrome-cdp agent skill |
+| `skill [--full]\|list\|get <name>` | print an embedded agent skill: drive-chrome-cdp plus the scenario skills built on it |
 | `completion bash\|zsh\|fish\|powershell` | shell completion script |
 
-`skill` serves the agent skill baked into this binary, so the doc an agent reads always matches the CLI version it drives — a vendored copy can drift, this can't.
-No flag prints the core loop; `--full` adds every reference; `skill list` names the references; `skill get <name>` prints one.
+`skill` serves the agent skills baked into this binary, so the doc an agent reads always matches the CLI version it drives — a vendored copy can drift, this can't.
+With no subcommand it prints the drive-chrome-cdp core loop; `--full` adds every drive-chrome-cdp reference.
+`skill list` names every embedded skill (`drive-chrome-cdp`, `check-logged-in`, `fill-grid-and-confirm`, …) and the drive-chrome-cdp references.
+`skill get <name>` resolves `<name>` in this order: a drive-chrome-cdp reference (`core`, `widgets`, …), else a skill name (`check-logged-in`), else the explicit `<skill>/<reference>` form (`drive-chrome-cdp/core`); anything else is a `usage` error (exit 2).
 It never connects to Chrome.
-In human mode each form writes the raw markdown to stdout, no envelope.
-With `--json` every form wraps its content in `{"name":"drive-chrome-cdp","references":[…],"content":"…"}` (`skill list --json` omits `content`); an unknown `get` reference is a `usage` error (exit 2).
+In human mode each form writes the raw markdown to stdout, no envelope; `skill list` prints the skill names (drive-chrome-cdp first), a blank line, then the reference names.
+With `--json`: bare `skill`/`skill --full` wrap content as `{"name":"drive-chrome-cdp","references":[…],"content":"…"}`; `skill get <name>` wraps it as `{"name":"<skill>","reference":"<ref, or empty for a whole skill>","content":"…"}`; `skill list` returns `{"name":"drive-chrome-cdp","skills":[…],"references":[…]}` (no `content`).
 
 ## Connection model
 

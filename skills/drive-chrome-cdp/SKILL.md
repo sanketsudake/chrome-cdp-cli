@@ -10,8 +10,8 @@ Start here — the CLI serves the guide that matches the installed version:
 ```sh
 chrome-cdp skill            # the core loop: doctor → list → use → snap → act → verify
 chrome-cdp skill --full     # plus every reference below
-chrome-cdp skill list       # reference names
-chrome-cdp skill get <name> # one reference
+chrome-cdp skill list       # every embedded skill, then these reference names
+chrome-cdp skill get <name> # one reference, or another skill by name
 ```
 
 If the binary is missing, read [`references/core.md`](references/core.md) and install per the [README](https://github.com/sanketsudake/chrome-cdp-cli#quickstart).

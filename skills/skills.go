@@ -1,5 +1,5 @@
-// Package skills embeds the agent skill so `chrome-cdp skill` serves the doc
-// that matches the installed binary.
+// Package skills embeds the agent skills so `chrome-cdp skill` serves docs
+// that match the installed binary.
 package skills
 
 import (
@@ -11,7 +11,7 @@ import (
 	"strings"
 )
 
-//go:embed drive-chrome-cdp/SKILL.md drive-chrome-cdp/references/*.md
+//go:embed */SKILL.md */references/*.md */evals/*.json
 var FS embed.FS
 
 const dir = "drive-chrome-cdp"
@@ -72,4 +72,34 @@ func References() []string {
 	}
 	sort.Strings(names)
 	return names
+}
+
+// Skills returns the name of every embedded skill directory (one that
+// carries a SKILL.md), sorted.
+func Skills() []string {
+	entries, _ := fs.ReadDir(FS, ".")
+	var names []string
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		if _, err := fs.Stat(FS, e.Name()+"/SKILL.md"); err != nil {
+			continue
+		}
+		names = append(names, e.Name())
+	}
+	sort.Strings(names)
+	return names
+}
+
+// Skill returns one skill's SKILL.md content by directory name.
+func Skill(name string) ([]byte, error) {
+	if strings.ContainsAny(name, "/\\.") {
+		return nil, fmt.Errorf("unknown skill %q", name)
+	}
+	b, err := FS.ReadFile(name + "/SKILL.md")
+	if err != nil {
+		return nil, fmt.Errorf("unknown skill %q", name)
+	}
+	return b, nil
 }
