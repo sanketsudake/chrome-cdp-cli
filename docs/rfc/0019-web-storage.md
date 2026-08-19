@@ -1,6 +1,6 @@
 # RFC-0019: `storage` — read and write the tab's `localStorage` and `sessionStorage`
 
-- **Status:** Draft
+- **Status:** Accepted — pending PR
 - **Priority:** P2
 - **Area:** reading / acting
 - **Depends on:** RFC-0003 (the credential redaction predicates `RedactedHeaderName`, `RedactedParamName` and `RedactBody` in `internal/chrome/net.go`, and the `NetRedacted` placeholder, all reused verbatim), RFC-0012 (the policy classes the ten subcommands take)
@@ -327,7 +327,7 @@ The calls are ordinary unary calls under `s.mu`; nothing here blocks the rendere
   `clear` is Mutating and irreversible and takes no confirmation flag: the policy layer is where an operator bounds it (`read_only`, `verbs_denied = ["storage local clear"]`), exactly as for `cookie clear`.
   The policy section of `docs/cli-reference.md` lists `storage set/rm/clear` under Acting and `storage list/get` under Reading.
 - **MCP** (`internal/mcp/tools.go`): **one new tool, `chrome_cdp_storage`, behind `--tools full` only** (`full: true`).
-  The default set is at RFC-0004's cap of 18 and the "≤ 18" comment stays true; the verb does not fold into an existing tool because no default tool mixes reads and writes of browser state (`read` is read-only by construction; `tabs` is tab lifecycle), and because reading the area that holds the session token is the kind of capability a user opts into, the same reasoning that keeps `record` out of the default set.
+  The default set is at RFC-0004's cap of 18 and the "≤ 18" comment stays true; the verb does not fold into an existing tool because no default tool reads page-held credential-shaped state (`read` is read-only by construction and reads only DOM/text content; `tabs` folds in tab lifecycle plus dialog inspection, neither of which touches a session token), and because reading the area that holds the session token is the kind of capability a user opts into — the same reasoning that keeps `raw_cdp`, the one tool already gated by `full: true`, out of the default set.
   `cookie` is not exposed over MCP at all; `storage` is, because an MCP agent driving an SPA needs the feature-flag read and the clear far more often than it needs cookies.
   Shape: `disc: "action"` with `actions: {"list": "storage local list", "get": "storage local get", "set": "storage local set", "rm": "storage local rm", "clear": "storage local clear"}`, plus a required `scope` argument (enum `local`, `session`, no flag — it is a path segment), `key` and `value` (positional; required-ness enforced in `build`, never in the schema, per the RFC-0014 lesson), `no_redact` (flag `no-redact`) and `max_value` (flag `max-value`, `c.num`).
   `build` returns the verb `"storage " + scope + " " + action` with the positionals after `--`, so the per-call `refusedByReadOnly` check at dispatch sees the real verb; the `actions` map names the `local` verb as the representative for schema narrowing, which is honest because each action has the same class in both scopes — `TestStorageActionsShareClassAcrossScopes` asserts `Classify("storage local X") == Classify("storage session X")` for all five.
@@ -462,4 +462,13 @@ The fixture **must** be an `http://127.0.0.1` page: web storage is disabled insi
 
 ## Open questions
 
-None.
+None at proposal time.
+Two implementation notes, recorded here after the fact rather than as silent edits to the proposal above:
+
+- The MCP rationale originally cited `record` as the precedent for keeping a capability out of the default tool set behind `full: true`.
+  `record` is not exposed as an MCP tool at all — it never appears in `registry()` (internal/mcp/tools.go) — so that citation was fabricated rather than checked against the code.
+  The real precedent is `raw_cdp`, the only tool `full: true` gated before this RFC.
+  The bullet above is corrected to cite it.
+- The MCP rationale also said `tabs` is "tab lifecycle" as part of why `storage` does not fold into it.
+  RFC-0018 (implemented on this branch ahead of this one) folded `dialog_status`/`dialog_accept`/`dialog_dismiss` into the default `tabs` tool, so `tabs` is no longer pure lifecycle by the time this RFC ships.
+  The bullet above is softened to name what actually distinguishes `storage`: no default tool — `tabs` included — reads page-held credential-shaped state, which is the property that matters here.

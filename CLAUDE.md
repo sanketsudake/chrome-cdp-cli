@@ -13,7 +13,7 @@ Read the resource file that matches your task before making changes:
   Read this before touching anything cross-cutting.
 - **[Development](.claude/resources/development.md)** — build, test (`go test -short` to skip live Chrome), lint, what CI runs, and release.
 - **[Test-writing guidelines](.claude/resources/test-writing-guidelines.md)** — how tests are structured here (stub-driven unit tests, `testing.Short()`-guarded live-Chrome tests) and which conventions are adopted vs. deviated from.
-- **[Implementing an RFC](.claude/resources/rfc-implementation.md)** — the six places a new browser capability has to touch (including the daemon RPC, which compiles fine when you forget it and then fails for every real user), and the traps specific to this codebase.
+- **[Implementing an RFC](.claude/resources/rfc-implementation.md)** — the seven places a new browser capability has to touch (including the daemon RPC, which compiles fine when you forget it and then fails for every real user), and the traps specific to this codebase.
   Read before implementing anything in `docs/rfc/`.
 
 ## The two things most likely to trip you up
@@ -25,9 +25,9 @@ Read the resource file that matches your task before making changes:
   Validate usage/args *before* connecting to Chrome.
 - **The CLI never connects to Chrome directly.**
   `cli.App` holds function seams (`WithConnector`, `WithStickyTarget`, `WithDaemonCtl`) that `cmd/chrome-cdp/main.go` wires to the daemon.
-  To add a browser capability: extend the `chrome.Browser` interface → add a default in `chrometest.StubBrowser` (one place) → implement in `internal/chrome` → **wire both halves of the daemon RPC** (a `remoteBrowser` forwarder *and* a `dispatch` case in `internal/daemon/daemon.go`).
-  Skip that last step and the method compiles, passes every stub-backed test, and then fails for every real user — the daemon is the default path.
-  `TestDispatchCoversBrowser` guards it.
+  To add a browser capability: extend the `chrome.Browser` interface → add a default in `chrometest.StubBrowser` (one place) → implement in `internal/chrome` → **wire both halves of the daemon RPC** (a `remoteBrowser` forwarder *and* a `dispatch` case in `internal/daemon/daemon.go`) → add the matching `boundBrowser` forwarder in `internal/mcp/bind.go`.
+  Skip the daemon step and the method compiles, passes every stub-backed test, and then fails for every real user — the daemon is the default path.
+  `TestDispatchCoversBrowser` guards it, and `TestBoundBrowserBindsEveryMethod` guards the `bind.go` step the same way.
 
 ## Docs & style
 

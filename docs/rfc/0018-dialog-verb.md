@@ -1,6 +1,6 @@
 # RFC-0018: `dialog` — inspect and close a native dialog that is already on screen
 
-- **Status:** Draft
+- **Status:** Accepted — pending PR
 - **Priority:** P1
 - **Area:** input
 - **Depends on:** RFC-0002 (the attach-time capture hook, `listenCapture`, where every per-tab listener is registered before the tab is attached), the `--on-dialog` action option (`withDialog` in `internal/chrome/cdp.go`, whose CDP mechanics this RFC reuses)
