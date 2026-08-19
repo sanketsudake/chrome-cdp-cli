@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -556,7 +557,10 @@ func TestNetHarWritesTheFileAndSummarises(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if fi.Mode().Perm() != 0o600 {
+	// Windows has no POSIX permission bits; os.Chmod/the file's Mode().Perm()
+	// don't reflect 0600 the way they do on POSIX, so this assertion has no
+	// meaning there.
+	if runtime.GOOS != "windows" && fi.Mode().Perm() != 0o600 {
 		t.Errorf("file mode = %v, want 0600", fi.Mode().Perm())
 	}
 	if !strings.Contains(string(data), `"version": "1.2"`) {
@@ -735,6 +739,9 @@ func TestNetHarBadPathIsGenericBeforeConnecting(t *testing.T) {
 func TestNetHarClearProbesWritabilityBeforeConnecting(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("root ignores directory write permissions")
+	}
+	if runtime.GOOS == "windows" {
+		t.Skip("chmod-based unwritable dir is not enforced on Windows")
 	}
 	t.Parallel()
 	dir := t.TempDir()

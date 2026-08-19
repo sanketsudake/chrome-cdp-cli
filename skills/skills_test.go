@@ -121,3 +121,18 @@ func TestEvalsJSONParsesWithThreeEntries(t *testing.T) {
 		}
 	}
 }
+
+// TestNormalizeLineEndingsRewritesCRLF proves the helper every read path
+// routes through turns \r\n into \n, so a Windows checkout (which embeds
+// CRLF via actions/checkout's default autocrlf) cannot change what
+// `chrome-cdp skill` prints. The embed.FS itself can't be made to serve
+// CRLF bytes in a test, so this exercises the helper directly.
+func TestNormalizeLineEndingsRewritesCRLF(t *testing.T) {
+	t.Parallel()
+	in := []byte("---\r\nname: drive-chrome-cdp\r\ndescription: >-\r\n  line\r\n---\r\n")
+	want := []byte("---\nname: drive-chrome-cdp\ndescription: >-\n  line\n---\n")
+	got := normalizeLineEndings(in)
+	if !bytes.Equal(got, want) {
+		t.Fatalf("normalizeLineEndings(%q) = %q, want %q", in, got, want)
+	}
+}

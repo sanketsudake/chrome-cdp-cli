@@ -16,6 +16,15 @@ var FS embed.FS
 
 const dir = "drive-chrome-cdp"
 
+// normalizeLineEndings rewrites CRLF to LF. A Windows checkout of this repo
+// (actions/checkout's default autocrlf) embeds skills/*/SKILL.md and
+// references/*.md with \r\n; every read path routes through this helper so
+// what `chrome-cdp skill` prints never depends on the checkout's line
+// endings.
+func normalizeLineEndings(b []byte) []byte {
+	return bytes.ReplaceAll(b, []byte("\r\n"), []byte("\n"))
+}
+
 // Core returns the stub SKILL.md joined with references/core.md — the core
 // loop an agent needs before it reaches for anything else.
 func Core() ([]byte, error) {
@@ -23,6 +32,7 @@ func Core() ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+	stub = normalizeLineEndings(stub)
 	core, err := Reference("core")
 	if err != nil {
 		return nil, err
@@ -60,7 +70,7 @@ func Reference(name string) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("unknown reference %q", name)
 	}
-	return b, nil
+	return normalizeLineEndings(b), nil
 }
 
 // References returns every reference name, sorted.
@@ -101,5 +111,5 @@ func Skill(name string) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("unknown skill %q", name)
 	}
-	return b, nil
+	return normalizeLineEndings(b), nil
 }
