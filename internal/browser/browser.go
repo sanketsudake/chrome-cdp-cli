@@ -132,9 +132,13 @@ type Endpoint struct {
 }
 
 // ValidateEndpoint reports whether s is an acceptable explicit --endpoint
-// value: a ws://, wss://, http://, or https:// URL. An empty string (no
-// --endpoint given) is valid too — it means "nothing explicit", not "reject
-// this".
+// value: a ws:// or http:// URL. An empty string (no --endpoint given) is
+// valid too — it means "nothing explicit", not "reject this".
+//
+// wss:// and https:// are rejected, not merely undocumented: the upgrade
+// probe (AwaitUpgrade) dials plaintext TCP, so a TLS endpoint can never
+// complete a handshake through it — accepting the scheme here would only
+// defer the failure to a confusing timeout deep in the connection ladder.
 //
 // It is the ONE scheme check FindEndpoint and the CLI's pre-connect validation
 // both call, so a garbage --endpoint is refused the same way — usage, before
@@ -144,7 +148,10 @@ func ValidateEndpoint(s string) error {
 	if s == "" {
 		return nil
 	}
-	if !hasScheme(s, "ws://", "wss://", "http://", "https://") {
+	if hasScheme(s, "wss://", "https://") {
+		return fmt.Errorf("--endpoint %q: TLS endpoints are not supported; forward the port locally and pass ws:// or http://", s)
+	}
+	if !hasScheme(s, "ws://", "http://") {
 		return fmt.Errorf("--endpoint %q: expected a ws:// or http:// URL", s)
 	}
 	return nil

@@ -3,6 +3,7 @@ package browser
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -205,6 +206,34 @@ func TestFindEndpointExplicitWins(t *testing.T) {
 			}
 			if ep.URL != tc.wantURL {
 				t.Fatalf("URL = %q, want %q", ep.URL, tc.wantURL)
+			}
+		})
+	}
+}
+
+func TestValidateEndpoint(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name    string
+		s       string
+		wantErr bool
+		wantMsg string // substring, checked only when wantErr
+	}{
+		{"empty is valid (no --endpoint given)", "", false, ""},
+		{"ws accepted", "ws://127.0.0.1:9222/devtools/browser/abc", false, ""},
+		{"http accepted", "http://127.0.0.1:9222", false, ""},
+		{"wss rejected as TLS, not a generic bad scheme", "wss://example.com:9222/devtools/browser/abc", true, "TLS endpoints are not supported"},
+		{"https rejected as TLS, not a generic bad scheme", "https://example.com:9222", true, "TLS endpoints are not supported"},
+		{"schemeless garbage rejected", "9222", true, "expected a ws:// or http:// URL"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := ValidateEndpoint(tc.s)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("ValidateEndpoint(%q) err = %v, wantErr %v", tc.s, err, tc.wantErr)
+			}
+			if tc.wantErr && !strings.Contains(err.Error(), tc.wantMsg) {
+				t.Fatalf("ValidateEndpoint(%q) error = %q, want it to contain %q", tc.s, err.Error(), tc.wantMsg)
 			}
 		})
 	}

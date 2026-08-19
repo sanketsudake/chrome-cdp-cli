@@ -260,9 +260,20 @@ func Connect(_ context.Context, opts Options) (*CDP, error) {
 		ChromeRunning: chromeRunning(),
 		NoLaunch:      opts.NoLaunch,
 	}
+	action := browser.DecideConnection(probe)
+	// An explicit --endpoint names a specific Chrome to reach; it is never a
+	// hint to fall back to launching (or instructing the user to enable) some
+	// OTHER, local Chrome. Only the two outcomes that actually talk about
+	// opts.Endpoint's own probe are legal here.
+	if opts.Endpoint != "" && action != browser.Attach && action != browser.ConsentPending {
+		return nil, &ConnectError{
+			Code:    result.CodeConnection,
+			Message: fmt.Sprintf("nothing answered at --endpoint %s (is the tunnel/port-forward up?) — chrome-cdp will not launch or instruct toggling a different, local Chrome when --endpoint is set", opts.Endpoint),
+		}
+	}
 	var c *CDP
 	var err error
-	switch browser.DecideConnection(probe) {
+	switch action {
 	case browser.Attach:
 		// The RESOLVED ws:// URL, not the endpoint: ResolveWSURL already did
 		// this lookup, and handing chromedp the http:// form made it repeat the

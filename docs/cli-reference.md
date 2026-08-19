@@ -1081,6 +1081,7 @@ If none of these is already debug-enabled, the managed-launch fallback execs Chr
 
 `--endpoint <url>` (config key `endpoint`, env `CHROME_CDP_ENDPOINT`) names the debug endpoint directly, bypassing both `--port` and the `DevToolsActivePort` file.
 It takes a `ws://` or `http://` URL; anything else is a usage error before any connection is attempted.
+`wss://` and `https://` are refused too, not just undocumented: the upgrade probe dials plaintext TCP, so a TLS endpoint can never complete a handshake through it — forward the port locally (e.g. `ssh -L`) and pass the resulting `ws://` or `http://` URL instead.
 
 This is how you reach a Chrome that `chrome-cdp` cannot discover on its own — one running in a container, over an SSH tunnel, or on another machine with its debug port forwarded.
 
@@ -1090,8 +1091,10 @@ The two schemes matter for different reasons:
   That path serves a 404 on `/json/*`, so there is no HTTP endpoint to hand it instead — only the literal WebSocket URL works.
 - Pass **`http://host:port`** for a Chrome launched with `--remote-debugging-port`.
   That flag serves `/json/version`, so `chrome-cdp --endpoint http://127.0.0.1:9222 doctor` resolves the browser-level WebSocket the same way `--port` does.
+  For a remote `http://` endpoint, use an IP address or `localhost` as the host: Chrome rejects `/json/*` requests whose `Host` header names anything else.
 
 An explicit `--endpoint` also keys the daemon socket and sticky-target state (by its own host:port), so two Chromes reached through different endpoints never share either.
+An unreachable `--endpoint` never falls back to launching, or instructing you to enable, some other local Chrome: it fails with `connection_failed` naming the endpoint, since falling back would silently act on a different browser than the one you named.
 
 ### The consent prompt
 
@@ -1129,12 +1132,12 @@ A daemon that is merely *running* is not an answer: it holds its socket for its 
 Otherwise it says on stderr that it is about to connect, then probes (`via: "probe"`).
 `--no-probe` reports only what the port file says, clearly marked `state: "unverified"`.
 
-`doctor` honours `--port` like every other verb: `doctor --port 9333` diagnoses the Chrome on that port, not whichever one the `DevToolsActivePort` file names.
+`doctor` honours `--port` and `--endpoint` like every other verb: `doctor --port 9333` diagnoses the Chrome on that port, and `doctor --endpoint ws://host:port/devtools/browser/<id>` diagnoses that endpoint specifically, not whichever one the `DevToolsActivePort` file names.
 
 A `ready` verdict reached by probing says so: the probe's own connection is closed once it has its answer, so on the toggle path the next command is a fresh attach and can prompt again.
 Run `chrome-cdp daemon start` to be asked once per session instead.
 
-The result carries `state`, `via`, `probed`, and the endpoint it looked at (`endpoint`, plus `port_file` and `ws` where they apply).
+The result carries `state`, `via`, `probed`, and the endpoint it looked at (`endpoint`, plus `port_file` and `ws` where they apply), plus `endpoint_source` (`flag` \| `port` \| `port-file`, when known) and `browser_bin` (when `CHROME_CDP_BROWSER_BIN`/`browser_bin` is set).
 The daemon-backed answer adds `running`, `connected`, `socket`, and `target_count` — a **count**, not the tab list: `doctor --json` is the first thing many callers run, and open tab titles and URLs are not an answer to "can I connect?".
 
 ## Policy
