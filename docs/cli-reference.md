@@ -94,6 +94,7 @@ chrome-cdp use url:github          # sets THIS session's sticky tab, not any oth
 ```
 
 A session name must match `^[A-Za-z0-9._-]{1,64}$`; a malformed `--session` is `usage`/exit 2 before Chrome is touched, and a malformed `CHROME_CDP_SESSION` or config `session` is dropped the same way a malformed `endpoint` is.
+`list` reports the active session name as `current_session` (empty when none), and `use` reports it as `session`, so an agent can tell which namespace a command ran under from the envelope alone.
 
 The daemon socket is **not** per session: every session on the same endpoint shares one connection and its console/net event buffers by design, so `console`/`net` capture across sessions the same way they always have.
 Only the sticky current tab is namespaced.

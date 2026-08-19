@@ -161,6 +161,71 @@ func TestSessionIsolatesStickyTarget(t *testing.T) {
 	}
 }
 
+// TestSessionEnvelopeKeysReportTheActiveSession: an agent driving several
+// sessions on one Chrome has to tell, from the envelope alone, which
+// sticky-target namespace a command ran under — list carries it as
+// current_session, use carries it as session, and both are "" with no
+// --session at all.
+func TestSessionEnvelopeKeysReportTheActiveSession(t *testing.T) {
+	t.Parallel()
+	tabs := []target.Info{{ID: "aa11", Title: "A", URL: "u"}}
+	b := &fakeBrowser{tabs: tabs}
+	store := map[string]string{}
+	var out, errb bytes.Buffer
+	app := New(b, &out, &errb)
+	app.WithStickyTarget(
+		func(o ConnOpts) string { return store[o.Session] },
+		func(o ConnOpts, id string) error { store[o.Session] = id; return nil },
+	)
+
+	if code := app.Execute("--session", "a", "list", "--json"); code != 0 {
+		t.Fatalf("list under --session a: exit = %d, stderr: %s", code, errb.String())
+	}
+	var env map[string]any
+	if err := json.Unmarshal(out.Bytes(), &env); err != nil {
+		t.Fatalf("stdout not JSON: %v\n%s", err, out.String())
+	}
+	if got := env["result"].(map[string]any)["current_session"]; got != "a" {
+		t.Errorf("list result.current_session = %v, want \"a\"", got)
+	}
+
+	out.Reset()
+	errb.Reset()
+	if code := app.Execute("--session", "a", "use", "aa11", "--json"); code != 0 {
+		t.Fatalf("use under --session a: exit = %d, stderr: %s", code, errb.String())
+	}
+	if err := json.Unmarshal(out.Bytes(), &env); err != nil {
+		t.Fatalf("stdout not JSON: %v\n%s", err, out.String())
+	}
+	if got := env["result"].(map[string]any)["session"]; got != "a" {
+		t.Errorf("use result.session = %v, want \"a\"", got)
+	}
+
+	out.Reset()
+	errb.Reset()
+	if code := app.Execute("list", "--json"); code != 0 {
+		t.Fatalf("list with no --session: exit = %d, stderr: %s", code, errb.String())
+	}
+	if err := json.Unmarshal(out.Bytes(), &env); err != nil {
+		t.Fatalf("stdout not JSON: %v\n%s", err, out.String())
+	}
+	if got := env["result"].(map[string]any)["current_session"]; got != "" {
+		t.Errorf("list result.current_session with no --session = %v, want \"\"", got)
+	}
+
+	out.Reset()
+	errb.Reset()
+	if code := app.Execute("use", "aa11", "--json"); code != 0 {
+		t.Fatalf("use with no --session: exit = %d, stderr: %s", code, errb.String())
+	}
+	if err := json.Unmarshal(out.Bytes(), &env); err != nil {
+		t.Fatalf("stdout not JSON: %v\n%s", err, out.String())
+	}
+	if got := env["result"].(map[string]any)["session"]; got != "" {
+		t.Errorf("use result.session with no --session = %v, want \"\"", got)
+	}
+}
+
 // TestSessionValidatedBeforeConnecting: a malformed --session (a space, which
 // ^[A-Za-z0-9._-]{1,64}$ rejects) is usage/exit 2 with Chrome never
 // contacted — the same "validate before connecting" guarantee --endpoint

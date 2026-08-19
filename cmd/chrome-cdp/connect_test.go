@@ -47,6 +47,16 @@ func TestDirectConnectOptionsThreadsEndpoint(t *testing.T) {
 // (config.Defaults.BrowserBin) rather than cli.ConnOpts — the same path as
 // the ConsoleBuffer-style capture bounds, not the same path as --endpoint or
 // --port.
+func TestDirectConnectOptionsThreadsBrowserBin(t *testing.T) {
+	var buf bytes.Buffer
+	defs := config.Builtin()
+	defs.BrowserBin = "/opt/chromium/chrome"
+	opts := directConnectOptions("", cli.ConnOpts{}, defs, &buf)
+	if opts.BrowserBin != defs.BrowserBin {
+		t.Errorf("Options.BrowserBin = %q, want %q", opts.BrowserBin, defs.BrowserBin)
+	}
+}
+
 // TestSessionSuffix pins the exact shape stateFor builds its state.New key
 // from: sessionSuffix("") == "" (a no-session invocation keys its sticky
 // target exactly as before this flag existed) and sessionSuffix("a") == "/a"
@@ -57,15 +67,5 @@ func TestSessionSuffix(t *testing.T) {
 	}
 	if got := sessionSuffix("a"); got != "/a" {
 		t.Errorf("sessionSuffix(\"a\") = %q, want \"/a\"", got)
-	}
-}
-
-func TestDirectConnectOptionsThreadsBrowserBin(t *testing.T) {
-	var buf bytes.Buffer
-	defs := config.Builtin()
-	defs.BrowserBin = "/opt/chromium/chrome"
-	opts := directConnectOptions("", cli.ConnOpts{}, defs, &buf)
-	if opts.BrowserBin != defs.BrowserBin {
-		t.Errorf("Options.BrowserBin = %q, want %q", opts.BrowserBin, defs.BrowserBin)
 	}
 }
