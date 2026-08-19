@@ -629,3 +629,39 @@ func TestEndpointPrecedence(t *testing.T) {
 		t.Errorf("env endpoint should win, got %q", d.Endpoint)
 	}
 }
+
+// TestMalformedEndpointIsDroppedNotFatal: a bad scheme in config.toml or
+// CHROME_CDP_ENDPOINT must not brick the CLI. Endpoint becomes the --endpoint
+// flag's DEFAULT, and the CLI validates that flag ahead of every command
+// (including ones that never touch Chrome) — so an unvalidated bad value here
+// would turn one stray config line into a usage failure across the whole CLI,
+// contradicting "a malformed config is a warning on stderr, not a fatal
+// error." It is dropped instead, the same way a malformed consent_timeout or
+// CHROME_CDP_PORT is silently left at the lower-precedence value rather than
+// erroring (see TestConsentTimeoutPrecedence).
+func TestMalformedEndpointIsDroppedNotFatal(t *testing.T) {
+	t.Parallel()
+
+	p := writeConfig(t, `endpoint = "9222"`+"\n") // no scheme: not ws:// or http://
+	d, err := ResolveFrom(p, noEnv)
+	if err != nil {
+		t.Fatalf("a malformed endpoint value must not fail the whole config: %v", err)
+	}
+	if d.Endpoint != "" {
+		t.Errorf("malformed file endpoint = %q, want dropped (empty)", d.Endpoint)
+	}
+
+	// A malformed env value must not clobber a valid file value either.
+	valid := writeConfig(t, `endpoint = "http://127.0.0.1:9222"`+"\n")
+	d, _ = ResolveFrom(valid, envFrom(map[string]string{"CHROME_CDP_ENDPOINT": "garbage"}))
+	if d.Endpoint != "http://127.0.0.1:9222" {
+		t.Errorf("a malformed env endpoint should leave the file value alone, got %q", d.Endpoint)
+	}
+
+	// A malformed env value with no file underneath leaves the built-in
+	// (empty) alone.
+	d, _ = ResolveFrom(filepath.Join(t.TempDir(), "absent.toml"), envFrom(map[string]string{"CHROME_CDP_ENDPOINT": "garbage"}))
+	if d.Endpoint != "" {
+		t.Errorf("malformed env endpoint with no file = %q, want dropped (empty)", d.Endpoint)
+	}
+}

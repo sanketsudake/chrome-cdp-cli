@@ -15,6 +15,7 @@ import (
 
 	"github.com/BurntSushi/toml"
 
+	"github.com/sanketsudake/chrome-cdp-cli/internal/browser"
 	"github.com/sanketsudake/chrome-cdp-cli/internal/chrome"
 )
 
@@ -286,7 +287,18 @@ func applyFile(d *Defaults, path string) error {
 		d.Port = *f.Port
 	}
 	if f.Endpoint != nil {
-		d.Endpoint = *f.Endpoint
+		// A bad scheme here is a warning-shaped mistake, not a reason to brick
+		// the CLI, matching every other malformed scalar key in this file
+		// (consent_timeout, the *_buffer ints): the lower-precedence value is
+		// left in place rather than surfacing as a fatal config error. It is
+		// validated here, not left for the CLI's flag-level check, because
+		// that check runs for EVERY command (including ones that never touch
+		// Chrome) and would otherwise turn one bad line in config.toml into a
+		// usage failure across the whole CLI — contradicting "a malformed
+		// config is a warning on stderr, not a fatal error."
+		if err := browser.ValidateEndpoint(*f.Endpoint); err == nil {
+			d.Endpoint = *f.Endpoint
+		}
 	}
 	if f.ProfileDir != nil {
 		d.ProfileDir = *f.ProfileDir
@@ -433,7 +445,12 @@ func applyEnv(d *Defaults, getenv func(string) string) {
 		}
 	}
 	if v := getenv("CHROME_CDP_ENDPOINT"); v != "" {
-		d.Endpoint = v
+		// Same reasoning as applyFile: an invalid scheme is dropped, not
+		// fatal — matching every other malformed env override in this
+		// function (setInt/setBool leave the prior value alone too).
+		if err := browser.ValidateEndpoint(v); err == nil {
+			d.Endpoint = v
+		}
 	}
 	if v := getenv("CHROME_CDP_PROFILE"); v != "" {
 		d.ProfileDir = v
