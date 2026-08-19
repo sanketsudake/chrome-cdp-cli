@@ -5,7 +5,7 @@ Design proposals for `chrome-cdp`, written before the code so the CLI surface, t
 Each RFC is self-contained: motivation, user stories with acceptance criteria, the proposed command surface, the envelope shape, and a verification plan that maps to real tests.
 An RFC is `Draft` until someone implements it; the implementing PR flips it to `Accepted` and links itself.
 
-**RFCs 0001–0015 are implemented and merged; 0016 is Accepted, implemented on branch `feat/agent-browser-parity`, pending a PR.**
+**RFCs 0001–0015 are implemented and merged; 0016 is Accepted, implemented on branch `feat/agent-browser-parity`, pending a PR; 0017 is Draft.**
 The merged ones are kept as the design record — what was proposed, why, and what the verification plan was — not as a to-do list.
 Where the implementation departed from the proposal, the RFC's own Open Questions section records the decision, and the PR records the reason.
 
@@ -57,6 +57,7 @@ The reproduction then contradicted the first diagnosis, which is why it is writt
 | [0014](0014-coordinate-space-interaction.md) | Coordinate-space interaction: `--at`, `tripleclick`, drop-zone upload, `window` | P0/P1 | input | Accepted — [#22](https://github.com/sanketsudake/chrome-cdp-cli/pull/22), [#23](https://github.com/sanketsudake/chrome-cdp-cli/pull/23) |
 | [0015](0015-find-element-search.md) | `find`: ranked element search from a plain-language query | P0 | reading | Accepted — [#21](https://github.com/sanketsudake/chrome-cdp-cli/pull/21) |
 | [0016](0016-screenshot-annotate.md) | `screenshot --annotate`: numbered element labels with a legend in the envelope | P2 | capture | Accepted — pending PR |
+| [0017](0017-har-export.md) | `net --har`: export the tab's retained requests as HAR 1.2 | P2 | observability | Draft |
 
 ## Dependency graph
 
@@ -82,6 +83,9 @@ snap refs ────> 0015 find mints the same e<id> refs and reuses snap's tr
 0008 screenshot ─────────┐
 0011 encode markers ─────┼──> 0016 screenshot --annotate (labels mapped through 0008's clip, drawn by 0011's marker code;
 snap refs + 0015 filter ─┘                                legend centers follow 0014's coordinate contract)
+
+0003 net ──────────────┐
+0011 encode (pure) ────┴──> 0017 net --har (the listing's rows, redaction and filters unchanged; the HAR 1.2 encoder lives beside 0011's)
 ```
 
 ## Conventions every RFC in this folder inherits
