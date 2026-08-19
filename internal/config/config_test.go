@@ -630,6 +630,35 @@ func TestEndpointPrecedence(t *testing.T) {
 	}
 }
 
+// TestBinPrecedence: CHROME_CDP_BIN/config bin has no --bin flag, but it
+// follows the same file-then-env precedence as every other scalar key here.
+// Unlike Endpoint, a bad value has no scheme to validate, so there is no
+// malformed-value case.
+func TestBinPrecedence(t *testing.T) {
+	t.Parallel()
+
+	// Built-in: unset.
+	d, _ := ResolveFrom(filepath.Join(t.TempDir(), "absent.toml"), noEnv)
+	if d.Bin != "" {
+		t.Errorf("built-in bin = %q, want empty", d.Bin)
+	}
+
+	p := writeConfig(t, `bin = "/usr/bin/chromium"`+"\n")
+	d, err := ResolveFrom(p, noEnv)
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if d.Bin != "/usr/bin/chromium" {
+		t.Errorf("config bin = %q, want /usr/bin/chromium", d.Bin)
+	}
+
+	// Env beats the file.
+	d, _ = ResolveFrom(p, envFrom(map[string]string{"CHROME_CDP_BIN": "/opt/brave/brave"}))
+	if d.Bin != "/opt/brave/brave" {
+		t.Errorf("env bin should win, got %q", d.Bin)
+	}
+}
+
 // TestMalformedEndpointIsDroppedNotFatal: a bad scheme in config.toml or
 // CHROME_CDP_ENDPOINT must not brick the CLI. Endpoint becomes the --endpoint
 // flag's DEFAULT, and the CLI validates that flag ahead of every command

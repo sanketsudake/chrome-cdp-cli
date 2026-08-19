@@ -36,7 +36,12 @@ type Defaults struct {
 	// Endpoint is an explicit debug endpoint (ws:// or http://) that wins over
 	// Port and the DevToolsActivePort file (config key endpoint, env
 	// CHROME_CDP_ENDPOINT). See browser.FindEndpoint.
-	Endpoint   string
+	Endpoint string
+	// Bin is a non-Chrome binary the managed-launch fallback execs instead of
+	// Chrome (config key bin, env CHROME_CDP_BIN). There is no --bin flag: a
+	// managed-launch fallback is already the exception rather than the normal
+	// path, so this is env/config only, the same way CHROME_CDP_PROFILE is.
+	Bin        string
 	ProfileDir string
 	NoLaunch   bool
 	NoDaemon   bool
@@ -132,6 +137,7 @@ type file struct {
 	Target         *string `toml:"target"`
 	Port           *int    `toml:"port"`
 	Endpoint       *string `toml:"endpoint"`
+	Bin            *string `toml:"bin"`
 	ProfileDir     *string `toml:"profile_dir"`
 	NoLaunch       *bool   `toml:"no_launch"`
 	NoDaemon       *bool   `toml:"no_daemon"`
@@ -300,6 +306,9 @@ func applyFile(d *Defaults, path string) error {
 			d.Endpoint = *f.Endpoint
 		}
 	}
+	if f.Bin != nil {
+		d.Bin = *f.Bin
+	}
 	if f.ProfileDir != nil {
 		d.ProfileDir = *f.ProfileDir
 	}
@@ -451,6 +460,9 @@ func applyEnv(d *Defaults, getenv func(string) string) {
 		if err := browser.ValidateEndpoint(v); err == nil {
 			d.Endpoint = v
 		}
+	}
+	if v := getenv("CHROME_CDP_BIN"); v != "" {
+		d.Bin = v
 	}
 	if v := getenv("CHROME_CDP_PROFILE"); v != "" {
 		d.ProfileDir = v

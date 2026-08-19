@@ -47,20 +47,53 @@ func WSURLFromPortFile(path string) (string, error) {
 	return fmt.Sprintf("ws://127.0.0.1:%d%s", port, wsPath), nil
 }
 
-// CandidatePortFiles returns the OS-specific locations Chrome writes
-// DevToolsActivePort to (Chrome family), first match wins. Overridable by the
+// CandidatePortFiles returns the OS-specific locations a Chromium-family
+// browser writes DevToolsActivePort to, first match wins. Overridable by the
 // caller via CHROME_CDP_PORT_FILE.
 func CandidatePortFiles() []string {
 	home, _ := os.UserHomeDir()
-	switch runtime.GOOS {
+	return candidatePortFiles(runtime.GOOS, home, os.Getenv("LOCALAPPDATA"))
+}
+
+// candidatePortFiles is CandidatePortFiles' pure core: it takes GOOS, $HOME
+// and $LOCALAPPDATA as arguments instead of reading them, so the list and its
+// order are table-tested without touching the real OS or environment.
+//
+// Chrome is first on every OS, and both of its existing macOS paths
+// (top-level and Default/) are kept, so a user who was already relying on
+// this list sees no change. Arc is macOS-only: its Windows and Linux builds,
+// where they exist at all, do not share this profile-directory layout.
+func candidatePortFiles(goos, home, localAppData string) []string {
+	switch goos {
 	case "darwin":
-		base := home + "/Library/Application Support/Google/Chrome"
-		return []string{base + "/DevToolsActivePort", base + "/Default/DevToolsActivePort"}
+		base := home + "/Library/Application Support/"
+		return []string{
+			base + "Google/Chrome/DevToolsActivePort",
+			base + "Google/Chrome/Default/DevToolsActivePort",
+			base + "Chromium/DevToolsActivePort",
+			base + "BraveSoftware/Brave-Browser/DevToolsActivePort",
+			base + "Microsoft Edge/DevToolsActivePort",
+			base + "Vivaldi/DevToolsActivePort",
+			base + "Arc/User Data/DevToolsActivePort",
+		}
 	case "windows":
-		la := os.Getenv("LOCALAPPDATA")
-		return []string{la + `\Google\Chrome\User Data\DevToolsActivePort`}
+		base := localAppData + `\`
+		return []string{
+			base + `Google\Chrome\User Data\DevToolsActivePort`,
+			base + `Chromium\User Data\DevToolsActivePort`,
+			base + `BraveSoftware\Brave-Browser\User Data\DevToolsActivePort`,
+			base + `Microsoft\Edge\User Data\DevToolsActivePort`,
+			base + `Vivaldi\User Data\DevToolsActivePort`,
+		}
 	default:
-		return []string{home + "/.config/google-chrome/DevToolsActivePort"}
+		base := home + "/.config/"
+		return []string{
+			base + "google-chrome/DevToolsActivePort",
+			base + "chromium/DevToolsActivePort",
+			base + "BraveSoftware/Brave-Browser/DevToolsActivePort",
+			base + "microsoft-edge/DevToolsActivePort",
+			base + "vivaldi/DevToolsActivePort",
+		}
 	}
 }
 

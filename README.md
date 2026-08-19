@@ -50,6 +50,8 @@ Because it attaches to the browser you're already using, an app you're signed in
    chrome-cdp --endpoint "ws://127.0.0.1:9222/devtools/browser/<id>" doctor
    ```
 
+   Chrome, Chromium, Brave, Edge, Vivaldi, Arc — `chrome-cdp` finds whichever wrote a `DevToolsActivePort` file; set `CHROME_CDP_BIN` to launch a different browser in the managed fallback.
+
 3. **Check the connection** — `chrome-cdp doctor` actually connects and reports `ready`, `consent_pending`, or `no_endpoint`, with the exact fix.
 
 4. **Drive it:**

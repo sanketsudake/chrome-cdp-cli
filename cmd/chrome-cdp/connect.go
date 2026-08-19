@@ -22,6 +22,9 @@ import (
 func directConnectOptions(portFile string, o cli.ConnOpts, defs config.Defaults, w io.Writer) chrome.Options {
 	return chrome.Options{
 		PortFile: portFile, NoLaunch: o.NoLaunch, ProfileDir: o.ProfileDir, Port: o.Port, Endpoint: o.Endpoint,
+		// Bin has no --bin flag, so it comes from defs (config/env), not o —
+		// the same reason ConsoleBuffer et al. below read from defs too.
+		Bin:            defs.Bin,
 		ConsentTimeout: o.ConsentTimeout,
 		// Fires once, the moment the upgrade is classified as pending — while
 		// the dialog is still on screen, which is the only time saying so helps.

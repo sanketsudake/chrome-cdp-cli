@@ -38,7 +38,11 @@ type Options struct {
 	PortFile string // override DevToolsActivePort location (else OS candidates)
 	// Endpoint is an explicit browser endpoint, ws:// or http://; wins over
 	// Port and PortFile. See browser.FindEndpoint.
-	Endpoint   string
+	Endpoint string
+	// Bin is a non-Chrome binary the managed-launch fallback execs instead of
+	// Chrome (config key bin, env CHROME_CDP_BIN). Ignored on the attach path:
+	// it only matters when there is no debug-enabled browser to attach to.
+	Bin        string
 	ProfileDir string // managed-launch profile dir (else CHROME_CDP_PROFILE / default)
 	Port       int    // explicit debug port to attach to / launch with (0 = auto)
 	NoLaunch   bool   // don't fall back to launching a managed Chrome
@@ -278,7 +282,7 @@ func Connect(_ context.Context, opts Options) (*CDP, error) {
 			Message: "no debug-enabled Chrome found and --no-launch is set — " + browser.EnableAdvice + ", or drop --no-launch",
 		}
 	default: // Launch
-		c, err = launch(opts.Headless, opts.ProfileDir, opts.Port)
+		c, err = launch(opts.Headless, opts.ProfileDir, opts.Port, opts.Bin)
 	}
 	if err != nil {
 		return nil, err
@@ -296,7 +300,7 @@ func attach(ws string) (*CDP, error) {
 	return startBase(false, alloc, allocCancel, "attach to "+ws)
 }
 
-func launch(headless bool, profileDir string, port int) (*CDP, error) {
+func launch(headless bool, profileDir string, port int, bin string) (*CDP, error) {
 	// A dedicated, persistent profile so managed-Chrome logins survive across
 	// runs (rather than chromedp's default ephemeral temp dir).
 	dir := resolveProfileDir(profileDir)
@@ -305,6 +309,9 @@ func launch(headless bool, profileDir string, port int) (*CDP, error) {
 
 	execOpts := append([]chromedp.ExecAllocatorOption{}, chromedp.DefaultExecAllocatorOptions[:]...)
 	execOpts = append(execOpts, chromedp.UserDataDir(dir))
+	if bin != "" {
+		execOpts = append(execOpts, chromedp.ExecPath(bin))
+	}
 	if port != 0 {
 		execOpts = append(execOpts, chromedp.Flag("remote-debugging-port", strconv.Itoa(port)))
 	}

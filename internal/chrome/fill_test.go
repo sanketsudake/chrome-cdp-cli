@@ -18,7 +18,7 @@ func TestFillReplacesValue(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	b, err := launch(true, tmpProfile(t), 0)
+	b, err := launch(true, tmpProfile(t), 0, "")
 	if err != nil {
 		t.Skipf("cannot launch a managed headless Chrome here: %v", err)
 	}
@@ -72,7 +72,7 @@ func TestValuesReadsAll(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	b, err := launch(true, tmpProfile(t), 0)
+	b, err := launch(true, tmpProfile(t), 0, "")
 	if err != nil {
 		t.Skipf("cannot launch a managed headless Chrome here: %v", err)
 	}

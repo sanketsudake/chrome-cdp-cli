@@ -83,7 +83,7 @@ func TestSelectCascadePrompt(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	b, err := launch(true, tmpProfile(t), 0)
+	b, err := launch(true, tmpProfile(t), 0, "")
 	if err != nil {
 		t.Skipf("cannot launch a managed headless Chrome here: %v", err)
 	}
@@ -137,7 +137,7 @@ func TestSelectRejectsIncompletePath(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 40*time.Second)
 	defer cancel()
 
-	b, err := launch(true, tmpProfile(t), 0)
+	b, err := launch(true, tmpProfile(t), 0, "")
 	if err != nil {
 		t.Skipf("cannot launch a managed headless Chrome here: %v", err)
 	}
@@ -169,7 +169,7 @@ func TestSelectNativeSelect(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	b, err := launch(true, tmpProfile(t), 0)
+	b, err := launch(true, tmpProfile(t), 0, "")
 	if err != nil {
 		t.Skipf("cannot launch a managed headless Chrome here: %v", err)
 	}

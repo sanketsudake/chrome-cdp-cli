@@ -33,6 +33,11 @@
 #                       # file — use it to reach a Chrome this tool cannot discover on its
 #                       # own (a container, an SSH-forwarded port, another machine).
 # profile_dir = ""      # managed-launch Chrome profile directory
+# bin = ""              # binary the managed-launch fallback execs instead of Chrome
+#                       # (env CHROME_CDP_BIN). No --bin flag; Chrome, Chromium, Brave,
+#                       # Edge, Vivaldi, and (macOS) Arc are found automatically if
+#                       # already debug-enabled — this only matters when none is and a
+#                       # managed Chrome would otherwise be launched.
 
 # Selector defaults
 # by = "css"            # selector syntax: css | id | search | jspath | css-all

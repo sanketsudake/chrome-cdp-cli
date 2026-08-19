@@ -1058,6 +1058,25 @@ If no debug-enabled Chrome is found, it launches a managed Chrome on a dedicated
 A background **daemon** holds the connection, so the consent prompt appears once per session rather than once per command.
 It starts lazily on first use and idles out after 30 minutes; manage it with `daemon start|stop|status`, or bypass it with `--no-daemon`.
 
+### Which browsers
+
+`chrome-cdp` is not Chrome-specific: it looks for a `DevToolsActivePort` file from any Chromium-family browser, in this order (first match wins), and attaches to whichever one wrote it.
+
+| Browser | macOS | Linux | Windows (under `%LOCALAPPDATA%`) |
+|---------|-------|-------|-----------------------------------|
+| Chrome | `~/Library/Application Support/Google/Chrome/DevToolsActivePort` | `~/.config/google-chrome/DevToolsActivePort` | `Google\Chrome\User Data\DevToolsActivePort` |
+| Chromium | `~/Library/Application Support/Chromium/DevToolsActivePort` | `~/.config/chromium/DevToolsActivePort` | `Chromium\User Data\DevToolsActivePort` |
+| Brave | `~/Library/Application Support/BraveSoftware/Brave-Browser/DevToolsActivePort` | `~/.config/BraveSoftware/Brave-Browser/DevToolsActivePort` | `BraveSoftware\Brave-Browser\User Data\DevToolsActivePort` |
+| Edge | `~/Library/Application Support/Microsoft Edge/DevToolsActivePort` | `~/.config/microsoft-edge/DevToolsActivePort` | `Microsoft\Edge\User Data\DevToolsActivePort` |
+| Vivaldi | `~/Library/Application Support/Vivaldi/DevToolsActivePort` | `~/.config/vivaldi/DevToolsActivePort` | `Vivaldi\User Data\DevToolsActivePort` |
+| Arc | `~/Library/Application Support/Arc/User Data/DevToolsActivePort` | — | — |
+
+Arc has no Linux build and does not ship this profile layout on Windows, so it is macOS-only here.
+Every one of them skips the consent prompt entirely when launched with `--remote-debugging-port=9222`.
+On macOS: `open -a "Google Chrome" --args --remote-debugging-port=9222`, `open -a Chromium --args --remote-debugging-port=9222`, `open -a "Brave Browser" --args --remote-debugging-port=9222`, `open -a "Microsoft Edge" --args --remote-debugging-port=9222`, `open -a Vivaldi --args --remote-debugging-port=9222`, or `open -a Arc --args --remote-debugging-port=9222`.
+On Linux: `google-chrome --remote-debugging-port=9222`, `chromium --remote-debugging-port=9222`, `brave-browser --remote-debugging-port=9222`, `microsoft-edge --remote-debugging-port=9222`, or `vivaldi --remote-debugging-port=9222`.
+If none of these is already debug-enabled, the managed-launch fallback execs Chrome by default; set `CHROME_CDP_BIN` (config key `bin`) to a different binary's path to have it launch that browser instead.
+
 ### Explicit endpoint
 
 `--endpoint <url>` (config key `endpoint`, env `CHROME_CDP_ENDPOINT`) names the debug endpoint directly, bypassing both `--port` and the `DevToolsActivePort` file.
@@ -1283,6 +1302,7 @@ consent_timeout = "2m" # how long to wait for Chrome's consent prompt (1s-10m; 0
 by = "search"          # default selector syntax
 target = "url:github"  # default tab when neither --target nor `use` is set
 endpoint = "ws://127.0.0.1:9222/devtools/browser/<id>" # explicit debug endpoint; see Explicit endpoint
+bin = "/usr/bin/chromium" # binary the managed-launch fallback execs instead of Chrome; env CHROME_CDP_BIN; see Which browsers
 ```
 
 A malformed config is a warning on stderr, not a fatal error — the CLI still runs on the built-ins.

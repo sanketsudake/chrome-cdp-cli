@@ -192,7 +192,7 @@ func TestUploadDrivesRealFileInputs(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 
-	b, err := launch(true, tmpProfile(t), 0)
+	b, err := launch(true, tmpProfile(t), 0, "")
 	if err != nil {
 		t.Skipf("cannot launch a managed headless Chrome here: %v", err)
 	}
@@ -335,7 +335,7 @@ func TestUploadAppendTracksOnlyWhatThisSessionSet(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 
-	b, err := launch(true, tmpProfile(t), 0)
+	b, err := launch(true, tmpProfile(t), 0, "")
 	if err != nil {
 		t.Skipf("cannot launch a managed headless Chrome here: %v", err)
 	}
@@ -401,7 +401,7 @@ func TestUploadOpensNoDialogAndStaysResponsive(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 
-	b, err := launch(true, tmpProfile(t), 0)
+	b, err := launch(true, tmpProfile(t), 0, "")
 	if err != nil {
 		t.Skipf("cannot launch a managed headless Chrome here: %v", err)
 	}

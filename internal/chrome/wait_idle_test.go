@@ -18,7 +18,7 @@ func TestWaitIdle(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	b, err := launch(true, tmpProfile(t), 0)
+	b, err := launch(true, tmpProfile(t), 0, "")
 	if err != nil {
 		t.Skipf("cannot launch a managed headless Chrome here: %v", err)
 	}
@@ -84,7 +84,7 @@ addEventListener('load', () => setTimeout(() => { fetch('/hang'); }, 50));
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 
-	b, err := launch(true, tmpProfile(t), 0)
+	b, err := launch(true, tmpProfile(t), 0, "")
 	if err != nil {
 		t.Skipf("cannot launch a managed headless Chrome here: %v", err)
 	}

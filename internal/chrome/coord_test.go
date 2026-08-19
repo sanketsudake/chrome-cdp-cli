@@ -20,7 +20,7 @@ func coordFixture(t *testing.T) (*CDP, context.Context, string) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	t.Cleanup(cancel)
-	b, err := launch(true, tmpProfile(t), 0)
+	b, err := launch(true, tmpProfile(t), 0, "")
 	if err != nil {
 		t.Skipf("cannot launch a managed headless Chrome here: %v", err)
 	}

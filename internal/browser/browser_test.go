@@ -52,6 +52,71 @@ func TestWSURLFromPortFileMissing(t *testing.T) {
 	}
 }
 
+// TestCandidatePortFiles pins candidatePortFiles as a PURE function of
+// (goos, home, localAppData): CandidatePortFiles() only wraps it with
+// runtime.GOOS / os.UserHomeDir / $LOCALAPPDATA, so the browser list and its
+// order are tested here without touching the real OS. Chrome stays first
+// (both existing macOS paths kept) so existing users see no change; the rest
+// follow in the order the brief lists.
+func TestCandidatePortFiles(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name         string
+		goos         string
+		home         string
+		localAppData string
+		want         []string
+	}{
+		{
+			name: "darwin", goos: "darwin", home: "/Users/x",
+			want: []string{
+				"/Users/x/Library/Application Support/Google/Chrome/DevToolsActivePort",
+				"/Users/x/Library/Application Support/Google/Chrome/Default/DevToolsActivePort",
+				"/Users/x/Library/Application Support/Chromium/DevToolsActivePort",
+				"/Users/x/Library/Application Support/BraveSoftware/Brave-Browser/DevToolsActivePort",
+				"/Users/x/Library/Application Support/Microsoft Edge/DevToolsActivePort",
+				"/Users/x/Library/Application Support/Vivaldi/DevToolsActivePort",
+				"/Users/x/Library/Application Support/Arc/User Data/DevToolsActivePort",
+			},
+		},
+		{
+			name: "linux", goos: "linux", home: "/home/x",
+			want: []string{
+				"/home/x/.config/google-chrome/DevToolsActivePort",
+				"/home/x/.config/chromium/DevToolsActivePort",
+				"/home/x/.config/BraveSoftware/Brave-Browser/DevToolsActivePort",
+				"/home/x/.config/microsoft-edge/DevToolsActivePort",
+				"/home/x/.config/vivaldi/DevToolsActivePort",
+			},
+		},
+		{
+			name: "windows", goos: "windows", localAppData: `C:\Users\x\AppData\Local`,
+			want: []string{
+				`C:\Users\x\AppData\Local\Google\Chrome\User Data\DevToolsActivePort`,
+				`C:\Users\x\AppData\Local\Chromium\User Data\DevToolsActivePort`,
+				`C:\Users\x\AppData\Local\BraveSoftware\Brave-Browser\User Data\DevToolsActivePort`,
+				`C:\Users\x\AppData\Local\Microsoft\Edge\User Data\DevToolsActivePort`,
+				`C:\Users\x\AppData\Local\Vivaldi\User Data\DevToolsActivePort`,
+			},
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			got := candidatePortFiles(c.goos, c.home, c.localAppData)
+			if len(got) != len(c.want) {
+				t.Fatalf("candidatePortFiles(%q) = %d entries, want %d\ngot:  %v\nwant: %v",
+					c.goos, len(got), len(c.want), got, c.want)
+			}
+			for i := range got {
+				if got[i] != c.want[i] {
+					t.Errorf("[%d] = %q, want %q", i, got[i], c.want[i])
+				}
+			}
+		})
+	}
+}
+
 func TestDecideConnection(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
