@@ -5,7 +5,7 @@ Design proposals for `chrome-cdp`, written before the code so the CLI surface, t
 Each RFC is self-contained: motivation, user stories with acceptance criteria, the proposed command surface, the envelope shape, and a verification plan that maps to real tests.
 An RFC is `Draft` until someone implements it; the implementing PR flips it to `Accepted` and links itself.
 
-**RFCs 0001–0015 are implemented and merged; 0016 and 0017 are Accepted, implemented on branch `feat/agent-browser-parity`, pending a PR; 0018 is Draft.**
+**RFCs 0001–0015 are implemented and merged; 0016 and 0017 are Accepted, implemented on branch `feat/agent-browser-parity`, pending a PR; 0018 and 0019 are Draft.**
 The merged ones are kept as the design record — what was proposed, why, and what the verification plan was — not as a to-do list.
 Where the implementation departed from the proposal, the RFC's own Open Questions section records the decision, and the PR records the reason.
 
@@ -59,6 +59,7 @@ The reproduction then contradicted the first diagnosis, which is why it is writt
 | [0016](0016-screenshot-annotate.md) | `screenshot --annotate`: numbered element labels with a legend in the envelope | P2 | capture | Accepted — pending PR |
 | [0017](0017-har-export.md) | `net --har`: export the tab's retained requests as HAR 1.2 | P2 | observability | Accepted — pending PR |
 | [0018](0018-dialog-verb.md) | `dialog`: inspect and close a native dialog that is already on screen | P1 | input | Draft |
+| [0019](0019-web-storage.md) | `storage local\|session`: read and write the tab's web storage, values redacted like `net` | P2 | reading / acting | Draft |
 
 ## Dependency graph
 
@@ -91,6 +92,10 @@ snap refs + 0015 filter ─┘                                legend centers fol
 0002 console (attach-time listenCapture hook) ─┐
 --on-dialog (withDialog, the per-action handler) ─┴──> 0018 dialog status|accept|dismiss (the same listener, retained per tab instead of per action;
                                                        only the daemon's long-lived attach can see a dialog that opened before the command)
+
+0003 net (RedactedHeaderName / RedactedParamName / RedactBody) ─┐
+cookie verb (the subcommand shape, cmdCookie) ─────────────────┴──> 0019 storage local|session list|get|set|rm|clear (the same redaction predicates applied to
+                                                                     storage keys and values before the size cap; the same one-method-per-subcommand shape)
 ```
 
 ## Conventions every RFC in this folder inherits
