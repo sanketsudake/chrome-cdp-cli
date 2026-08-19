@@ -8,6 +8,7 @@ import (
 	"image"
 	"image/color"
 	"image/gif"
+	"image/jpeg"
 	"image/png"
 	"math/rand"
 	"os"
@@ -73,6 +74,7 @@ var (
 	red   = color.RGBA{R: 0xFF, A: 0xFF}
 	green = color.RGBA{G: 0x80, A: 0xFF}
 	blue  = color.RGBA{B: 0xFF, A: 0xFF}
+	white = color.RGBA{R: 0xFF, G: 0xFF, B: 0xFF, A: 0xFF}
 )
 
 // TestGIFRoundTripIsExact is VS-16: known solid colours survive the encode, the
@@ -304,6 +306,79 @@ func TestAnnotationScalesPageCoordinates(t *testing.T) {
 	if got := rgbaAt(img, 5, 5); got != green {
 		t.Errorf("pixel at (5,5) = %v, want the untouched %v", got, green)
 	}
+}
+
+// TestDrawLabels (RFC-0016) pins AnnotateImage on a synthetic image: the disc
+// colour lands at the centre, the badge carries white pixels near it, a label
+// outside the canvas draws nothing at all, and a jpeg request decodes as jpeg.
+func TestDrawLabels(t *testing.T) {
+	t.Parallel()
+	markRed := color.RGBA{R: 0xE1, G: 0x1D, B: 0x48, A: 0xFF}
+
+	t.Run("disc at centre, badge nearby, both reported drawn", func(t *testing.T) {
+		t.Parallel()
+		src := solidPNG(t, 200, 150, green)
+		out, drawn, err := AnnotateImage(src, "png", 0, 200, 150, []Label{{N: 1, X: 100, Y: 75}})
+		if err != nil {
+			t.Fatalf("AnnotateImage: %v", err)
+		}
+		if len(drawn) != 1 || !drawn[0] {
+			t.Fatalf("drawn = %v, want [true]", drawn)
+		}
+		img := decodePNG(t, out)
+		if got := rgbaAt(img, 100, 75); got != markRed {
+			t.Errorf("centre pixel = %v, want the marker red %v", got, markRed)
+		}
+		// The badge sits at the disc's upper-right; somewhere in that quadrant,
+		// close to the disc, a white border pixel must exist.
+		foundWhite := false
+		for y := 75 - 20; y < 75; y++ {
+			for x := 100; x < 100+20; x++ {
+				if rgbaAt(img, x, y) == white {
+					foundWhite = true
+				}
+			}
+		}
+		if !foundWhite {
+			t.Error("no white pixel found in the badge's expected quadrant")
+		}
+		// Far from the marker, the frame is untouched.
+		if got := rgbaAt(img, 2, 2); got != green {
+			t.Errorf("pixel far from the label = %v, want the untouched %v", got, green)
+		}
+	})
+
+	t.Run("outside the canvas draws nothing", func(t *testing.T) {
+		t.Parallel()
+		src := solidPNG(t, 50, 50, green)
+		out, drawn, err := AnnotateImage(src, "png", 0, 50, 50, []Label{{N: 7, X: 5000, Y: 5000}})
+		if err != nil {
+			t.Fatalf("AnnotateImage: %v", err)
+		}
+		if len(drawn) != 1 || drawn[0] {
+			t.Fatalf("drawn = %v, want [false] for a label outside the canvas", drawn)
+		}
+		want, got := decodePNG(t, src), decodePNG(t, out)
+		for y := range 50 {
+			for x := range 50 {
+				if rgbaAt(got, x, y) != rgbaAt(want, x, y) {
+					t.Fatalf("pixel (%d,%d) changed for an out-of-canvas label", x, y)
+				}
+			}
+		}
+	})
+
+	t.Run("jpeg output decodes as jpeg", func(t *testing.T) {
+		t.Parallel()
+		src := solidPNG(t, 80, 60, blue)
+		out, _, err := AnnotateImage(src, "jpeg", 70, 80, 60, []Label{{N: 2, X: 40, Y: 30}})
+		if err != nil {
+			t.Fatalf("AnnotateImage: %v", err)
+		}
+		if _, err := jpeg.Decode(bytes.NewReader(out)); err != nil {
+			t.Fatalf("output does not decode as jpeg: %v", err)
+		}
+	})
 }
 
 // TestMixedDimensionsAreLetterboxed: a window resized mid-recording changes the

@@ -5,7 +5,7 @@ Design proposals for `chrome-cdp`, written before the code so the CLI surface, t
 Each RFC is self-contained: motivation, user stories with acceptance criteria, the proposed command surface, the envelope shape, and a verification plan that maps to real tests.
 An RFC is `Draft` until someone implements it; the implementing PR flips it to `Accepted` and links itself.
 
-**RFCs 0001–0015 are implemented and merged; 0016 is Draft.**
+**RFCs 0001–0015 are implemented and merged; 0016 is Accepted, implemented on branch `feat/agent-browser-parity`, pending a PR.**
 The merged ones are kept as the design record — what was proposed, why, and what the verification plan was — not as a to-do list.
 Where the implementation departed from the proposal, the RFC's own Open Questions section records the decision, and the PR records the reason.
 
@@ -56,7 +56,7 @@ The reproduction then contradicted the first diagnosis, which is why it is writt
 | [0013](0013-consent-prompt-lifecycle.md) | Surviving Chrome's consent prompt | P0 | connection | Accepted — [#18](https://github.com/sanketsudake/chrome-cdp-cli/pull/18) |
 | [0014](0014-coordinate-space-interaction.md) | Coordinate-space interaction: `--at`, `tripleclick`, drop-zone upload, `window` | P0/P1 | input | Accepted — [#22](https://github.com/sanketsudake/chrome-cdp-cli/pull/22), [#23](https://github.com/sanketsudake/chrome-cdp-cli/pull/23) |
 | [0015](0015-find-element-search.md) | `find`: ranked element search from a plain-language query | P0 | reading | Accepted — [#21](https://github.com/sanketsudake/chrome-cdp-cli/pull/21) |
-| [0016](0016-screenshot-annotate.md) | `screenshot --annotate`: numbered element labels with a legend in the envelope | P2 | capture | Draft |
+| [0016](0016-screenshot-annotate.md) | `screenshot --annotate`: numbered element labels with a legend in the envelope | P2 | capture | Accepted — pending PR |
 
 ## Dependency graph
 

@@ -546,6 +546,8 @@ func screenshotTool() *tool {
 			{name: "quality", typ: "integer", flag: "quality", desc: "compression quality 0-100 (jpeg/webp only; an error with png)."},
 			{name: "scale", typ: "number", flag: "scale", desc: "output scale factor, 0.1-3."},
 			{name: "padding", typ: "number", flag: "padding", desc: "expand an element capture by this many pixels."},
+			{name: "annotate", typ: "boolean", flag: "annotate",
+				desc: "number every actionable element in the captured area and return the legend in `annotations` (ref, role, name, center) — act on one with `by: \"ref\"` or `at`, no second read needed. On a backgrounded tab the labels are skipped (`annotated: false`); activate the tab first. Not with `format: \"webp\"`."},
 			{name: "output", typ: "string", flag: "output", desc: "also write the image to this path; omit to only return it inline."},
 		}, queryArgs(), targetArgs()),
 		build: func(c *call) (string, []string, []string, error) {

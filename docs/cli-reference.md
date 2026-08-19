@@ -893,6 +893,7 @@ Both write to `./<command>-<timestamp>.<ext>` by default — with a `-1`, `-2`, 
 | `--quality <n>` | `80` | 0–100; **jpeg/webp only** — passing it with `png` is a usage error, not a silent no-op |
 | `--scale <f>` | `1` | output scale factor, 0.1–3, applied in the renderer so text stays crisp |
 | `--padding <px>` | `0` | expand an element capture, clamped to the page so an element at an edge keeps a non-negative origin |
+| `--annotate` | off | number every actionable element in the captured area and list them in `result.annotations`; on a backgrounded tab the labels are skipped (`annotated: false`) — run `activate` first |
 
 `--selector`, `--full-page` and `--region` select different modes and are mutually exclusive.
 
@@ -901,12 +902,26 @@ chrome-cdp screenshot --selector "#invoice-table" --padding 8 -o invoice.png
 chrome-cdp screenshot --full-page -o report.png
 chrome-cdp screenshot --format jpeg --quality 60 --scale 0.5 -o small.jpg
 chrome-cdp screenshot --selector "Summary card" --by name --role region
+chrome-cdp screenshot --annotate -o labelled.png
 ```
 
 The result reports `path`, `bytes`, `width`, `height`, `format`, `scale`, `mode` (`viewport` \| `element` \| `full_page` \| `region`) and the resolved `clip` in page coordinates.
 `mode` and `clip` are what make a capture that came out wrong debuggable without opening the image.
 
 Full-page capture does **not** force lazy-loaded content to load: images below the fold that appear on scroll may come out blank.
+
+**`--annotate` (RFC-0016).**
+
+It draws a numbered label `[N]` at the centre of every *actionable* element in the captured area — the things a person clicks, types into, or toggles, not every node `snap` would print — and appends a legend to the result: `annotations: [{n, ref, role, name, center, states?, occluded?}]`, in label order, `n` matching the number drawn on the image.
+`center` is the element's centre in viewport CSS pixels at capture time, the same contract `find` reports and `--at` accepts; for a `--full-page` capture a below-the-fold centre is outside the viewport, so use `--by ref` there instead.
+`ref` is an `e<id>` that `--by ref` accepts, so a legend entry is a live address, not just a picture.
+
+The result also carries `annotated` (`true` when at least one label put pixels on the image) and `truncated` (`true` when more than 200 actionable nodes existed — the label cap).
+On a backgrounded tab, or a capture with nothing actionable in it, the plain image still comes back: `annotated` is `false` and `reason` names why (`tab_hidden` \| `tree_unavailable` \| `no_actionable_nodes`); the command still exits 0.
+`--annotate` composes with `--selector`, `--region` and `--full-page` — only elements inside the resolved clip are labelled and listed.
+
+`--annotate --format webp` and `--annotate -o -` are both usage errors raised before Chrome is contacted: the labels are drawn in Go (no standard-library webp encoder), and the legend lives in the envelope, which `-o -` does not emit.
+`--annotate --format jpeg` is fine — the capture is taken losslessly and encoded to jpeg once, after drawing.
 Scroll through the page first (`scroll --dy …`, then `wait --idle`) when that matters.
 
 **pdf**

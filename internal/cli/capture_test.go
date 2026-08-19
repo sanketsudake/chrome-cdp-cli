@@ -331,6 +331,107 @@ func TestScreenshotEnvelopeCarriesMetadata(t *testing.T) {
 	}
 }
 
+// RFC-0016 VS-8: --annotate sets ShotOpts.Annotate, and the stub's meta map
+// (the shape the driver returns once it implements the annotation pass)
+// reaches the envelope unchanged — the CLI does no interpretation of it.
+func TestScreenshotAnnotateFlagAndLegend(t *testing.T) {
+	t.Parallel()
+	b := newCaptureFake([]byte("IMAGE"))
+	b.meta = map[string]any{
+		"width": 100, "height": 100, "format": "png", "scale": 1.0, "mode": "viewport",
+		"clip":      chrome.Rect{X: 0, Y: 0, Width: 100, Height: 100},
+		"annotated": true, "truncated": false,
+		"annotations": []any{
+			map[string]any{"n": 1.0, "ref": "e41", "role": "button", "name": "Save",
+				"center": map[string]any{"x": 50.0, "y": 50.0}},
+		},
+	}
+	env, _, code := run(t, b, "screenshot", "--annotate", "-o", filepath.Join(t.TempDir(), "o.png"), "--target", "aa11", "--json")
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0", code)
+	}
+	if !b.shot.Annotate {
+		t.Error("ShotOpts.Annotate did not reach the driver")
+	}
+	res := env["result"].(map[string]any)
+	if res["annotated"] != true {
+		t.Errorf("result.annotated = %v, want true", res["annotated"])
+	}
+	arr, ok := res["annotations"].([]any)
+	if !ok || len(arr) != 1 {
+		t.Fatalf("result.annotations = %v, want a one-entry legend", res["annotations"])
+	}
+	entry := arr[0].(map[string]any)
+	if entry["ref"] != "e41" || entry["role"] != "button" || entry["name"] != "Save" {
+		t.Errorf("legend entry = %v, want the stub's e41/button/Save", entry)
+	}
+}
+
+// RFC-0016 VS-9: without --annotate, ShotOpts.Annotate is false and the
+// envelope carries none of annotated/annotations/truncated/reason — the plain
+// capture is byte-for-byte and shape-for-shape what it was before this RFC.
+func TestScreenshotWithoutAnnotateFlagOmitsLegendFields(t *testing.T) {
+	t.Parallel()
+	b := newCaptureFake([]byte("IMAGE"))
+	b.meta = map[string]any{"width": 100, "height": 100, "format": "png", "scale": 1.0, "mode": "viewport",
+		"clip": chrome.Rect{X: 0, Y: 0, Width: 100, Height: 100}}
+	env, _, code := run(t, b, "screenshot", "-o", filepath.Join(t.TempDir(), "o.png"), "--target", "aa11", "--json")
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0", code)
+	}
+	if b.shot.Annotate {
+		t.Error("ShotOpts.Annotate is true without --annotate")
+	}
+	res := env["result"].(map[string]any)
+	for _, k := range []string{"annotated", "annotations", "truncated", "reason"} {
+		if _, present := res[k]; present {
+			t.Errorf("result.%s is present without --annotate: %v", k, res[k])
+		}
+	}
+}
+
+// RFC-0016 VS-7: the two combinations --annotate cannot honour are usage
+// errors raised before the browser is contacted.
+func TestScreenshotAnnotateRejectedCombos(t *testing.T) {
+	t.Parallel()
+	cases := map[string][]string{
+		"annotate with webp": {"--annotate", "--format", "webp"},
+		"annotate to stdout": {"--annotate", "-o", "-"},
+	}
+	for name, args := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			argv := append([]string{"screenshot", "--target", "aa11", "--json"}, args...)
+			env, _, code := run(t, noCall(t), argv...)
+			if code != 2 {
+				t.Fatalf("exit = %d, want 2 (usage)", code)
+			}
+			if env["error"].(map[string]any)["code"] != "usage" {
+				t.Errorf("error.code = %v, want usage", env["error"])
+			}
+		})
+	}
+}
+
+// RFC-0016 VS-7: --annotate composes with jpeg (the only lossy format it
+// supports).
+func TestScreenshotAnnotateAcceptsJPEG(t *testing.T) {
+	t.Parallel()
+	b := newCaptureFake([]byte("IMAGE"))
+	b.meta = map[string]any{"format": "jpeg", "annotated": true, "annotations": []any{}, "truncated": false}
+	env, _, code := run(t, b, "screenshot", "--annotate", "--format", "jpeg", "--quality", "60",
+		"-o", filepath.Join(t.TempDir(), "o.jpg"), "--target", "aa11", "--json")
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0", code)
+	}
+	if !b.shot.Annotate || b.shot.Format != "jpeg" || b.shot.Quality != 60 {
+		t.Errorf("opts = %+v, want annotate + jpeg + quality 60", b.shot)
+	}
+	if env["result"].(map[string]any)["format"] != "jpeg" {
+		t.Errorf("result.format = %v, want jpeg", env["result"])
+	}
+}
+
 // The default filename's extension follows --format for every format.
 func TestScreenshotDefaultExtensionFollowsFormat(t *testing.T) {
 	cases := map[string]string{"png": ".png", "jpeg": ".jpg", "webp": ".webp"}

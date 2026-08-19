@@ -1,6 +1,6 @@
 # RFC-0016: `screenshot --annotate` — numbered element labels with a legend in the envelope
 
-- **Status:** Draft
+- **Status:** Accepted — implemented on branch feat/agent-browser-parity
 - **Priority:** P2
 - **Area:** capture
 - **Depends on:** RFC-0008 (`ShotOpts`, the clip/scale model the labels are mapped through), RFC-0011 (`internal/encode` marker drawing)

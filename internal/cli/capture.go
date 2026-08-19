@@ -40,7 +40,7 @@ var shotExt = map[string]string{"png": "png", "jpeg": "jpg", "webp": "webp"}
 
 func (a *App) cmdScreenshot() *cobra.Command {
 	var out, selector, region, format string
-	var fullPage bool
+	var fullPage, annotate bool
 	var quality int
 	var scale, padding float64
 	c := &cobra.Command{
@@ -55,13 +55,14 @@ func (a *App) cmdScreenshot() *cobra.Command {
 			"  chrome-cdp screenshot --selector \"#invoice-table\" --padding 8 -o invoice.png\n" +
 			"  chrome-cdp screenshot --full-page -o report.png\n" +
 			"  chrome-cdp screenshot --format jpeg --quality 60 --scale 0.5 -o small.jpg\n" +
-			"  chrome-cdp screenshot --selector \"Summary card\" --by name --role region\n\n" +
+			"  chrome-cdp screenshot --selector \"Summary card\" --by name --role region\n" +
+			"  chrome-cdp screenshot --annotate -o labelled.png\n\n" +
 			"Full-page capture does not force lazy-loaded content to load: images below\n" +
 			"the fold that appear on scroll may come out blank. Scroll through the page\n" +
 			"first (`scroll --dy …`, `wait --idle`) when that matters.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			opts, rerr := a.shotOpts(cmd, selector, region, format, fullPage, quality, scale, padding)
+			opts, rerr := a.shotOpts(cmd, out, selector, region, format, fullPage, annotate, quality, scale, padding)
 			if rerr != nil {
 				a.emitErr("screenshot", rerr.Code, rerr.Message, rerr.Details)
 				return nil
@@ -92,13 +93,15 @@ func (a *App) cmdScreenshot() *cobra.Command {
 	f.IntVar(&quality, "quality", 80, "compression quality 0-100 (jpeg/webp only; an error with png)")
 	f.Float64Var(&scale, "scale", 1, fmt.Sprintf("output scale factor, %g-%g", shotScaleMin, shotScaleMax))
 	f.Float64Var(&padding, "padding", 0, "expand an element capture by this many pixels (clamped to the page)")
+	f.BoolVar(&annotate, "annotate", false, "number every actionable element in the captured area and list them in result.annotations; "+
+		"on a backgrounded tab the labels are skipped (annotated: false) — run `activate` first")
 	return c
 }
 
 // shotOpts validates the screenshot flags and reduces them to driver options.
 // It runs before resolveTarget, so every rejection below happens without a
 // connection — the invariant nocall_test.go enforces.
-func (a *App) shotOpts(cmd *cobra.Command, selector, region, format string, fullPage bool, quality int, scale, padding float64) (chrome.ShotOpts, *result.Err) {
+func (a *App) shotOpts(cmd *cobra.Command, out, selector, region, format string, fullPage, annotate bool, quality int, scale, padding float64) (chrome.ShotOpts, *result.Err) {
 	modes := 0
 	for _, on := range []bool{selector != "", fullPage, region != ""} {
 		if on {
@@ -129,6 +132,21 @@ func (a *App) shotOpts(cmd *cobra.Command, selector, region, format string, full
 	if padding < 0 {
 		return chrome.ShotOpts{}, usageErr("--padding must not be negative, got %g", padding)
 	}
+	if annotate {
+		// The labels are drawn in-process and the standard library cannot
+		// encode webp (imageDims already documents that it cannot decode it
+		// either) — refused before connecting, like every other bad --format
+		// combination above.
+		if format == "webp" {
+			return chrome.ShotOpts{}, usageErr("--annotate does not support --format webp: labels are drawn in Go and the standard library has no webp encoder; use png or jpeg")
+		}
+		// The legend lives in the envelope and -o - emits none, only bytes — a
+		// flag whose result would be silently dropped is refused, for the same
+		// reason --quality with png is.
+		if out == "-" {
+			return chrome.ShotOpts{}, usageErr("--annotate --output - is not supported: the legend lives in the envelope, and -o - emits only bytes")
+		}
+	}
 
 	opts := chrome.ShotOpts{
 		Selector: selector,
@@ -137,6 +155,7 @@ func (a *App) shotOpts(cmd *cobra.Command, selector, region, format string, full
 		Quality:  quality,
 		Scale:    scale,
 		Padding:  padding,
+		Annotate: annotate,
 		Query:    a.queryOpts(),
 	}
 	if region != "" {

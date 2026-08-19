@@ -263,6 +263,12 @@ type ShotOpts struct {
 	Scale   float64 // output scale factor, 0.1–3 (0 means 1)
 	Padding float64 // expand an element clip by this many px, clamped to the page
 
+	// Annotate numbers every actionable element in the captured area and draws
+	// the labels on the image (RFC-0016). The CLI has already rejected the two
+	// combinations that cannot honour it (--format webp, -o -), so the driver
+	// never re-checks them.
+	Annotate bool
+
 	Query QueryOpts
 }
 
