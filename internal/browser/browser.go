@@ -98,10 +98,45 @@ type Endpoint struct {
 	Err error
 }
 
-// FindEndpoint resolves the debug endpoint from an explicit port, else the
-// DevToolsActivePort file. An explicit --port wins: it names a specific Chrome,
-// and a port file naming a different one is not a fallback for it.
-func FindEndpoint(portFileOverride string, port int) Endpoint {
+// ValidateEndpoint reports whether s is an acceptable explicit --endpoint
+// value: a ws://, wss://, http://, or https:// URL. An empty string (no
+// --endpoint given) is valid too — it means "nothing explicit", not "reject
+// this".
+//
+// It is the ONE scheme check FindEndpoint and the CLI's pre-connect validation
+// both call, so a garbage --endpoint is refused the same way — usage, before
+// any connection — whether it is caught while resolving the endpoint or before
+// the command even runs.
+func ValidateEndpoint(s string) error {
+	if s == "" {
+		return nil
+	}
+	if !hasScheme(s, "ws://", "wss://", "http://", "https://") {
+		return fmt.Errorf("--endpoint %q: expected a ws:// or http:// URL", s)
+	}
+	return nil
+}
+
+func hasScheme(s string, schemes ...string) bool {
+	for _, p := range schemes {
+		if strings.HasPrefix(s, p) {
+			return true
+		}
+	}
+	return false
+}
+
+// FindEndpoint resolves the debug endpoint: an explicit --endpoint URL wins,
+// then an explicit --port, then the DevToolsActivePort file. A --port names a
+// specific Chrome, and a port file naming a different one is not a fallback
+// for it.
+func FindEndpoint(explicit, portFileOverride string, port int) Endpoint {
+	if explicit != "" {
+		if err := ValidateEndpoint(explicit); err != nil {
+			return Endpoint{Err: err}
+		}
+		return Endpoint{URL: explicit}
+	}
 	if port != 0 {
 		return Endpoint{URL: fmt.Sprintf("http://127.0.0.1:%d", port)}
 	}
@@ -118,10 +153,16 @@ func FindEndpoint(portFileOverride string, port int) Endpoint {
 
 // EndpointKey identifies the debug endpoint a command targets, so the daemon
 // socket and sticky state are keyed to the actual Chrome instance rather than a
-// fixed port. An explicit --port wins (distinct ports get distinct keys);
-// otherwise the key comes from the discovered DevToolsActivePort file, falling
-// back to "default".
-func EndpointKey(portFile string, port int) string {
+// fixed port. An explicit --endpoint wins (keyed by its host:port, so two
+// Chromes never share a daemon socket or sticky state), then an explicit
+// --port (distinct ports get distinct keys), then the discovered
+// DevToolsActivePort file, falling back to "default".
+func EndpointKey(explicit, portFile string, port int) string {
+	if explicit != "" {
+		if hp, ok := HostPort(explicit); ok {
+			return hp
+		}
+	}
 	if port != 0 {
 		return fmt.Sprintf("127.0.0.1:%d", port)
 	}

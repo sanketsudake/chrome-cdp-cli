@@ -66,7 +66,7 @@ func (a *App) runDoctor(noProbe bool) {
 	// the port file. doctor read the port file directly and never looked at the
 	// flag, so `doctor --port 9333` diagnosed whichever browser the file
 	// happened to name and reported that one healthy.
-	ep := browser.FindEndpoint("", a.port)
+	ep := browser.FindEndpoint("", "", a.port)
 	if ep.Err != nil {
 		a.emitErr("doctor", result.CodeConnection,
 			"the DevToolsActivePort file is unreadable ("+ep.Err.Error()+") — "+browser.EnableAdvice,

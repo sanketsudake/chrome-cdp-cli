@@ -92,15 +92,15 @@ func TestDecideConnection(t *testing.T) {
 func TestEndpointKey(t *testing.T) {
 	t.Parallel()
 	// An explicit port yields a distinct, port-specific key (no collisions).
-	if k := EndpointKey("", 9333); k != "127.0.0.1:9333" {
+	if k := EndpointKey("", "", 9333); k != "127.0.0.1:9333" {
 		t.Errorf("explicit port key = %q, want 127.0.0.1:9333", k)
 	}
-	if EndpointKey("", 9333) == EndpointKey("", 9444) {
+	if EndpointKey("", "", 9333) == EndpointKey("", "", 9444) {
 		t.Error("distinct --port values must not share an endpoint key")
 	}
 
 	// With no port and no port file, the key is the stable default.
-	if k := EndpointKey("", 0); k != "default" {
+	if k := EndpointKey("", "", 0); k != "default" {
 		t.Errorf("no port / no file key = %q, want default", k)
 	}
 
@@ -109,11 +109,48 @@ func TestEndpointKey(t *testing.T) {
 	if err := os.WriteFile(pf, []byte("9222\n/devtools/browser/abc\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if k := EndpointKey(pf, 0); k != "127.0.0.1:9222" {
+	if k := EndpointKey("", pf, 0); k != "127.0.0.1:9222" {
 		t.Errorf("port-file key = %q, want 127.0.0.1:9222", k)
 	}
 	// An explicit port still overrides the file.
-	if k := EndpointKey(pf, 9333); k != "127.0.0.1:9333" {
+	if k := EndpointKey("", pf, 9333); k != "127.0.0.1:9333" {
 		t.Errorf("explicit port should override the file, got %q", k)
+	}
+}
+
+func TestFindEndpointExplicitWins(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name     string
+		explicit string
+		port     int
+		wantURL  string
+		wantErr  bool
+	}{
+		{"ws verbatim", "ws://127.0.0.1:9222/devtools/browser/abc", 9333, "ws://127.0.0.1:9222/devtools/browser/abc", false},
+		{"http kept for /json/version lookup", "http://10.0.0.5:9222", 0, "http://10.0.0.5:9222", false},
+		{"garbage is an error, not a fallback", "9222", 0, "", true},
+		{"empty explicit falls through to port", "", 9333, "http://127.0.0.1:9333", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ep := FindEndpoint(tc.explicit, "", tc.port)
+			if (ep.Err != nil) != tc.wantErr {
+				t.Fatalf("err = %v, wantErr %v", ep.Err, tc.wantErr)
+			}
+			if ep.URL != tc.wantURL {
+				t.Fatalf("URL = %q, want %q", ep.URL, tc.wantURL)
+			}
+		})
+	}
+}
+
+func TestEndpointKeyExplicit(t *testing.T) {
+	t.Parallel()
+	if got := EndpointKey("ws://10.0.0.5:9222/devtools/browser/x", "", 0); got != "10.0.0.5:9222" {
+		t.Fatalf("got %q", got)
+	}
+	if got := EndpointKey("", "", 9333); got != "127.0.0.1:9333" {
+		t.Fatalf("got %q", got)
 	}
 }

@@ -223,7 +223,7 @@ func Connect(_ context.Context, opts Options) (*CDP, error) {
 	// An explicit --port takes precedence over the DevToolsActivePort file.
 	// Shared with `doctor` so the command that diagnoses the connection and the
 	// command that makes it are talking about the same Chrome.
-	endpoint := browser.FindEndpoint(opts.PortFile, opts.Port).URL
+	endpoint := browser.FindEndpoint("", opts.PortFile, opts.Port).URL
 	// Already clamped by whoever resolved the flag/env/config; run it again
 	// rather than trust that. It is the same function, so this cannot become a
 	// second, disagreeing policy — which is the only thing that went wrong here
