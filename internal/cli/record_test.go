@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"image"
 	"image/color"
@@ -788,11 +789,22 @@ func TestSessionRecord(t *testing.T) {
 	}
 
 	// The batch's own output has to say where the recording went, or a caller
-	// parsing NDJSON has no way to learn it.
+	// parsing NDJSON has no way to learn it. Parsed as an envelope rather than
+	// a raw substring match: `out` contains OS path separators, and on windows
+	// a raw `\` in the path is JSON-escaped as `\\` in the NDJSON line, so a
+	// literal strings.Contains(last, out) never matches there.
 	lines := strings.Split(strings.TrimSpace(stdout.String()), "\n")
 	last := lines[len(lines)-1]
-	if !strings.Contains(last, `"command":"record"`) || !strings.Contains(last, out) {
-		t.Errorf("the final NDJSON line does not report the recording: %s", last)
+	var env map[string]any
+	if err := json.Unmarshal([]byte(last), &env); err != nil {
+		t.Fatalf("final NDJSON line is not one JSON value: %v\n%s", err, last)
+	}
+	if env["command"] != "record" {
+		t.Errorf("final NDJSON line command = %v, want %q: %s", env["command"], "record", last)
+	}
+	res, _ := env["result"].(map[string]any)
+	if res["path"] != out {
+		t.Errorf("final NDJSON line result.path = %v, want %q: %s", res["path"], out, last)
 	}
 	// And the failing step is still a failing step.
 	if !strings.Contains(stdout.String(), `"ok":false`) {

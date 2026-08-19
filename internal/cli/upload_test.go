@@ -305,6 +305,12 @@ func TestUploadRootsResistTraversalAndSymlinks(t *testing.T) {
 // is "no" — the point is that it is never "yes".
 func TestUploadRootsRejectCaseVariantSpelling(t *testing.T) {
 	t.Parallel()
+	if runtime.GOOS == "windows" {
+		// Windows filesystems are case-insensitive, so ALLOWED/ok.txt genuinely
+		// IS inside root allowed — accepting it is correct there, not a bug this
+		// test can pin. Case-sensitivity is exercised on darwin/linux instead.
+		t.Skip("case-insensitive filesystem: a case-variant path is genuinely inside the root on windows")
+	}
 	root, p := uploadRootsFixture(t)
 	variant := filepath.Join(filepath.Dir(root), "ALLOWED", filepath.Base(p["inside"]))
 	if _, rerr := resolveUploadPaths([]string{variant}, []string{root}, ""); rerr == nil {
