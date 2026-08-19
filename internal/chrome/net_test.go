@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -658,28 +659,70 @@ func TestRenderCarriesStartedAt(t *testing.T) {
 // TestRenderRowDecodesIntoNetEntry is VS-11: render's map and encode.NetEntry
 // must agree field for field, because DecodeNetEntries is a JSON round trip
 // with no place to catch a drifted key name except this test.
+// netEntryJSONTags returns the JSON tag names encode.NetEntry declares, so a
+// render key with no matching field — renamed, mistagged, or newly added on
+// one side only — is caught structurally rather than only when some test
+// happens to assert on that exact key.
+func netEntryJSONTags(t *testing.T) map[string]bool {
+	t.Helper()
+	typ := reflect.TypeOf(encode.NetEntry{})
+	tags := make(map[string]bool, typ.NumField())
+	for i := 0; i < typ.NumField(); i++ {
+		name, _, _ := strings.Cut(typ.Field(i).Tag.Get("json"), ",")
+		if name != "" {
+			tags[name] = true
+		}
+	}
+	return tags
+}
+
+// assertKeysHaveNetEntryTags fails if row carries a key encode.NetEntry has no
+// json tag for.
+func assertKeysHaveNetEntryTags(t *testing.T, tags map[string]bool, row map[string]any) {
+	t.Helper()
+	for k := range row {
+		if !tags[k] {
+			t.Errorf("render emitted %q, which has no matching encode.NetEntry json tag", k)
+		}
+	}
+}
+
+// TestRenderRowDecodesIntoNetEntry is VS-11: render's map and encode.NetEntry
+// must agree field for field. A single all-fields-set-once fixture is not
+// enough — Pending, Failed, Error, BodyUnavailable, BodyTruncated and
+// RequestBodyUnavailable all default to their JSON zero value, so a drifted
+// key for any of them would leave the decoded field at zero and a test that
+// never sets them true would stay green regardless. This covers four
+// corners: a clean finished delivery, a still-pending request, a
+// network-level failure, and body-fetch trouble — plus, on every one of them,
+// a reflection check that every key `render` emitted has a matching
+// encode.NetEntry tag, so a future key with no tag is caught even before it
+// is asserted on below.
 func TestRenderRowDecodesIntoNetEntry(t *testing.T) {
 	t.Parallel()
-	r := netRecord{
+	tags := netEntryJSONTags(t)
+
+	// Corner 1: a clean, finished, delivered request with headers and bodies.
+	clean := netRecord{
 		ID: "r1", Method: "POST", URL: "https://app.example/api", Type: "xhr",
 		Started: time.Date(2026, 8, 19, 10, 15, 0, 0, time.UTC), HasStart: true, StartedMs: 150,
 		Ended: time.Date(2026, 8, 19, 10, 15, 0, 42_000_000, time.UTC), HasEnd: true,
 		Status: 200, StatusText: "OK", HasStatus: true,
 		RequestSize: 12, ResponseSize: 34, FromCache: true,
-		NetFailed: false, Error: "",
 		ReqHeaders:  map[string]string{"content-type": "application/json"},
 		RespHeaders: map[string]string{"content-type": "application/json"},
 		RequestBody: `{"hours":8}`, Finished: true,
 	}
-	row := r.render(NetOpts{Headers: true, Body: true}, netBody{Text: `{"ok":true}`, Available: true})
-	entries, err := encode.DecodeNetEntries([]any{row})
+	cleanRow := clean.render(NetOpts{Headers: true, Body: true}, netBody{Text: `{"ok":true}`, Available: true})
+	assertKeysHaveNetEntryTags(t, tags, cleanRow)
+	cleanEntries, err := encode.DecodeNetEntries([]any{cleanRow})
 	if err != nil {
-		t.Fatalf("DecodeNetEntries: %v", err)
+		t.Fatalf("DecodeNetEntries (clean): %v", err)
 	}
-	if len(entries) != 1 {
-		t.Fatalf("got %d entries, want 1", len(entries))
+	if len(cleanEntries) != 1 {
+		t.Fatalf("got %d entries, want 1", len(cleanEntries))
 	}
-	e := entries[0]
+	e := cleanEntries[0]
 	if e.ID != "r1" || e.Method != "POST" || e.URL != "https://app.example/api" || e.Type != "xhr" {
 		t.Errorf("identity fields = %+v", e)
 	}
@@ -692,8 +735,8 @@ func TestRenderRowDecodesIntoNetEntry(t *testing.T) {
 	if e.StartedMs != 150 {
 		t.Errorf("StartedMs = %d, want 150", e.StartedMs)
 	}
-	if e.DurationMs == nil {
-		t.Errorf("DurationMs is nil, want a finished duration")
+	if e.DurationMs == nil || *e.DurationMs != 42 {
+		t.Errorf("DurationMs = %v, want 42", e.DurationMs)
 	}
 	if e.RequestSize != 12 || e.ResponseSize != 34 || !e.FromCache {
 		t.Errorf("size/cache fields = %+v", e)
@@ -706,6 +749,52 @@ func TestRenderRowDecodesIntoNetEntry(t *testing.T) {
 	}
 	if e.ResponseBody == nil || *e.ResponseBody != `{"ok":true}` {
 		t.Errorf("ResponseBody = %v", e.ResponseBody)
+	}
+	if e.Failed || e.Pending || e.Error != nil || e.BodyUnavailable || e.BodyTruncated || e.RequestBodyUnavailable {
+		t.Errorf("a clean, finished, delivered record set a failure/pending/unavailable flag: %+v", e)
+	}
+
+	// Corner 2: still in flight — Pending true, no status, no duration.
+	pendingRow := netRecord{ID: "r2", Method: "GET", URL: "https://app.example/slow"}.
+		render(NetOpts{}, netBody{})
+	assertKeysHaveNetEntryTags(t, tags, pendingRow)
+	pendingEntries, err := encode.DecodeNetEntries([]any{pendingRow})
+	if err != nil {
+		t.Fatalf("DecodeNetEntries (pending): %v", err)
+	}
+	if p := pendingEntries[0]; !p.Pending || p.Status != nil || p.DurationMs != nil || p.Failed {
+		t.Errorf("pending entry = %+v, want Pending true and no status/duration/failed", p)
+	}
+
+	// Corner 3: a network-level failure — Failed true, an error string, no status.
+	failedRow := netRecord{
+		ID: "r3", Method: "GET", URL: "https://app.example/broken",
+		NetFailed: true, Error: "net::ERR_CONNECTION_RESET", Finished: true,
+	}.render(NetOpts{}, netBody{})
+	assertKeysHaveNetEntryTags(t, tags, failedRow)
+	failedEntries, err := encode.DecodeNetEntries([]any{failedRow})
+	if err != nil {
+		t.Fatalf("DecodeNetEntries (failed): %v", err)
+	}
+	if f := failedEntries[0]; !f.Failed || f.Error == nil || *f.Error != "net::ERR_CONNECTION_RESET" || f.Status != nil {
+		t.Errorf("failed entry = %+v, want Failed true, the error text, and no status", f)
+	}
+
+	// Corner 4: a delivered response whose body could not be fetched, a
+	// truncated request body, and a request body that was not text — the
+	// three body-side flags render only sets under --body.
+	bodyRow := netRecord{
+		ID: "r4", Method: "POST", URL: "https://app.example/upload",
+		HasStatus: true, Status: 200, Finished: true,
+		RequestBodyBinary: true, RequestBodyTruncated: true,
+	}.render(NetOpts{Body: true}, netBody{Available: false})
+	assertKeysHaveNetEntryTags(t, tags, bodyRow)
+	bodyEntries, err := encode.DecodeNetEntries([]any{bodyRow})
+	if err != nil {
+		t.Fatalf("DecodeNetEntries (body flags): %v", err)
+	}
+	if b := bodyEntries[0]; !b.BodyUnavailable || !b.BodyTruncated || !b.RequestBodyUnavailable {
+		t.Errorf("body-flags entry = %+v, want BodyUnavailable, BodyTruncated and RequestBodyUnavailable all true", b)
 	}
 }
 

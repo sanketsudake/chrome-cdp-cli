@@ -21,7 +21,8 @@ type netBrowser struct {
 	gotOpts  chrome.NetOpts
 	gotCond  chrome.NetCond
 	requests []any
-	stream   []any // payloads NetStream emits, in order
+	note     string // when set, rides in the Net() result like a real partial-history note
+	stream   []any  // payloads NetStream emits, in order
 	streamed bool
 	waited   bool
 	waitErr  error
@@ -29,10 +30,14 @@ type netBrowser struct {
 
 func (n *netBrowser) Net(_ context.Context, _ string, opts chrome.NetOpts) (any, error) {
 	n.gotOpts = opts
-	return map[string]any{
+	res := map[string]any{
 		"requests": n.requests, "count": len(n.requests),
 		"buffered": 214, "dropped": 3, "truncated": false, "pending": 2,
-	}, nil
+	}
+	if n.note != "" {
+		res["note"] = n.note
+	}
+	return res, nil
 }
 
 func (n *netBrowser) NetStream(_ context.Context, _ string, opts chrome.NetOpts, emit func(any) error) error {
@@ -497,10 +502,12 @@ func FuzzNetStatusSpec(f *testing.F) {
 // RFC-0017: `net --har` — export the tab's retained requests as HAR 1.2
 // ---------------------------------------------------------------------------
 
-// TestNetHarWritesTheFileAndSummarises is VS-1, VS-2 and VS-6: the file is
+// TestNetHarWritesTheFileAndSummarises is VS-2 and VS-6 (VS-1, the filter
+// composition, is TestNetHarAppliesFiltersBeforeExport below): the file is
 // written with the filtered rows, a redacted value survives literally, the
-// summary carries every documented key (and not `requests`), and the file is
-// 0600 and overwritten on a second run.
+// summary carries every documented key (and not `requests`, and the `note`
+// passthrough when the underlying read carries one), and the file is 0600
+// and overwritten on a second run.
 func TestNetHarWritesTheFileAndSummarises(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
@@ -509,6 +516,7 @@ func TestNetHarWritesTheFileAndSummarises(t *testing.T) {
 		"id":              "r1",
 		"request_headers": map[string]any{"authorization": "<redacted>"},
 	}))
+	b.note = "partial history: nothing was listening to this tab before this command started"
 	env, _, code := run(t, b, "net", "--target", "aa11", "--json", "--har", path)
 	if code != 0 {
 		t.Fatalf("exit = %d, want 0", code)
@@ -524,6 +532,9 @@ func TestNetHarWritesTheFileAndSummarises(t *testing.T) {
 	}
 	if _, has := res["requests"]; has {
 		t.Error("the summary must not carry `requests`; the file is the deliverable")
+	}
+	if res["note"] != b.note {
+		t.Errorf("note = %v, want it passed through from the underlying read: %q", res["note"], b.note)
 	}
 	if res["path"] != path {
 		t.Errorf("path = %v, want %v (as given, not absolutized)", res["path"], path)
@@ -569,6 +580,49 @@ func TestNetHarWritesTheFileAndSummarises(t *testing.T) {
 	}
 	if strings.Contains(string(data2), "stale") {
 		t.Error("the existing file's content was not replaced")
+	}
+}
+
+// TestNetHarAppliesFiltersBeforeExport is VS-1: `net --failed --har` writes
+// exactly the requests `net --failed` would list — the filter reaches the
+// browser exactly as an ordinary listing's does (netTestBrowser simulates the
+// server-side filtering that real `Net()` already performs, matching
+// TestNetFiltersAreSentToTheBrowser's convention), and the HAR holds exactly
+// what that already-filtered read returned, in count.
+func TestNetHarAppliesFiltersBeforeExport(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "out.har")
+	b := netTestBrowser(
+		reqHar("GET", "https://app/a", 500, map[string]any{"id": "r1"}),
+		reqHar("GET", "https://app/b", 404, map[string]any{"id": "r2"}),
+		reqHar("GET", "https://app/c", 502, map[string]any{"id": "r3"}),
+	)
+	env, _, code := run(t, b, "net", "--target", "aa11", "--json", "--failed", "--har", path)
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0", code)
+	}
+	if !b.gotOpts.Failed {
+		t.Error("--failed did not reach the browser")
+	}
+	res := env["result"].(map[string]any)
+	if res["entries"].(float64) != 3 {
+		t.Errorf("entries = %v, want 3", res["entries"])
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc struct {
+		Log struct {
+			Entries []map[string]any `json:"entries"`
+		} `json:"log"`
+	}
+	if err := json.Unmarshal(data, &doc); err != nil {
+		t.Fatalf("HAR file does not parse as JSON: %v\n%s", err, data)
+	}
+	if len(doc.Log.Entries) != 3 {
+		t.Errorf("log.entries has %d entries, want 3: %s", len(doc.Log.Entries), data)
 	}
 }
 
