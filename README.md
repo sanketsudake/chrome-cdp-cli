@@ -27,7 +27,13 @@ Because it attaches to the browser you're already using, an app you're signed in
    brew install --cask sanketsudake/tap/chrome-cdp
    # or:
    go install github.com/sanketsudake/chrome-cdp-cli/cmd/chrome-cdp@latest
+   # or:
+   npx skills add sanketsudake/chrome-cdp-cli
    ```
+
+   <!-- npm: @sanketsudake/chrome-cdp once Task 5.3 lands -->
+
+   The `skills` line installs the `drive-chrome-cdp`, `check-logged-in`, and `fill-grid-and-confirm` skills without installing the binary.
 
    Recent Homebrew may print a tap-trust notice for third-party taps on first install.
    The install still proceeds; to acknowledge it explicitly, run `brew trust --cask sanketsudake/tap/chrome-cdp` first.
@@ -83,6 +89,25 @@ The [logged-in web app guide](docs/scenarios/automating-a-logged-in-web-app.md) 
   Portal menus, multi-level cascade prompts, and native `<select>`s that a synthetic click can't open — the [`select`](docs/scenarios/driving-widgets-with-select.md) verb opens them.
 - **Works on modern Chrome.**
   It reads Chrome's `DevToolsActivePort` and connects directly, so it keeps working where the classic `--remote-debugging-port` flag stopped (default profile, Chrome M136+).
+- **Attaches where others can't.**
+  Chrome's `chrome://inspect` toggle serves no `/json/*` discovery, so port-only CDP clients and auto-connect time out there ([agent-browser #1003](https://github.com/vercel-labs/agent-browser/issues/1003), [#1321](https://github.com/vercel-labs/agent-browser/issues/1321)).
+  `chrome-cdp` reads `DevToolsActivePort`, waits out the consent prompt, and connects — and with `--endpoint ws://…` you can hand it the browser WebSocket URL directly.
+
+## When to use something else
+
+| Tool | Pick it when you need | Why not chrome-cdp |
+|---|---|---|
+| [agent-browser](https://github.com/vercel-labs/agent-browser) | headless or cloud runs, iOS, a dashboard, or a huge existing ecosystem | chrome-cdp only attaches to a real, already-running Chrome — it never launches, runs headless, or targets cloud/iOS |
+| [chrome-devtools-mcp](https://github.com/ChromeDevTools/chrome-devtools-mcp) | an MCP-first tool, maintained directly by Google, that reconnects per command | chrome-cdp is CLI-first and holds one daemon connection across commands, with MCP as a second interface on top |
+| [pasky/chrome-cdp-skill](https://github.com/pasky/chrome-cdp-skill) | a zero-install Node script for mostly read-only inspection | chrome-cdp is a full CLI with fill/click/upload/select and a policy-guarded write surface |
+
+### Non-goals
+
+These are deliberate, so please do not file them as gaps:
+
+- headless mode, explicit browser launching, cloud providers, iOS, a dashboard, an AI chat, or a plugin system;
+- an auth vault — it would contradict "reuses your live logins, types no credentials";
+- network mocking or route interception on a real browser.
 
 ## The loop, in commands
 
