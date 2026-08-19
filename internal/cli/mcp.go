@@ -321,6 +321,7 @@ func (a *App) newMCPRunner() *mcpRunner {
 	a.defaults.NoDaemon = a.noDaemon
 	a.defaults.ProfileDir = a.profileDir
 	a.defaults.Port = a.port
+	a.defaults.Endpoint = a.endpoint
 	a.defaults.JSON = true
 
 	// From here on every Execute is a tool call, and the policy flags stop

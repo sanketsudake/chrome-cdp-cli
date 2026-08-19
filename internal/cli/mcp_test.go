@@ -829,6 +829,38 @@ func TestMCPRunnerIsAuthoritativeForPolicyFlags(t *testing.T) {
 	}
 }
 
+// TestMCPRunnerFreezesEndpoint: --endpoint is a connection-shaped flag exactly
+// like --port and --profile-dir, and newMCPRunner has to freeze it into
+// a.defaults the same way. Each tool call is a fresh a.Execute(argv) that
+// rebuilds the command tree via newRoot, which re-registers --endpoint with
+// a.defaults.Endpoint as its default; an argv with no --endpoint of its own
+// (every real tool call) then resets a.endpoint to that default. If Endpoint
+// were not frozen, an operator's `chrome-cdp mcp --endpoint ws://...` would
+// parse fine at startup and then silently lose the endpoint on the very first
+// tool call.
+func TestMCPRunnerFreezesEndpoint(t *testing.T) {
+	t.Parallel()
+	const explicit = "ws://127.0.0.1:9222/devtools/browser/abc"
+	var got ConnOpts
+	b := &fakeBrowser{tabs: mcpTabs}
+	app := New(nil, &bytes.Buffer{}, &bytes.Buffer{}).WithConnector(func(_ context.Context, o ConnOpts) (chrome.Browser, error) {
+		got = o
+		return b, nil
+	})
+	// Simulates the state right after cobra parsed a genuine `--endpoint` flag
+	// on the `mcp` invocation itself, before newMCPRunner freezes it.
+	app.endpoint = explicit
+	runner := app.newMCPRunner()
+
+	env, exit := runner.Run(mcpCtx(t), []string{"list", "--json"})
+	if exit != result.ExitOK {
+		t.Fatalf("list: exit = %d, want %d: %s", exit, result.ExitOK, env)
+	}
+	if got.Endpoint != explicit {
+		t.Errorf("ConnOpts.Endpoint on a tool call = %q, want the frozen --endpoint %q", got.Endpoint, explicit)
+	}
+}
+
 // The allow-list bounds `close` when an MCP client is driving, per tab.
 //
 // `close` is Exempt in the classification table, so checkPolicy returns before
