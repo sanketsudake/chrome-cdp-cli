@@ -31,6 +31,6 @@ Read the resource file that matches your task before making changes:
 
 ## Docs & style
 
-User-facing docs live in `docs/` and `README.md`; the Agent Skill lives in `skills/drive-chrome-cdp/`.
+User-facing docs live in `docs/` and `README.md`; the Agent Skills live in `skills/` (`drive-chrome-cdp` is the core one; `chrome-cdp skill` serves it from the binary).
 When editing any markdown, follow the repo style: **one sentence per line**.
 Push branches and let the user open PRs unless asked otherwise.

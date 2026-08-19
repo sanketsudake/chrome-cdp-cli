@@ -122,6 +122,7 @@ Full command, flag, and exit-code tables live in the **[CLI reference](docs/cli-
 See **[Using chrome-cdp from an AI agent](docs/using-with-ai-agents.md)**.
 
 An [Agent Skill](https://docs.claude.com/en/docs/claude-code/skills) that teaches the whole loop ships in [`skills/drive-chrome-cdp`](skills/drive-chrome-cdp/SKILL.md) — point your harness at it.
+`chrome-cdp skill --full` prints the same guide from the installed binary, so it always matches the version you run.
 
 ## Use it from an MCP client
 

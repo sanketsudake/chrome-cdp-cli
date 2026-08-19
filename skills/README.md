@@ -16,7 +16,7 @@ Companion [Agent Skills](https://docs.claude.com/en/docs/claude-code/skills) for
 Each skill is a directory with a `SKILL.md` (YAML frontmatter + instructions).
 Point your agent harness at this `skills/` directory, or copy an individual skill into your own skill collection.
 
-`chrome-cdp skill --full` prints the drive-chrome-cdp core doc straight from the installed binary — run it whenever you want it without leaving the shell, or to confirm a vendored copy hasn't drifted.
+`chrome-cdp skill --full` prints the drive-chrome-cdp core doc plus every reference, straight from the installed binary — run it whenever you want it without leaving the shell, or to confirm a vendored copy hasn't drifted.
 `chrome-cdp skill list` names every embedded skill and drive-chrome-cdp reference; `chrome-cdp skill get <name>` prints any one of them, addressed by reference name, skill name, or `<skill>/<reference>`.
 
 This repository is the **canonical source** for these skills — downstream collections should vendor from here rather than forking, so updates to the CLI and its skills land together.

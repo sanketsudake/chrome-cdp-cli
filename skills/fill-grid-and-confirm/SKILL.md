@@ -43,7 +43,7 @@ Fill several cells of a grid-style web form (a timesheet, a spreadsheet-like tab
    `chrome-cdp value --all "<column selector>" --json`, or re-run `chrome-cdp grid --json`, and compare each value against what you intended to write.
    A silently rejected fill (validation error, read-only cell) shows here before you ever click save.
 4. **Show the read-back and get explicit go-ahead before touching Save.**
-   Present the step-3 values as one cell → value table and ask the user to confirm (`AskUserQuestion`) before any write.
+   Present the step-3 values as one cell → value table and ask the user for an explicit go-ahead (in Claude Code, `AskUserQuestion`) before any write.
    This is a real, usually irreversible submission against the user's live session — the read-back proves what *will* be saved, not that saving is wanted; only a human says that.
 5. **Save, then confirm the write actually happened — never assume from the click alone:**
    - If the app shows a toast or banner: `chrome-cdp click --by name "Save" --role button --wait-text "Saved" --json` folds click-and-confirm into one call.
