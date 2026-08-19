@@ -541,6 +541,7 @@ func (a *App) runPlan(plan *recipe.Plan) {
 	a.defaults.NoDaemon = a.noDaemon
 	a.defaults.ProfileDir = a.profileDir
 	a.defaults.Port = a.port
+	a.defaults.Endpoint = a.endpoint
 	// Per-step output is NDJSON, exactly the stream `session` produces.
 	a.defaults.JSON = true
 
