@@ -43,10 +43,10 @@ type Defaults struct {
 	// exception rather than the normal path, so this is env/config only, the
 	// same way CHROME_CDP_PROFILE is.
 	//
-	// Named CHROME_CDP_BROWSER_BIN rather than CHROME_CDP_BIN, which the
-	// shipped Claude skill (skills/drive-chrome-cdp/SKILL.md) already documents
-	// as the path to the chrome-cdp binary itself — a distinct meaning this
-	// knob must not collide with.
+	// Deliberately not the shorter env name one might reach for first: the
+	// shipped Claude skill (skills/drive-chrome-cdp/SKILL.md) already
+	// documents that shorter name as the path to the chrome-cdp binary
+	// itself — a distinct meaning this knob must not collide with.
 	BrowserBin string
 	ProfileDir string
 	NoLaunch   bool
