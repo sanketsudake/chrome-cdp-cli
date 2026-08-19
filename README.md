@@ -44,6 +44,12 @@ Because it attaches to the browser you're already using, an app you're signed in
    That path raises a consent prompt on **every fresh attach**, and the prompt is modal to the whole browser — until it is answered Chrome accepts no other input, and it can sit behind the window, so an unanswered one looks like a crash.
    `chrome-cdp` waits for it (see `--consent-timeout`) and never suppresses it.
 
+   For a forwarded or remote Chrome that this tool cannot discover on its own, point at it directly with `--endpoint`:
+
+   ```sh
+   chrome-cdp --endpoint "ws://127.0.0.1:9222/devtools/browser/<id>" doctor
+   ```
+
 3. **Check the connection** — `chrome-cdp doctor` actually connects and reports `ready`, `consent_pending`, or `no_endpoint`, with the exact fix.
 
 4. **Drive it:**

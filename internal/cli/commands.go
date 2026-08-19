@@ -12,6 +12,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/sanketsudake/chrome-cdp-cli/internal/browser"
 	"github.com/sanketsudake/chrome-cdp-cli/internal/chrome"
 	"github.com/sanketsudake/chrome-cdp-cli/internal/result"
 )
@@ -33,7 +34,7 @@ func (a *App) newRoot() *cobra.Command {
 		Version:       Version, // enables `--version`; the `version` subcommand prints it bare
 		SilenceUsage:  true,
 		SilenceErrors: true,
-		PersistentPreRun: func(cmd *cobra.Command, _ []string) {
+		PersistentPreRunE: func(cmd *cobra.Command, _ []string) error {
 			if a.start.IsZero() {
 				a.start = time.Now()
 			}
@@ -47,6 +48,17 @@ func (a *App) newRoot() *cobra.Command {
 			// runs AFTER parsing, so whatever the argv said about --policy-off
 			// or --allow, the server's own frozen values win. See mcpLock.
 			a.mcpLock.restore(a)
+			// --endpoint is validated here, ahead of EVERY command (doctor
+			// included): a malformed one is usage/exit 2 with Chrome never
+			// touched, the same guarantee every other flag validation in this
+			// tree gives. browser.ValidateEndpoint is the one scheme check
+			// FindEndpoint itself uses, so a garbage --endpoint is refused the
+			// same way whether it is caught here or inside FindEndpoint.
+			if err := browser.ValidateEndpoint(a.endpoint); err != nil {
+				a.emitErr(a.verbPath, result.CodeUsage, err.Error(), nil)
+				return err
+			}
+			return nil
 		},
 	}
 	// d holds the effective flag defaults (built-in, overlaid by the config
@@ -61,6 +73,7 @@ func (a *App) newRoot() *cobra.Command {
 	pf.BoolVar(&a.noDaemon, "no-daemon", d.NoDaemon, "connect directly instead of via the shared daemon")
 	pf.StringVar(&a.profileDir, "profile-dir", d.ProfileDir, "managed-launch Chrome profile dir (else $CHROME_CDP_PROFILE or ~/.cache/chrome-cdp/profile)")
 	pf.IntVar(&a.port, "port", d.Port, "explicit Chrome debug port to attach to / launch with (0 = auto)")
+	pf.StringVar(&a.endpoint, "endpoint", d.Endpoint, "explicit Chrome debug endpoint: ws://host:port/devtools/browser/<id> or http://host:port (wins over --port and the DevToolsActivePort file)")
 	pf.StringVar(&a.byFlag, "by", d.By, "selector syntax: css|id|search|jspath|css-all|name|ref|cell|label (name = ARIA accessible name; ref = snap e<id>; cell = grid input by [row|]column header; label = form control by visible label text)")
 	pf.StringVar(&a.waitFlag, "wait", d.Wait, "selector wait condition: visible|ready|enabled")
 	pf.StringVar(&a.roleFlag, "role", "", "with --by name: constrain to an ARIA role (button|link|textbox|…)")

@@ -28,6 +28,10 @@
 # no_daemon = false     # connect directly instead of via the shared daemon
 # no_color = false      # plain, symbol-free human output
 # port = 0              # explicit Chrome debug port (0 = auto-discover)
+# endpoint = ""         # explicit debug endpoint: ws://host:port/devtools/browser/<id>
+#                       # or http://host:port. Wins over port and the DevToolsActivePort
+#                       # file — use it to reach a Chrome this tool cannot discover on its
+#                       # own (a container, an SSH-forwarded port, another machine).
 # profile_dir = ""      # managed-launch Chrome profile directory
 
 # Selector defaults

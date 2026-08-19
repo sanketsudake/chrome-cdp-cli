@@ -305,6 +305,46 @@ func TestConsentTimeoutFlagIsNormalised(t *testing.T) {
 	}
 }
 
+// TestDoctorEndpointGarbageIsUsage: a malformed --endpoint is a usage error
+// for every verb, doctor included — validated before any connection is
+// attempted, exactly like every other malformed invocation here.
+func TestDoctorEndpointGarbageIsUsage(t *testing.T) {
+	t.Parallel()
+	var out, errb bytes.Buffer
+	app := New(noCall(t), &out, &errb)
+	code := app.Execute("doctor", "--endpoint", "garbage", "--json")
+	if code != result.ExitUsage {
+		t.Fatalf("exit = %d, want %d (usage): %s", code, result.ExitUsage, out.String())
+	}
+	var env map[string]any
+	if err := json.Unmarshal(out.Bytes(), &env); err == nil {
+		if got := doctorErrCode(env); got != result.CodeUsage {
+			t.Errorf("error.code = %q, want %q", got, result.CodeUsage)
+		}
+	}
+}
+
+// TestDoctorEndpointFlagReportsSource: an explicit --endpoint is reported as
+// the source in the envelope, so a caller can tell it apart from --port or
+// the DevToolsActivePort file.
+func TestDoctorEndpointFlagReportsSource(t *testing.T) {
+	t.Parallel()
+	var out, errb bytes.Buffer
+	app := New(noCall(t), &out, &errb)
+	code := app.Execute("doctor", "--endpoint", "ws://127.0.0.1:9222/devtools/browser/abc", "--no-probe", "--json")
+	if code != result.ExitOK {
+		t.Fatalf("exit = %d, want 0 (ok): %s", code, out.String())
+	}
+	var env map[string]any
+	if err := json.Unmarshal(out.Bytes(), &env); err != nil {
+		t.Fatalf("stdout is not one JSON value: %v\n%s", err, out.String())
+	}
+	res, _ := env["result"].(map[string]any)
+	if res["endpoint_source"] != "flag" {
+		t.Errorf("endpoint_source = %v, want flag: %v", res["endpoint_source"], res)
+	}
+}
+
 // TestDoctorHonoursExplicitPort. Every other verb resolves its endpoint from
 // --port before the DevToolsActivePort file; doctor called FindPortFile("") and
 // never looked at the flag. So `doctor --port 9333` probed whatever Chrome the

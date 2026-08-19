@@ -56,6 +56,7 @@ These apply to every command.
 | `--no-daemon` | off | connect directly instead of via the shared daemon |
 | `--no-launch` | off | don't auto-launch a fallback Chrome |
 | `--port <n>` | auto | explicit Chrome debug port |
+| `--endpoint <url>` | — | explicit debug endpoint, `ws://host:port/devtools/browser/<id>` or `http://host:port` (wins over `--port` and the `DevToolsActivePort` file; see [Explicit endpoint](#explicit-endpoint)) |
 | `--profile-dir <dir>` | default | managed-launch Chrome profile dir |
 | `--no-color` | off | plain output (also honors `$NO_COLOR`) |
 | `-q, --quiet` | off | suppress non-essential output |
@@ -1057,6 +1058,22 @@ If no debug-enabled Chrome is found, it launches a managed Chrome on a dedicated
 A background **daemon** holds the connection, so the consent prompt appears once per session rather than once per command.
 It starts lazily on first use and idles out after 30 minutes; manage it with `daemon start|stop|status`, or bypass it with `--no-daemon`.
 
+### Explicit endpoint
+
+`--endpoint <url>` (config key `endpoint`, env `CHROME_CDP_ENDPOINT`) names the debug endpoint directly, bypassing both `--port` and the `DevToolsActivePort` file.
+It takes a `ws://` or `http://` URL; anything else is a usage error before any connection is attempted.
+
+This is how you reach a Chrome that `chrome-cdp` cannot discover on its own — one running in a container, over an SSH tunnel, or on another machine with its debug port forwarded.
+
+The two schemes matter for different reasons:
+
+- Pass the **`ws://` URL from the `DevToolsActivePort` file** (`ws://host:port/devtools/browser/<id>`) for a Chrome reached via `chrome://inspect/#remote-debugging`.
+  That path serves a 404 on `/json/*`, so there is no HTTP endpoint to hand it instead — only the literal WebSocket URL works.
+- Pass **`http://host:port`** for a Chrome launched with `--remote-debugging-port`.
+  That flag serves `/json/version`, so `chrome-cdp --endpoint http://127.0.0.1:9222 doctor` resolves the browser-level WebSocket the same way `--port` does.
+
+An explicit `--endpoint` also keys the daemon socket and sticky-target state (by its own host:port), so two Chromes reached through different endpoints never share either.
+
 ### The consent prompt
 
 On the `chrome://inspect` path, a fresh attach makes Chrome ask "Allow remote debugging?".
@@ -1265,6 +1282,7 @@ timeout = "10s"
 consent_timeout = "2m" # how long to wait for Chrome's consent prompt (1s-10m; 0 means the 120s default)
 by = "search"          # default selector syntax
 target = "url:github"  # default tab when neither --target nor `use` is set
+endpoint = "ws://127.0.0.1:9222/devtools/browser/<id>" # explicit debug endpoint; see Explicit endpoint
 ```
 
 A malformed config is a warning on stderr, not a fatal error — the CLI still runs on the built-ins.
