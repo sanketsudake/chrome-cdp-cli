@@ -5,8 +5,8 @@ Design proposals for `chrome-cdp`, written before the code so the CLI surface, t
 Each RFC is self-contained: motivation, user stories with acceptance criteria, the proposed command surface, the envelope shape, and a verification plan that maps to real tests.
 An RFC is `Draft` until someone implements it; the implementing PR flips it to `Accepted` and links itself.
 
-**All fifteen are implemented and merged.**
-They are kept as the design record — what was proposed, why, and what the verification plan was — not as a to-do list.
+**RFCs 0001–0015 are implemented and merged; 0016 is Draft.**
+The merged ones are kept as the design record — what was proposed, why, and what the verification plan was — not as a to-do list.
 Where the implementation departed from the proposal, the RFC's own Open Questions section records the decision, and the PR records the reason.
 
 RFCs 0014 and 0015 are a second wave, currently Draft: a capability gap analysis (2026-07-27) against coordinate-first automation surfaces found the remaining holes concentrated in pixel-space interaction and element discovery.
@@ -56,6 +56,7 @@ The reproduction then contradicted the first diagnosis, which is why it is writt
 | [0013](0013-consent-prompt-lifecycle.md) | Surviving Chrome's consent prompt | P0 | connection | Accepted — [#18](https://github.com/sanketsudake/chrome-cdp-cli/pull/18) |
 | [0014](0014-coordinate-space-interaction.md) | Coordinate-space interaction: `--at`, `tripleclick`, drop-zone upload, `window` | P0/P1 | input | Accepted — [#22](https://github.com/sanketsudake/chrome-cdp-cli/pull/22), [#23](https://github.com/sanketsudake/chrome-cdp-cli/pull/23) |
 | [0015](0015-find-element-search.md) | `find`: ranked element search from a plain-language query | P0 | reading | Accepted — [#21](https://github.com/sanketsudake/chrome-cdp-cli/pull/21) |
+| [0016](0016-screenshot-annotate.md) | `screenshot --annotate`: numbered element labels with a legend in the envelope | P2 | capture | Draft |
 
 ## Dependency graph
 
@@ -77,6 +78,10 @@ The reproduction then contradicted the first diagnosis, which is why it is writt
 0008 screenshot ──> 0014's coordinate contract is defined against --scale 1 captures
 snap refs ────> 0015 find mints the same e<id> refs and reuses snap's traversal
 0014 --at <──> 0015 find (find's center points feed --at when refs go stale)
+
+0008 screenshot ─────────┐
+0011 encode markers ─────┼──> 0016 screenshot --annotate (labels mapped through 0008's clip, drawn by 0011's marker code;
+snap refs + 0015 filter ─┘                                legend centers follow 0014's coordinate contract)
 ```
 
 ## Conventions every RFC in this folder inherits
