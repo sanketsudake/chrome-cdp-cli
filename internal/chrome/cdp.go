@@ -35,7 +35,10 @@ import (
 
 // Options controls how CDP connects.
 type Options struct {
-	PortFile   string // override DevToolsActivePort location (else OS candidates)
+	PortFile string // override DevToolsActivePort location (else OS candidates)
+	// Endpoint is an explicit browser endpoint, ws:// or http://; wins over
+	// Port and PortFile. See browser.FindEndpoint.
+	Endpoint   string
 	ProfileDir string // managed-launch profile dir (else CHROME_CDP_PROFILE / default)
 	Port       int    // explicit debug port to attach to / launch with (0 = auto)
 	NoLaunch   bool   // don't fall back to launching a managed Chrome
@@ -223,7 +226,7 @@ func Connect(_ context.Context, opts Options) (*CDP, error) {
 	// An explicit --port takes precedence over the DevToolsActivePort file.
 	// Shared with `doctor` so the command that diagnoses the connection and the
 	// command that makes it are talking about the same Chrome.
-	endpoint := browser.FindEndpoint("", opts.PortFile, opts.Port).URL
+	endpoint := browser.FindEndpoint(opts.Endpoint, opts.PortFile, opts.Port).URL
 	// Already clamped by whoever resolved the flag/env/config; run it again
 	// rather than trust that. It is the same function, so this cannot become a
 	// second, disagreeing policy — which is the only thing that went wrong here

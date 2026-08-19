@@ -32,11 +32,15 @@ type Defaults struct {
 	Wait           string
 	Target         string
 	Port           int
-	ProfileDir     string
-	NoLaunch       bool
-	NoDaemon       bool
-	JSON           bool
-	NoColor        bool
+	// Endpoint is an explicit debug endpoint (ws:// or http://) that wins over
+	// Port and the DevToolsActivePort file (config key endpoint, env
+	// CHROME_CDP_ENDPOINT). See browser.FindEndpoint.
+	Endpoint   string
+	ProfileDir string
+	NoLaunch   bool
+	NoDaemon   bool
+	JSON       bool
+	NoColor    bool
 
 	// Policy is the optional [policy] table (RFC-0012). No CHROME_CDP_* variable
 	// sets any of its keys: a safety boundary whose CONTENTS an inherited
@@ -126,6 +130,7 @@ type file struct {
 	Wait           *string `toml:"wait"`
 	Target         *string `toml:"target"`
 	Port           *int    `toml:"port"`
+	Endpoint       *string `toml:"endpoint"`
 	ProfileDir     *string `toml:"profile_dir"`
 	NoLaunch       *bool   `toml:"no_launch"`
 	NoDaemon       *bool   `toml:"no_daemon"`
@@ -280,6 +285,9 @@ func applyFile(d *Defaults, path string) error {
 	if f.Port != nil {
 		d.Port = *f.Port
 	}
+	if f.Endpoint != nil {
+		d.Endpoint = *f.Endpoint
+	}
 	if f.ProfileDir != nil {
 		d.ProfileDir = *f.ProfileDir
 	}
@@ -423,6 +431,9 @@ func applyEnv(d *Defaults, getenv func(string) string) {
 		if n, err := strconv.Atoi(v); err == nil {
 			d.Port = n
 		}
+	}
+	if v := getenv("CHROME_CDP_ENDPOINT"); v != "" {
+		d.Endpoint = v
 	}
 	if v := getenv("CHROME_CDP_PROFILE"); v != "" {
 		d.ProfileDir = v

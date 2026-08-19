@@ -28,3 +28,16 @@ func TestDirectConnectAnnouncesThePendingPrompt(t *testing.T) {
 		t.Errorf("the --no-daemon notice does not carry browser.ConsentPromptAdvice:\n%s", buf.String())
 	}
 }
+
+// TestDirectConnectOptionsThreadsEndpoint: --endpoint has to reach
+// chrome.Connect on the --no-daemon path the same way --port does, or an
+// explicit endpoint would work through the daemon and silently stop working
+// with --no-daemon.
+func TestDirectConnectOptionsThreadsEndpoint(t *testing.T) {
+	var buf bytes.Buffer
+	o := cli.ConnOpts{Endpoint: "ws://127.0.0.1:9222/devtools/browser/abc"}
+	opts := directConnectOptions("", o, config.Builtin(), &buf)
+	if opts.Endpoint != o.Endpoint {
+		t.Errorf("Options.Endpoint = %q, want %q", opts.Endpoint, o.Endpoint)
+	}
+}

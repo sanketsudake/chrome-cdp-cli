@@ -21,7 +21,7 @@ import (
 // .pending marker and no Ensure to read it.
 func directConnectOptions(portFile string, o cli.ConnOpts, defs config.Defaults, w io.Writer) chrome.Options {
 	return chrome.Options{
-		PortFile: portFile, NoLaunch: o.NoLaunch, ProfileDir: o.ProfileDir, Port: o.Port,
+		PortFile: portFile, NoLaunch: o.NoLaunch, ProfileDir: o.ProfileDir, Port: o.Port, Endpoint: o.Endpoint,
 		ConsentTimeout: o.ConsentTimeout,
 		// Fires once, the moment the upgrade is classified as pending — while
 		// the dialog is still on screen, which is the only time saying so helps.

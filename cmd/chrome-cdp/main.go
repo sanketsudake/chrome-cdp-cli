@@ -27,6 +27,7 @@ func main() {
 		env := config.FromEnv()
 		opts := chrome.Options{
 			PortFile:        os.Getenv("CHROME_CDP_PORT_FILE"),
+			Endpoint:        env.Endpoint,
 			ProfileDir:      env.ProfileDir,
 			Port:            env.Port,
 			NoLaunch:        env.NoLaunch,
@@ -55,10 +56,10 @@ func main() {
 	// on the effective --port, which isn't known until cobra parses flags, so it
 	// must be computed per command from the connection options — not once here.
 	socketFor := func(o cli.ConnOpts) string {
-		return daemon.SocketPath(browser.EndpointKey("", portFile, o.Port))
+		return daemon.SocketPath(browser.EndpointKey(o.Endpoint, portFile, o.Port))
 	}
 	stateFor := func(o cli.ConnOpts) (*state.Store, error) {
-		return state.New(browser.EndpointKey("", portFile, o.Port))
+		return state.New(browser.EndpointKey(o.Endpoint, portFile, o.Port))
 	}
 
 	// Resolve persistent defaults (config file + CHROME_CDP_* env); a malformed
@@ -104,6 +105,9 @@ func main() {
 		if o.Port != 0 {
 			env = append(env, "CHROME_CDP_PORT="+strconv.Itoa(o.Port))
 		}
+		if o.Endpoint != "" {
+			env = append(env, "CHROME_CDP_ENDPOINT="+o.Endpoint)
+		}
 		if o.NoLaunch {
 			env = append(env, "CHROME_CDP_NO_LAUNCH=1")
 		}
@@ -144,7 +148,7 @@ func main() {
 			if _, err := daemon.Ensure(context.Background(), sock, exe, daemonEnv(o), o.ConsentTimeout); err != nil {
 				return nil, err
 			}
-			return map[string]any{"started": true, "socket": sock, "endpoint": browser.EndpointKey("", portFile, o.Port)}, nil
+			return map[string]any{"started": true, "socket": sock, "endpoint": browser.EndpointKey(o.Endpoint, portFile, o.Port)}, nil
 		},
 		func(o cli.ConnOpts) (map[string]any, error) {
 			c := daemon.TryConnect(socketFor(o))
@@ -157,7 +161,7 @@ func main() {
 			return map[string]any{"stopped": true}, nil
 		},
 		func(o cli.ConnOpts) (map[string]any, error) {
-			return daemon.Status(socketFor(o), browser.EndpointKey("", portFile, o.Port))
+			return daemon.Status(socketFor(o), browser.EndpointKey(o.Endpoint, portFile, o.Port))
 		},
 	)
 

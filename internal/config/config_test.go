@@ -601,3 +601,31 @@ func TestConsentTimeoutPrecedence(t *testing.T) {
 		t.Errorf("a malformed file value should leave the built-in alone, got %v", d.ConsentTimeout)
 	}
 }
+
+// TestEndpointPrecedence: an explicit endpoint can come from the config file or
+// CHROME_CDP_ENDPOINT, and the env wins — the same precedence every other key
+// here follows.
+func TestEndpointPrecedence(t *testing.T) {
+	t.Parallel()
+
+	// Built-in: unset.
+	d, _ := ResolveFrom(filepath.Join(t.TempDir(), "absent.toml"), noEnv)
+	if d.Endpoint != "" {
+		t.Errorf("built-in endpoint = %q, want empty", d.Endpoint)
+	}
+
+	p := writeConfig(t, `endpoint = "http://127.0.0.1:9222"`+"\n")
+	d, err := ResolveFrom(p, noEnv)
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if d.Endpoint != "http://127.0.0.1:9222" {
+		t.Errorf("config endpoint = %q, want http://127.0.0.1:9222", d.Endpoint)
+	}
+
+	// Env beats the file.
+	d, _ = ResolveFrom(p, envFrom(map[string]string{"CHROME_CDP_ENDPOINT": "ws://127.0.0.1:9222/devtools/browser/x"}))
+	if d.Endpoint != "ws://127.0.0.1:9222/devtools/browser/x" {
+		t.Errorf("env endpoint should win, got %q", d.Endpoint)
+	}
+}

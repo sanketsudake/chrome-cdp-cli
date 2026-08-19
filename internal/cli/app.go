@@ -35,23 +35,26 @@ type App struct {
 	noLaunch       bool
 	profileDir     string
 	port           int
-	byFlag         string
-	waitFlag       string
-	roleFlag       string
-	nthFlag        int
-	matchFlag      string
-	inRowFlag      string // --in-row: scope a --by name match to the row whose text contains this
-	onDialog       string // --on-dialog: auto-handle a native dialog opened during an action (accept|dismiss)
-	noWait         bool
-	actWaitText    string // --wait-text: after an action verb succeeds, wait until this text appears
-	pierce         bool
-	noDaemon       bool
-	quiet          bool
-	verbose        bool
-	noColor        bool
-	noInput        bool
-	allowFlag      []string // --allow: one-off origin allow-list, replacing the configured one
-	policyOff      bool     // --policy-off: explicit, logged, never implicit
+	// endpoint is an explicit --endpoint URL (ws:// or http://); wins over
+	// port and the DevToolsActivePort file. See browser.FindEndpoint.
+	endpoint    string
+	byFlag      string
+	waitFlag    string
+	roleFlag    string
+	nthFlag     int
+	matchFlag   string
+	inRowFlag   string // --in-row: scope a --by name match to the row whose text contains this
+	onDialog    string // --on-dialog: auto-handle a native dialog opened during an action (accept|dismiss)
+	noWait      bool
+	actWaitText string // --wait-text: after an action verb succeeds, wait until this text appears
+	pierce      bool
+	noDaemon    bool
+	quiet       bool
+	verbose     bool
+	noColor     bool
+	noInput     bool
+	allowFlag   []string // --allow: one-off origin allow-list, replacing the configured one
+	policyOff   bool     // --policy-off: explicit, logged, never implicit
 
 	// verbPath is the running command's full cobra path minus the root
 	// ("click", "cookie set"), captured per Execute in PersistentPreRun. It is
@@ -138,7 +141,10 @@ func (a *App) WithStickyTarget(get func(ConnOpts) string, set func(ConnOpts, str
 
 // ConnOpts are the connection-related flags handed to the connector.
 type ConnOpts struct {
-	NoLaunch   bool
+	NoLaunch bool
+	// Endpoint is an explicit --endpoint URL (ws:// or http://); wins over
+	// Port and the DevToolsActivePort file. See browser.FindEndpoint.
+	Endpoint   string
 	ProfileDir string
 	Port       int
 	NoDaemon   bool
@@ -150,7 +156,7 @@ type ConnOpts struct {
 
 func (a *App) connOpts() ConnOpts {
 	return ConnOpts{
-		NoLaunch: a.noLaunch, ProfileDir: a.profileDir, Port: a.port,
+		NoLaunch: a.noLaunch, ProfileDir: a.profileDir, Port: a.port, Endpoint: a.endpoint,
 		NoDaemon: a.noDaemon,
 		// The flag is the last of the three ways this value gets set (config
 		// resolution clamps the file and the environment), so it is clamped
