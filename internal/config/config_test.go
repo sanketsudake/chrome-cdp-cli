@@ -639,32 +639,32 @@ func TestEndpointPrecedence(t *testing.T) {
 	}
 }
 
-// TestBinPrecedence: CHROME_CDP_BIN/config bin has no --bin flag, but it
-// follows the same file-then-env precedence as every other scalar key here.
-// Unlike Endpoint, a bad value has no scheme to validate, so there is no
-// malformed-value case.
-func TestBinPrecedence(t *testing.T) {
+// TestBrowserBinPrecedence: CHROME_CDP_BROWSER_BIN/config browser_bin has no
+// --browser-bin flag, but it follows the same file-then-env precedence as
+// every other scalar key here. Unlike Endpoint, a bad value has no scheme to
+// validate, so there is no malformed-value case.
+func TestBrowserBinPrecedence(t *testing.T) {
 	t.Parallel()
 
 	// Built-in: unset.
 	d, _ := ResolveFrom(filepath.Join(t.TempDir(), "absent.toml"), noEnv)
-	if d.Bin != "" {
-		t.Errorf("built-in bin = %q, want empty", d.Bin)
+	if d.BrowserBin != "" {
+		t.Errorf("built-in browser_bin = %q, want empty", d.BrowserBin)
 	}
 
-	p := writeConfig(t, `bin = "/usr/bin/chromium"`+"\n")
+	p := writeConfig(t, `browser_bin = "/usr/bin/chromium"`+"\n")
 	d, err := ResolveFrom(p, noEnv)
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
-	if d.Bin != "/usr/bin/chromium" {
-		t.Errorf("config bin = %q, want /usr/bin/chromium", d.Bin)
+	if d.BrowserBin != "/usr/bin/chromium" {
+		t.Errorf("config browser_bin = %q, want /usr/bin/chromium", d.BrowserBin)
 	}
 
 	// Env beats the file.
-	d, _ = ResolveFrom(p, envFrom(map[string]string{"CHROME_CDP_BIN": "/opt/brave/brave"}))
-	if d.Bin != "/opt/brave/brave" {
-		t.Errorf("env bin should win, got %q", d.Bin)
+	d, _ = ResolveFrom(p, envFrom(map[string]string{"CHROME_CDP_BROWSER_BIN": "/opt/brave/brave"}))
+	if d.BrowserBin != "/opt/brave/brave" {
+		t.Errorf("env browser_bin should win, got %q", d.BrowserBin)
 	}
 }
 

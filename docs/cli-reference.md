@@ -1075,7 +1075,7 @@ Arc has no Linux build and does not ship this profile layout on Windows, so it i
 Every one of them skips the consent prompt entirely when launched with `--remote-debugging-port=9222`.
 On macOS: `open -a "Google Chrome" --args --remote-debugging-port=9222`, `open -a Chromium --args --remote-debugging-port=9222`, `open -a "Brave Browser" --args --remote-debugging-port=9222`, `open -a "Microsoft Edge" --args --remote-debugging-port=9222`, `open -a Vivaldi --args --remote-debugging-port=9222`, or `open -a Arc --args --remote-debugging-port=9222`.
 On Linux: `google-chrome --remote-debugging-port=9222`, `chromium --remote-debugging-port=9222`, `brave-browser --remote-debugging-port=9222`, `microsoft-edge --remote-debugging-port=9222`, or `vivaldi --remote-debugging-port=9222`.
-If none of these is already debug-enabled, the managed-launch fallback execs Chrome by default; set `CHROME_CDP_BIN` (config key `bin`) to a different binary's path to have it launch that browser instead.
+If none of these is already debug-enabled, the managed-launch fallback execs Chrome by default; set `CHROME_CDP_BROWSER_BIN` (config key `browser_bin`) to a different binary's path to have it launch that browser instead.
 
 ### Explicit endpoint
 
@@ -1305,7 +1305,7 @@ consent_timeout = "2m" # how long to wait for Chrome's consent prompt (1s-10m; 0
 by = "search"          # default selector syntax
 target = "url:github"  # default tab when neither --target nor `use` is set
 endpoint = "ws://127.0.0.1:9222/devtools/browser/<id>" # explicit debug endpoint; see Explicit endpoint
-bin = "/usr/bin/chromium" # binary the managed-launch fallback execs instead of Chrome; env CHROME_CDP_BIN; see Which browsers
+browser_bin = "/usr/bin/chromium" # binary the managed-launch fallback execs instead of Chrome; env CHROME_CDP_BROWSER_BIN; see Which browsers
 ```
 
 A malformed config is a warning on stderr, not a fatal error — the CLI still runs on the built-ins.

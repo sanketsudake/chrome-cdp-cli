@@ -28,7 +28,7 @@ func main() {
 		opts := chrome.Options{
 			PortFile:        os.Getenv("CHROME_CDP_PORT_FILE"),
 			Endpoint:        env.Endpoint,
-			Bin:             env.Bin,
+			BrowserBin:      env.BrowserBin,
 			ProfileDir:      env.ProfileDir,
 			Port:            env.Port,
 			NoLaunch:        env.NoLaunch,
@@ -109,10 +109,11 @@ func main() {
 		if o.Endpoint != "" {
 			env = append(env, "CHROME_CDP_ENDPOINT="+o.Endpoint)
 		}
-		// Bin has no flag — it comes from config/env only — so it is forwarded
-		// from defs the same way the event-capture bounds are below, not from o.
-		if defs.Bin != "" {
-			env = append(env, "CHROME_CDP_BIN="+defs.Bin)
+		// BrowserBin has no flag — it comes from config/env only — so it is
+		// forwarded from defs the same way the event-capture bounds are below,
+		// not from o.
+		if defs.BrowserBin != "" {
+			env = append(env, "CHROME_CDP_BROWSER_BIN="+defs.BrowserBin)
 		}
 		if o.NoLaunch {
 			env = append(env, "CHROME_CDP_NO_LAUNCH=1")

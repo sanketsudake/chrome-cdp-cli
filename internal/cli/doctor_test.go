@@ -346,15 +346,15 @@ func TestDoctorEndpointFlagReportsSource(t *testing.T) {
 	}
 }
 
-// TestDoctorReportsBinWhenSet: CHROME_CDP_BIN/config bin has no --bin flag, so
-// doctor reads it from a.defaults rather than a flag — this pins that it
-// surfaces in the envelope so a caller can tell what the managed-launch
-// fallback would exec, the same way endpoint_source tells them where the
-// endpoint came from.
-func TestDoctorReportsBinWhenSet(t *testing.T) {
+// TestDoctorReportsBrowserBinWhenSet: CHROME_CDP_BROWSER_BIN/config
+// browser_bin has no --browser-bin flag, so doctor reads it from a.defaults
+// rather than a flag — this pins that it surfaces in the envelope so a caller
+// can tell what the managed-launch fallback would exec, the same way
+// endpoint_source tells them where the endpoint came from.
+func TestDoctorReportsBrowserBinWhenSet(t *testing.T) {
 	t.Parallel()
 	var out, errb bytes.Buffer
-	app := New(noCall(t), &out, &errb).WithDefaults(config.Defaults{Bin: "/opt/chromium/chrome"})
+	app := New(noCall(t), &out, &errb).WithDefaults(config.Defaults{BrowserBin: "/opt/chromium/chrome"})
 	code := app.Execute("doctor", "--endpoint", "ws://127.0.0.1:9222/devtools/browser/abc", "--no-probe", "--json")
 	if code != result.ExitOK {
 		t.Fatalf("exit = %d, want 0 (ok): %s", code, out.String())
@@ -364,14 +364,15 @@ func TestDoctorReportsBinWhenSet(t *testing.T) {
 		t.Fatalf("stdout is not one JSON value: %v\n%s", err, out.String())
 	}
 	res, _ := env["result"].(map[string]any)
-	if res["bin"] != "/opt/chromium/chrome" {
-		t.Errorf("bin = %v, want /opt/chromium/chrome: %v", res["bin"], res)
+	if res["browser_bin"] != "/opt/chromium/chrome" {
+		t.Errorf("browser_bin = %v, want /opt/chromium/chrome: %v", res["browser_bin"], res)
 	}
 }
 
-// TestDoctorOmitsBinWhenUnset: no config bin / CHROME_CDP_BIN means nothing to
-// report, and an absent key is easier for a caller to check than "" would be.
-func TestDoctorOmitsBinWhenUnset(t *testing.T) {
+// TestDoctorOmitsBrowserBinWhenUnset: no config browser_bin /
+// CHROME_CDP_BROWSER_BIN means nothing to report, and an absent key is
+// easier for a caller to check than "" would be.
+func TestDoctorOmitsBrowserBinWhenUnset(t *testing.T) {
 	t.Parallel()
 	var out, errb bytes.Buffer
 	app := New(noCall(t), &out, &errb)
@@ -384,8 +385,8 @@ func TestDoctorOmitsBinWhenUnset(t *testing.T) {
 		t.Fatalf("stdout is not one JSON value: %v\n%s", err, out.String())
 	}
 	res, _ := env["result"].(map[string]any)
-	if _, ok := res["bin"]; ok {
-		t.Errorf("bin present with Defaults.Bin unset: %v", res)
+	if _, ok := res["browser_bin"]; ok {
+		t.Errorf("browser_bin present with Defaults.BrowserBin unset: %v", res)
 	}
 }
 

@@ -92,8 +92,8 @@ func (a *App) runDoctor(noProbe bool) {
 		if src != "" {
 			details["endpoint_source"] = src
 		}
-		if a.defaults.Bin != "" {
-			details["bin"] = a.defaults.Bin
+		if a.defaults.BrowserBin != "" {
+			details["browser_bin"] = a.defaults.BrowserBin
 		}
 		a.emitErr("doctor", result.CodeConnection,
 			"the DevToolsActivePort file is unreadable ("+ep.Err.Error()+") — "+browser.EnableAdvice,
@@ -113,8 +113,8 @@ func (a *App) runDoctor(noProbe bool) {
 	if src != "" {
 		base["endpoint_source"] = src
 	}
-	if a.defaults.Bin != "" {
-		base["bin"] = a.defaults.Bin
+	if a.defaults.BrowserBin != "" {
+		base["browser_bin"] = a.defaults.BrowserBin
 	}
 	if noProbe {
 		res := map[string]any{
@@ -124,8 +124,8 @@ func (a *App) runDoctor(noProbe bool) {
 		if src != "" {
 			res["endpoint_source"] = src
 		}
-		if a.defaults.Bin != "" {
-			res["bin"] = a.defaults.Bin
+		if a.defaults.BrowserBin != "" {
+			res["browser_bin"] = a.defaults.BrowserBin
 		}
 		a.emitOK("doctor", nil, res)
 		return

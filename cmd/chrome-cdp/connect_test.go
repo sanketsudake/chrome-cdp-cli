@@ -42,16 +42,17 @@ func TestDirectConnectOptionsThreadsEndpoint(t *testing.T) {
 	}
 }
 
-// TestDirectConnectOptionsThreadsBin: CHROME_CDP_BIN has no --bin flag, so it
-// has to reach chrome.Options through defs (config.Defaults.Bin) rather than
-// cli.ConnOpts — the same path as the ConsoleBuffer-style capture bounds, not
-// the same path as --endpoint or --port.
-func TestDirectConnectOptionsThreadsBin(t *testing.T) {
+// TestDirectConnectOptionsThreadsBrowserBin: CHROME_CDP_BROWSER_BIN has no
+// --browser-bin flag, so it has to reach chrome.Options through defs
+// (config.Defaults.BrowserBin) rather than cli.ConnOpts — the same path as
+// the ConsoleBuffer-style capture bounds, not the same path as --endpoint or
+// --port.
+func TestDirectConnectOptionsThreadsBrowserBin(t *testing.T) {
 	var buf bytes.Buffer
 	defs := config.Builtin()
-	defs.Bin = "/opt/chromium/chrome"
+	defs.BrowserBin = "/opt/chromium/chrome"
 	opts := directConnectOptions("", cli.ConnOpts{}, defs, &buf)
-	if opts.Bin != defs.Bin {
-		t.Errorf("Options.Bin = %q, want %q", opts.Bin, defs.Bin)
+	if opts.BrowserBin != defs.BrowserBin {
+		t.Errorf("Options.BrowserBin = %q, want %q", opts.BrowserBin, defs.BrowserBin)
 	}
 }

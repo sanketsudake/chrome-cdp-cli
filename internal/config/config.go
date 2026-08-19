@@ -37,11 +37,17 @@ type Defaults struct {
 	// Port and the DevToolsActivePort file (config key endpoint, env
 	// CHROME_CDP_ENDPOINT). See browser.FindEndpoint.
 	Endpoint string
-	// Bin is a non-Chrome binary the managed-launch fallback execs instead of
-	// Chrome (config key bin, env CHROME_CDP_BIN). There is no --bin flag: a
-	// managed-launch fallback is already the exception rather than the normal
-	// path, so this is env/config only, the same way CHROME_CDP_PROFILE is.
-	Bin        string
+	// BrowserBin is a non-Chrome binary the managed-launch fallback execs
+	// instead of Chrome (config key browser_bin, env CHROME_CDP_BROWSER_BIN).
+	// There is no --browser-bin flag: a managed-launch fallback is already the
+	// exception rather than the normal path, so this is env/config only, the
+	// same way CHROME_CDP_PROFILE is.
+	//
+	// Named CHROME_CDP_BROWSER_BIN rather than CHROME_CDP_BIN, which the
+	// shipped Claude skill (skills/drive-chrome-cdp/SKILL.md) already documents
+	// as the path to the chrome-cdp binary itself — a distinct meaning this
+	// knob must not collide with.
+	BrowserBin string
 	ProfileDir string
 	NoLaunch   bool
 	NoDaemon   bool
@@ -137,7 +143,7 @@ type file struct {
 	Target         *string `toml:"target"`
 	Port           *int    `toml:"port"`
 	Endpoint       *string `toml:"endpoint"`
-	Bin            *string `toml:"bin"`
+	BrowserBin     *string `toml:"browser_bin"`
 	ProfileDir     *string `toml:"profile_dir"`
 	NoLaunch       *bool   `toml:"no_launch"`
 	NoDaemon       *bool   `toml:"no_daemon"`
@@ -306,8 +312,8 @@ func applyFile(d *Defaults, path string) error {
 			d.Endpoint = *f.Endpoint
 		}
 	}
-	if f.Bin != nil {
-		d.Bin = *f.Bin
+	if f.BrowserBin != nil {
+		d.BrowserBin = *f.BrowserBin
 	}
 	if f.ProfileDir != nil {
 		d.ProfileDir = *f.ProfileDir
@@ -461,8 +467,8 @@ func applyEnv(d *Defaults, getenv func(string) string) {
 			d.Endpoint = v
 		}
 	}
-	if v := getenv("CHROME_CDP_BIN"); v != "" {
-		d.Bin = v
+	if v := getenv("CHROME_CDP_BROWSER_BIN"); v != "" {
+		d.BrowserBin = v
 	}
 	if v := getenv("CHROME_CDP_PROFILE"); v != "" {
 		d.ProfileDir = v
