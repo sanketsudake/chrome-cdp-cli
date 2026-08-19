@@ -1,6 +1,6 @@
 # RFC-0017: `net --har` — export the tab's retained requests as HAR 1.2
 
-- **Status:** Draft
+- **Status:** Accepted — implemented on branch feat/agent-browser-parity
 - **Priority:** P2
 - **Area:** observability
 - **Depends on:** RFC-0003 (the `net` buffer, its filters, its redaction rules and its envelope rows), RFC-0011 (`internal/encode` as the home of pure, browser-free encoders)
@@ -417,4 +417,10 @@ VS-12 as an assertion added to `TestNetCapturesACompletedXHR`; no new live test,
 
 ## Open questions
 
-None.
+None at proposal time.
+
+**Implementation note — `--clear` gets the `record`-style writability probe, not just a stat.**
+The body text above ("No `CreateTemp` probe: `record` needs one because a failed write there loses a recording, whereas here a retry is free") holds for `--har` on its own.
+It stops holding once `--clear` is also passed: `--clear` drops the buffer *inside the read itself* (`Query.Clear` runs daemon-side under the buffer's lock), before the CLI writes the file, so a write failure at that point loses the read's data exactly the way a failed `record stop -o` write loses the recording — a retry is no longer free.
+The implementation therefore runs `record stop -o`'s `os.CreateTemp`-in-the-target-directory probe (create, close, remove) before connecting whenever `--har` is combined with `--clear`, in addition to the stat-only existing-directory / missing-parent check that applies unconditionally.
+Without `--clear` the stat-only check stands exactly as specified above.
