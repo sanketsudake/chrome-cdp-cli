@@ -11,7 +11,7 @@
     "chrome-cdp": "bin/chrome-cdp.js"
   },
   "files": [
-    "bin/",
+    "bin/chrome-cdp.js",
     "install.js",
     "README.md"
   ],

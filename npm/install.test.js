@@ -4,7 +4,12 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const crypto = require("node:crypto");
 
-const { assetName, releaseURL, verifyChecksum } = require("./install.js");
+const {
+  assetName,
+  releaseURL,
+  verifyChecksum,
+  validateVersion,
+} = require("./install.js");
 
 test("assetName: darwin/arm64", () => {
   assert.equal(
@@ -69,6 +74,28 @@ test("verifyChecksum: rejects a missing entry", () => {
     () => verifyChecksum(buf, checksumsTxt, "chrome-cdp_0.2.2_linux_amd64.tar.gz"),
     /no checksum entry/,
   );
+});
+
+test("validateVersion: accepts a dotted-triple semver", () => {
+  assert.equal(validateVersion("0.2.2"), "0.2.2");
+});
+
+test("validateVersion: accepts a semver with prerelease/build suffix", () => {
+  assert.equal(validateVersion("1.2.3-beta.1"), "1.2.3-beta.1");
+});
+
+test("validateVersion: rejects the unset 0.0.0 placeholder", () => {
+  assert.throws(() => validateVersion("0.0.0"), /unset/);
+});
+
+test("validateVersion: rejects a missing version", () => {
+  assert.throws(() => validateVersion(undefined), /unset/);
+  assert.throws(() => validateVersion(""), /unset/);
+});
+
+test("validateVersion: rejects a non-semver string", () => {
+  assert.throws(() => validateVersion("latest"), /invalid version/);
+  assert.throws(() => validateVersion("v1.2.3"), /invalid version/);
 });
 
 test("releaseURL: shape", () => {

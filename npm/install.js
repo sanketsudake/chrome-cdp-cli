@@ -44,6 +44,23 @@ function releaseURL(version, asset) {
 }
 
 /**
+ * Reject anything that isn't a resolved, dotted-triple semver (and the
+ * "0.0.0" placeholder the repo ships before a release job sets it). Throws
+ * with a message suitable for the fallback-lines catch handler.
+ */
+function validateVersion(version) {
+  if (!version || version === "0.0.0") {
+    throw new Error(
+      `package.json version is unset (${version}); cannot resolve a release`,
+    );
+  }
+  if (!/^\d+\.\d+\.\d+/.test(version)) {
+    throw new Error(`invalid version: ${version}`);
+  }
+  return version;
+}
+
+/**
  * Verify buffer's SHA-256 against the "<hash>  <name>" lines in
  * checksums.txt. Throws on missing entry or mismatch.
  */
@@ -65,7 +82,7 @@ function verifyChecksum(buffer, checksumsTxt, asset) {
   return true;
 }
 
-module.exports = { assetName, releaseURL, verifyChecksum };
+module.exports = { assetName, releaseURL, verifyChecksum, validateVersion };
 
 // Everything below only runs when this file is executed directly
 // (postinstall), never when required as a test dependency.
@@ -86,12 +103,7 @@ async function main() {
   const pkg = JSON.parse(
     fs.readFileSync(path.join(__dirname, "package.json"), "utf8"),
   );
-  const version = pkg.version;
-  if (!version || version === "0.0.0") {
-    throw new Error(
-      "package.json version is unset (0.0.0); cannot resolve a release",
-    );
-  }
+  const version = validateVersion(pkg.version);
 
   const asset = assetName(version, process.platform, process.arch);
   const url = releaseURL(version, asset);
@@ -106,33 +118,54 @@ async function main() {
   verifyChecksum(archiveBuf, checksumsTxt, asset);
 
   const binDir = path.join(__dirname, "bin", ".bin");
-  fs.rmSync(binDir, { recursive: true, force: true });
   fs.mkdirSync(binDir, { recursive: true });
 
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "chrome-cdp-install-"));
-  const archivePath = path.join(
-    tmpDir,
-    asset.endsWith(".zip") ? "archive.zip" : "archive.tar.gz",
-  );
-  fs.writeFileSync(archivePath, archiveBuf);
+  try {
+    const archivePath = path.join(
+      tmpDir,
+      asset.endsWith(".zip") ? "archive.zip" : "archive.tar.gz",
+    );
+    fs.writeFileSync(archivePath, archiveBuf);
 
-  extractArchive(archivePath, tmpDir);
+    extractArchive(archivePath, tmpDir);
 
-  const binaryName = process.platform === "win32" ? "chrome-cdp.exe" : "chrome-cdp";
-  const extractedPath = findBinary(tmpDir, binaryName);
-  if (!extractedPath) {
-    throw new Error(`${binaryName} not found in downloaded archive`);
+    const binaryName =
+      process.platform === "win32" ? "chrome-cdp.exe" : "chrome-cdp";
+    const extractedPath = findBinary(tmpDir, binaryName);
+    if (!extractedPath) {
+      throw new Error(`${binaryName} not found in downloaded archive`);
+    }
+
+    // Stage the new binary in binDir (same filesystem as the destination),
+    // then rename it into place last. rename() is atomic within a
+    // filesystem, so a failure at any earlier step — bad extraction,
+    // missing binary — leaves the previously installed binary (if any)
+    // untouched rather than a half-copied file.
+    const destPath = path.join(binDir, binaryName);
+    const stagingPath = `${destPath}.new`;
+    fs.copyFileSync(extractedPath, stagingPath);
+    fs.chmodSync(stagingPath, 0o755);
+    fs.renameSync(stagingPath, destPath);
+
+    console.log(`Installed ${binaryName} (${version}) to ${destPath}`);
+  } finally {
+    // Always clean up the temp dir, whether extraction/copy succeeded,
+    // threw, or the binary was simply missing from the archive.
+    fs.rmSync(tmpDir, { recursive: true, force: true });
   }
-
-  const destPath = path.join(binDir, binaryName);
-  fs.copyFileSync(extractedPath, destPath);
-  fs.chmodSync(destPath, 0o755);
-  fs.rmSync(tmpDir, { recursive: true, force: true });
-
-  console.log(`Installed ${binaryName} (${version}) to ${destPath}`);
 }
 
-/** Extract a .tar.gz or .zip archive using the system `tar` binary. */
+/**
+ * Extract a .tar.gz or .zip archive using the system `tar` binary.
+ *
+ * This extracts the whole archive into a disposable temp dir rather than
+ * selecting just the `chrome-cdp`/`chrome-cdp.exe` member: the archive's
+ * bytes are already checksum-pinned before extraction, so a full extract
+ * is no less trusted than a partial one, and single-member selection isn't
+ * available uniformly across `tar`'s zip mode on Windows vs. its tar.gz
+ * mode on macOS/Linux without adding a second extraction path to maintain.
+ */
 function extractArchive(archivePath, destDir) {
   try {
     if (archivePath.endsWith(".zip")) {
