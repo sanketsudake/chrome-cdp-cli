@@ -346,5 +346,9 @@ Decode with `image/png`/`image/jpeg` and assert on counts, bounds, and sampled c
 
 ## Open questions
 
-None.
-The choices above are decisions; the implementing PR records any departure in this section.
+None at proposal time.
+The implementing PR recorded one departure, in the test plan rather than the design.
+VS-5's hidden-tab degrade does not reproduce live in a headless test harness.
+`document.visibilityState` correctly flips to `"hidden"` after backgrounding the tab, but the accessibility tree is not throttled by that in this harness, so the tree read succeeds instead of failing, timing out, or coming back empty.
+The codebase hit the identical wall for `find`'s DOM fallback and pulled its branching into a pure, directly-testable function rather than asserting it through a live backgrounded tab.
+This RFC does the same: the three-way degrade reason (`tab_hidden` \| `tree_unavailable` \| `no_actionable_nodes`) is pinned by the pure `TestAnnotateDegradeReason`, and the live `TestScreenshotAnnotateOnBackgroundTab` asserts what IS reliably true on a backgrounded tab instead — the command never hangs or errors, the returned image always decodes, and whichever outcome the pass reaches is internally consistent with the envelope contract.

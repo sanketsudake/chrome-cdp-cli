@@ -7,6 +7,7 @@ package chrome
 
 import (
 	"context"
+	"math"
 	"time"
 
 	"github.com/chromedp/cdproto/accessibility"
@@ -141,17 +142,17 @@ func collectAnnotateLabels(pctx context.Context, clip Rect, imgW, imgH int) (lab
 	if err != nil {
 		return nil, false, false
 	}
-	cands := annotateCandidates(nodes)
-	truncated = len(cands) > maxAnnotations
-	if truncated {
-		cands = cands[:maxAnnotations]
-	}
+	cands, truncated := annotateTruncateCandidates(annotateCandidates(nodes))
 
 	// Re-read the visual viewport origin AT MEASUREMENT TIME: the element mode
 	// may have scrolled the page since the capture's own layout read.
 	metrics, err := layoutRects(pctx)
 	if err != nil {
-		return nil, false, false
+		// truncated is already known at this point (it depends only on the
+		// candidate count, not on anything below) and must not be discarded:
+		// a page with >200 actionable nodes whose layout read then fails is
+		// still a page that would have been truncated.
+		return nil, truncated, false
 	}
 
 	n := 0
@@ -159,9 +160,10 @@ func collectAnnotateLabels(pctx context.Context, clip Rect, imgW, imgH int) (lab
 		if pctx.Err() != nil {
 			// The pass ran out of time partway through. Returning what was
 			// measured so far would look like a complete, small legend rather
-			// than what it is — a pass that did not finish — so the whole
-			// result is discarded in favour of a degrade.
-			return nil, false, false
+			// than what it is — a pass that did not finish — so the labels
+			// are discarded in favour of a degrade, but truncated (known
+			// before the loop started) is still reported honestly.
+			return nil, truncated, false
 		}
 		obj, err := dom.ResolveNode().WithBackendNodeID(cdp.BackendNodeID(node.BackendDOMNodeID)).Do(pctx)
 		if err != nil || obj == nil || obj.ObjectID == "" {
@@ -172,9 +174,14 @@ func collectAnnotateLabels(pctx context.Context, clip Rect, imgW, imgH int) (lab
 			continue
 		}
 		pageX, pageY := box.CX+metrics.viewport.X, box.CY+metrics.viewport.Y
-		imgX := (pageX - clip.X) * float64(imgW) / clip.Width
-		imgY := (pageY - clip.Y) * float64(imgH) / clip.Height
-		if imgX < 0 || imgX >= float64(imgW) || imgY < 0 || imgY >= float64(imgH) {
+		// Round to the image pixel BEFORE the bounds check — encode.AnnotateImage
+		// rounds the identical CSS-pixel value the same way (math.Round) before
+		// its own bounds check, and the two must agree exactly: a centre kept
+		// here but rounded across the edge there would mint a legend entry for
+		// a label that never actually gets drawn.
+		imgX := int(math.Round((pageX - clip.X) * float64(imgW) / clip.Width))
+		imgY := int(math.Round((pageY - clip.Y) * float64(imgH) / clip.Height))
+		if imgX < 0 || imgX >= imgW || imgY < 0 || imgY >= imgH {
 			continue // outside the captured clip (US-3)
 		}
 		n++
@@ -189,4 +196,15 @@ func collectAnnotateLabels(pctx context.Context, clip Rect, imgW, imgH int) (lab
 		})
 	}
 	return labels, truncated, true
+}
+
+// annotateTruncateCandidates caps cands at maxAnnotations and reports whether
+// anything was dropped. Pure and separated out from collectAnnotateLabels so
+// the cap threshold itself — and the value every one of that function's return
+// paths must agree on — is table-testable without a browser.
+func annotateTruncateCandidates(cands []*accessibility.Node) ([]*accessibility.Node, bool) {
+	if len(cands) > maxAnnotations {
+		return cands[:maxAnnotations], true
+	}
+	return cands, false
 }

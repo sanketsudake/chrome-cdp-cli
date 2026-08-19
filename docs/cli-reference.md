@@ -909,6 +909,7 @@ The result reports `path`, `bytes`, `width`, `height`, `format`, `scale`, `mode`
 `mode` and `clip` are what make a capture that came out wrong debuggable without opening the image.
 
 Full-page capture does **not** force lazy-loaded content to load: images below the fold that appear on scroll may come out blank.
+Scroll through the page first (`scroll --dy …`, then `wait --idle`) when that matters.
 
 **`--annotate` (RFC-0016).**
 
@@ -922,7 +923,6 @@ On a backgrounded tab, or a capture with nothing actionable in it, the plain ima
 
 `--annotate --format webp` and `--annotate -o -` are both usage errors raised before Chrome is contacted: the labels are drawn in Go (no standard-library webp encoder), and the legend lives in the envelope, which `-o -` does not emit.
 `--annotate --format jpeg` is fine — the capture is taken losslessly and encoded to jpeg once, after drawing.
-Scroll through the page first (`scroll --dy …`, then `wait --idle`) when that matters.
 
 **pdf**
 

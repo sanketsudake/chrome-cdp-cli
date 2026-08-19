@@ -104,3 +104,41 @@ func TestAnnotateCandidatesOrderAndFilter(t *testing.T) {
 		t.Errorf("candidates = %q, %q, want First then Second in document order", axString(got[0].Name), axString(got[1].Name))
 	}
 }
+
+// TestAnnotateTruncateCandidates pins the cap threshold every one of
+// collectAnnotateLabels's return paths (success, tree-read failure, mid-loop
+// timeout) must agree on — the Important review finding this fixes was that
+// two of those paths discarded an already-known-true truncated value.
+func TestAnnotateTruncateCandidates(t *testing.T) {
+	t.Parallel()
+	mk := func(n int) []*accessibility.Node {
+		out := make([]*accessibility.Node, n)
+		for i := range out {
+			out[i] = &accessibility.Node{NodeID: accessibility.NodeID(string(rune('a' + i)))}
+		}
+		return out
+	}
+	cases := map[string]struct {
+		n             int
+		wantLen       int
+		wantTruncated bool
+	}{
+		"empty":             {0, 0, false},
+		"under the cap":     {maxAnnotations - 1, maxAnnotations - 1, false},
+		"exactly the cap":   {maxAnnotations, maxAnnotations, false},
+		"one over the cap":  {maxAnnotations + 1, maxAnnotations, true},
+		"well over the cap": {maxAnnotations + 50, maxAnnotations, true},
+	}
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			got, truncated := annotateTruncateCandidates(mk(c.n))
+			if len(got) != c.wantLen {
+				t.Errorf("len = %d, want %d", len(got), c.wantLen)
+			}
+			if truncated != c.wantTruncated {
+				t.Errorf("truncated = %v, want %v", truncated, c.wantTruncated)
+			}
+		})
+	}
+}

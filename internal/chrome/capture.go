@@ -186,6 +186,14 @@ func (c *CDP) annotatePass(actx context.Context, buf []byte, outFormat string, q
 
 	degrade := func(reason string) ([]byte, map[string]any) {
 		out := buf
+		meta := map[string]any{
+			// truncated can be true here even with zero labels: a --selector
+			// clip can leave every one of the (capped) candidates outside its
+			// own bounds, which is "no_actionable_nodes" in this clip but
+			// still means the page had more actionable nodes than the cap
+			// allowed.
+			"annotated": false, "annotations": []any{}, "truncated": truncated, "reason": reason,
+		}
 		// The capture may have been taken as PNG on jpeg's behalf (see
 		// Screenshot); the envelope still reports `format: "jpeg"`, so the
 		// bytes must actually be jpeg even on a degrade — draw zero labels,
@@ -193,15 +201,16 @@ func (c *CDP) annotatePass(actx context.Context, buf []byte, outFormat string, q
 		if outFormat == "jpeg" {
 			if converted, _, err := encode.AnnotateImage(buf, outFormat, quality, clip.Width, clip.Height, nil); err == nil {
 				out = converted
+			} else {
+				// The conversion itself failed (an unexpected AnnotateImage
+				// error): out stays the PNG bytes Chrome actually produced, so
+				// the envelope must say png too — reporting jpeg over png
+				// bytes would be a lie a caller could act on (decode, upload,
+				// check the extension against the content).
+				meta["format"] = "png"
 			}
 		}
-		// truncated can be true here even with zero labels: a --selector clip
-		// can leave every one of the (capped) candidates outside its own
-		// bounds, which is "no_actionable_nodes" in this clip but still means
-		// the page had more actionable nodes than the cap allowed.
-		return out, map[string]any{
-			"annotated": false, "annotations": []any{}, "truncated": truncated, "reason": reason,
-		}
+		return out, meta
 	}
 
 	if !ok || len(labels) == 0 {
