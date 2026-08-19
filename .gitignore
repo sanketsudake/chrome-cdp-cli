@@ -6,6 +6,7 @@
 *.gif
 *.mp4
 *.webm
+!docs/demos/*.gif
 /dist/
 
 # local wayfinder planning tracker

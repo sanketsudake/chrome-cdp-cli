@@ -17,6 +17,8 @@ chrome-cdp click --by name "Sign in"    # act by meaning, not a brittle CSS id
 chrome-cdp click --at 512,340           # or at a pixel, for canvas/WebGL surfaces
 ```
 
+![click by name, then wait for the toast](docs/demos/click-by-name.gif)
+
 Because it attaches to the browser you're already using, an app you're signed into loads **authenticated** — no headless browser, no second login, no credential ever typed.
 
 ## Quickstart
