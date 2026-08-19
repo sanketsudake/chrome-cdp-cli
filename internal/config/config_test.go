@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -284,8 +285,13 @@ func TestMalformedPolicyIsRecordedNotSwallowed(t *testing.T) {
 func TestPathHonorsXDG(t *testing.T) {
 	t.Parallel()
 	got := pathFrom(envFrom(map[string]string{"XDG_CONFIG_HOME": "/x/cfg"}))
-	if got != "/x/cfg/chrome-cdp/config.toml" {
-		t.Errorf("XDG path = %q", got)
+	// filepath.Join normalizes separators for the host OS, so the expectation
+	// is built the same way rather than hardcoded with forward slashes — a
+	// literal "/x/cfg/chrome-cdp/config.toml" is wrong on windows, where Join
+	// renders backslashes.
+	want := filepath.Join("/x/cfg", "chrome-cdp", "config.toml")
+	if got != want {
+		t.Errorf("XDG path = %q, want %q", got, want)
 	}
 }
 
@@ -298,6 +304,9 @@ func TestPathHonorsXDG(t *testing.T) {
 // ran unbounded. Same situation, opposite answer. This asserts they now match.
 func TestUnreadableConfigIsARefusedPolicy(t *testing.T) {
 	t.Parallel()
+	if runtime.GOOS == "windows" {
+		t.Skip("os.Chmod does not restrict read access on Windows, so the permission bit proves nothing")
+	}
 	if os.Geteuid() == 0 {
 		t.Skip("root can read a 0000 file, so the permission bit proves nothing")
 	}

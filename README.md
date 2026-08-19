@@ -32,12 +32,15 @@ Because it attaches to the browser you're already using, an app you're signed in
    Recent Homebrew may print a tap-trust notice for third-party taps on first install.
    The install still proceeds; to acknowledge it explicitly, run `brew trust --cask sanketsudake/tap/chrome-cdp` first.
 
+   Windows: download the `chrome-cdp_<version>_windows_amd64.zip` (or `_arm64_`) archive from [Releases](https://github.com/sanketsudake/chrome-cdp-cli/releases) and unzip `chrome-cdp.exe` onto your `PATH`.
+
 2. **Let Chrome accept a debugger.**
    Launch it with the flag — this never prompts:
 
    ```sh
    open -a "Google Chrome" --args --remote-debugging-port=9222   # macOS
    google-chrome --remote-debugging-port=9222                    # Linux
+   chrome.exe --remote-debugging-port=9222                       # Windows
    ```
 
    Or, to attach to a Chrome that is already running on the default profile, toggle `chrome://inspect/#remote-debugging` on.

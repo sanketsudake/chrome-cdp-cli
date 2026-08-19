@@ -6,7 +6,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"testing"
 	"time"
 
@@ -79,7 +78,7 @@ func TestLockSpawnSaysItIsWaiting(t *testing.T) {
 		t.Fatalf("open lock: %v", err)
 	}
 	defer held.Close()
-	if err := syscall.Flock(int(held.Fd()), syscall.LOCK_EX); err != nil {
+	if err := flockBlock(held); err != nil {
 		t.Fatalf("flock: %v", err)
 	}
 
@@ -108,7 +107,7 @@ func TestLockSpawnSaysItIsWaiting(t *testing.T) {
 		t.Errorf("the contention notice does not say what it is waiting for:\n%s", said)
 	}
 
-	_ = syscall.Flock(int(held.Fd()), syscall.LOCK_UN)
+	flockUnlock(held)
 	select {
 	case unlock := <-got:
 		unlock()
