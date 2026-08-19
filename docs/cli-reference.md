@@ -1052,7 +1052,14 @@ chrome-cdp raw Browser.getVersion --browser                  # browser-level met
 | `policy init` | write a starter [`[policy]`](#policy) table allow-listing the current tab's origin (`--wildcard`, `--print`, `-o`) |
 | `exit-codes` | print the exit-code table |
 | `version` | print the version |
+| `skill [--full]\|list\|get <name>` | print the embedded drive-chrome-cdp agent skill |
 | `completion bash\|zsh\|fish\|powershell` | shell completion script |
+
+`skill` serves the agent skill baked into this binary, so the doc an agent reads always matches the CLI version it drives — a vendored copy can drift, this can't.
+No flag prints the core loop; `--full` adds every reference; `skill list` names the references; `skill get <name>` prints one.
+It never connects to Chrome.
+In human mode each form writes the raw markdown to stdout, no envelope.
+With `--json` every form wraps its content in `{"name":"drive-chrome-cdp","references":[…],"content":"…"}` (`skill list --json` omits `content`); an unknown `get` reference is a `usage` error (exit 2).
 
 ## Connection model
 

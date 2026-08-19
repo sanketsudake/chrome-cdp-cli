@@ -102,6 +102,11 @@ var verbClass = map[string]Class{
 	"daemon status": Exempt,
 	"exit-codes":    Exempt,
 	"version":       Exempt,
+	// `skill` (and its `list`/`get` subcommands) never touches a tab — the
+	// content comes entirely from the binary's embedded skills.FS.
+	"skill":      Exempt,
+	"skill list": Exempt,
+	"skill get":  Exempt,
 	// `policy init` writes the policy; it must stay reachable even when the
 	// configured policy would refuse everything, or a bad policy traps the user.
 	"policy init": Exempt,
