@@ -28,6 +28,7 @@ Because it drives the real profile, live logins are reused: **type no credential
 2. A background daemon holds the connection, so the consent prompt appears once per session, not per command.
    It starts on first use.
    `chrome-cdp daemon status --json` shows it; `--no-daemon` bypasses it.
+   Several agents, one Chrome: `--session <name>` (or `CHROME_CDP_SESSION`) namespaces the sticky current tab, so each agent keeps its own `use`d tab; the daemon connection is shared.
 3. **Avoid re-triggering the consent prompt.**
    On the `chrome://inspect` path a fresh attach (the first command after `daemon stop`, or after a Chrome restart) re-shows the prompt.
    Keep the daemon alive — don't `daemon stop` mid-session.

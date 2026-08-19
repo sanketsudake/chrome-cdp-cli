@@ -1,6 +1,6 @@
 # RFC-0019: `storage` — read and write the tab's `localStorage` and `sessionStorage`
 
-- **Status:** Accepted — pending PR
+- **Status:** Accepted — implemented in [#31](https://github.com/sanketsudake/chrome-cdp-cli/pull/31)
 - **Priority:** P2
 - **Area:** reading / acting
 - **Depends on:** RFC-0003 (the credential redaction predicates `RedactedHeaderName`, `RedactedParamName` and `RedactBody` in `internal/chrome/net.go`, and the `NetRedacted` placeholder, all reused verbatim), RFC-0012 (the policy classes the ten subcommands take)
@@ -301,7 +301,7 @@ The price is one policy row, `"storage": Exempt` (the command never reaches Chro
 A wrong **action** (`storage local lsit`) is the unchanged repo-wide unknown-subcommand behaviour and is named in Out of scope.
 
 Inside each scope, the five leaves use `a.targetAction("storage", …)` like `cookie`'s do, with one difference on `list`: its `--max-value` is validated in the `RunE` **before** `targetAction` resolves the target, via a small `storageListAction` wrapper, so a negative cap never connects (`noCall` proves it).
-The flags `--no-redact` and `--max-value` are local to `list` and live on `App` as fields (`a.storageNoRedact`, `a.storageMaxValue`), re-registered per `Execute` via `newRoot`; the two scope trees share the two fields because only one leaf runs per invocation.
+The flags `--no-redact` and `--max-value` are local to `list` and live as per-scope closure variables (`noRedact`, `maxValue`) rebuilt by `newRoot()` on every `Execute`, like `netFlags`; the two scope trees each close over their own pair, so nothing is shared across scopes.
 The envelope's `command` is `"storage"` for every leaf, as `cookie`, `record` and `window` report their family name.
 The `classifyWithTabHint` chain gains one branch, before the `classifyActionErr` fallthrough and beside `IsNoHistory`:
 
@@ -439,7 +439,7 @@ Then `chrome_cdp_storage` is absent, present, and present with `action` narrowed
 `TestStorageListOptsCrossTheRPC` (VS-15); `TestDispatchCoversBrowser` unchanged.
 
 **MCP, `internal/mcp/server_test.go` / `tools_test.go`.**
-`TestStorageToolIsFullOnly`, `TestReadOnlyKeepsStorageListAndGet`, `TestStorageToolBuildsScopedVerb`, `TestStorageActionsShareClassAcrossScopes` (VS-16); one row added to `TestArgvMirrorsTheCLISpelling`.
+`TestStorageToolIsFullOnly`, `TestReadOnlyKeepsStorageListAndGet`, `TestStorageToolBuildsScopedVerb`, `TestStorageActionsShareClassAcrossScopes` (VS-16); `TestMCPParityWithCLI` (`internal/cli/mcp_test.go`) covers the `storage local list` / `storage session set` argv shapes.
 
 **Policy, `internal/cli/policy_test.go`.**
 `TestEveryCommandIsClassified` unchanged; two cases added to the read-only origin test (VS-17).
@@ -472,3 +472,9 @@ Two implementation notes, recorded here after the fact rather than as silent edi
 - The MCP rationale also said `tabs` is "tab lifecycle" as part of why `storage` does not fold into it.
   RFC-0018 (implemented on this branch ahead of this one) folded `dialog_status`/`dialog_accept`/`dialog_dismiss` into the default `tabs` tool, so `tabs` is no longer pure lifecycle by the time this RFC ships.
   The bullet above is softened to name what actually distinguishes `storage`: no default tool — `tabs` included — reads page-held credential-shaped state, which is the property that matters here.
+- The design section originally said `--no-redact` and `--max-value` "live on `App` as fields."
+  They do not: `storageListCmd` declares `var noRedact bool` and `var maxValue int` locally, and `storageScope` is called once per scope, so `local` and `session` each close over their own pair, rebuilt by `newRoot()` on every `Execute` — the same shape as `net`'s `netFlags`.
+  The design section is corrected to describe closure variables, not fields.
+- The test plan originally promised "one row added to `TestArgvMirrorsTheCLISpelling`" for the MCP argv shape.
+  No `storage` row exists there; the coverage instead lives in `TestMCPParityWithCLI` (`internal/cli/mcp_test.go`), which already asserts the `storage local list` and `storage session set` argv.
+  The test plan is corrected to cite the test that actually covers it.

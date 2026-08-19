@@ -10,7 +10,7 @@ PR: [#31](https://github.com/sanketsudake/chrome-cdp-cli/pull/31).
 
 ### Added
 
-- `--endpoint <url>` — attach to an explicit `ws://` or `http://` debug endpoint, wired through `CHROME_CDP_ENDPOINT` / the `endpoint` config key and the daemon.
+- `--endpoint <url>` — attach to an explicit `ws://` or `http://` debug endpoint, wired through `CHROME_CDP_ENDPOINT` / the `endpoint` config key and the daemon; a malformed value is dropped like other config keys; an unreachable explicit endpoint is a `connection` error, never a managed launch; TLS schemes are refused; the flag is carried into `mcp`, `recipe run` and `session` lines.
 - Chromium-family browser detection — Chrome, Chromium, Brave, Edge, Vivaldi, and Arc `DevToolsActivePort` files are found automatically; `CHROME_CDP_BROWSER_BIN` (`browser_bin` config key) launches a different browser for the managed fallback.
 - Windows release target — `windows/amd64` and `windows/arm64` zip archives, and the short test suite now runs on `windows-latest` in CI.
 - `chrome-cdp skill` verb — serves the embedded `drive-chrome-cdp` agent skill (`--full` for the complete text, a short stub otherwise) so an agent can fetch the skill without a separate install step.
@@ -23,17 +23,6 @@ PR: [#31](https://github.com/sanketsudake/chrome-cdp-cli/pull/31).
 - `storage local|session` — read, write, and clear `localStorage`/`sessionStorage` ([RFC-0019](docs/rfc/0019-web-storage.md)).
 - npm shim `@sanketsudake/chrome-cdp` — `npx @sanketsudake/chrome-cdp` / `npm i -g` downloads the matching release binary, with version validation and temp-file cleanup on every path.
 - README positioning section and explicit non-goals, contrasting `chrome-cdp` with agent-browser, chrome-devtools-mcp, and Playwright-style tools.
-
-### Changed
-
-- The managed-launch browser knob was renamed from the ambiguous `CHROME_CDP_BIN` to `CHROME_CDP_BROWSER_BIN` / `browser_bin`.
-- The short test suite (`go test -short`) is now OS-neutral: paths, case-insensitive filesystem handling, and `.exe` suffixes are handled per-platform.
-
-### Fixed
-
-- A malformed `endpoint` config value is dropped instead of bricking the CLI.
-- An explicit `--endpoint` never falls back to a managed launch, and a TLS scheme (`wss://`/`https://`) is refused rather than silently accepted.
-- `--endpoint` is frozen into the MCP runner's per-call defaults and a recipe run's per-step defaults, so neither re-entrant command tree silently resets it to the config/env default mid-batch.
 
 ## [0.2.2] - 2026-08-16
 

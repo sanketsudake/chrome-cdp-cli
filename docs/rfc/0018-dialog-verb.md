@@ -1,6 +1,6 @@
 # RFC-0018: `dialog` — inspect and close a native dialog that is already on screen
 
-- **Status:** Accepted — pending PR
+- **Status:** Accepted — implemented in [#31](https://github.com/sanketsudake/chrome-cdp-cli/pull/31)
 - **Priority:** P1
 - **Area:** input
 - **Depends on:** RFC-0002 (the attach-time capture hook, `listenCapture`, where every per-tab listener is registered before the tab is attached), the `--on-dialog` action option (`withDialog` in `internal/chrome/cdp.go`, whose CDP mechanics this RFC reuses)
@@ -420,7 +420,7 @@ With a `gateBrowser` holding the dispatch mutex in a blocked `Eval`, `Remote(...
 **VS-15 — MCP.**
 `tabs` with `action: "dialog_status"` builds `dialog status`; `dialog_accept` with `text: "bob"` builds `dialog accept bob`; `dialog_dismiss` builds `dialog dismiss`; `text` with `dialog_status` is a `usage` refusal.
 Under `--read-only`, `allowedActions(tabs)` contains `dialog_status` and neither `dialog_accept` nor `dialog_dismiss`.
-The registry still has 19 tools, 18 without `raw_cdp`.
+The registry has 20 tools; the default set (without the two `full`-only tools, `raw_cdp` and `storage`) is exactly 18, at RFC-0004's cap.
 
 **VS-16 — Policy.**
 `policy.Classify("dialog status")` is `Reading`; `"dialog accept"` and `"dialog dismiss"` are `Mutating`; `TestEveryCommandIsClassified` passes.

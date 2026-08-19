@@ -1,6 +1,6 @@
 # RFC-0017: `net --har` — export the tab's retained requests as HAR 1.2
 
-- **Status:** Accepted — implemented on branch feat/agent-browser-parity
+- **Status:** Accepted — implemented in [#31](https://github.com/sanketsudake/chrome-cdp-cli/pull/31)
 - **Priority:** P2
 - **Area:** observability
 - **Depends on:** RFC-0003 (the `net` buffer, its filters, its redaction rules and its envelope rows), RFC-0011 (`internal/encode` as the home of pure, browser-free encoders)
