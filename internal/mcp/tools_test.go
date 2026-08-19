@@ -3,6 +3,8 @@ package mcp
 import (
 	"strings"
 	"testing"
+
+	"github.com/sanketsudake/chrome-cdp-cli/internal/policy"
 )
 
 // RFC-0011 Open Question 4 and RFC-0004's tool table both exclude `record` from
@@ -57,4 +59,24 @@ func TestNetworkToolDoesNotExposeHar(t *testing.T) {
 		return
 	}
 	t.Fatal("the network tool was not found in the registry")
+}
+
+// TestStorageActionsShareClassAcrossScopes is RFC-0019 VS-16/VS-17: the
+// storage tool's `actions` map names the `local` verb as the representative
+// for --read-only narrowing (its keys are the discriminator's five values),
+// which is only honest if the `session` verb of the same action classifies
+// the same way. Otherwise --read-only would narrow the enum from one scope's
+// classification while the built call ran the other.
+func TestStorageActionsShareClassAcrossScopes(t *testing.T) {
+	t.Parallel()
+	for _, action := range []string{"list", "get", "set", "rm", "clear"} {
+		local, localOK := policy.Classify("storage local " + action)
+		session, sessionOK := policy.Classify("storage session " + action)
+		if !localOK || !sessionOK {
+			t.Fatalf("storage %s: local classified=%v session classified=%v, want both known", action, localOK, sessionOK)
+		}
+		if local != session {
+			t.Errorf("storage local %s classifies as %v but storage session %s classifies as %v; they must agree", action, local, action, session)
+		}
+	}
 }

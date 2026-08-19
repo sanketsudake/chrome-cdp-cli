@@ -537,6 +537,22 @@ type Browser interface {
 	CookieSet(ctx context.Context, targetID, name, value, domain, path string) (map[string]any, error)
 	CookieDelete(ctx context.Context, targetID, name string) (map[string]any, error)
 	CookieClear(ctx context.Context, targetID string) (map[string]any, error)
+	// StorageList reads every key of one DOM Storage area (RFC-0019) —
+	// localStorage for scope "local", sessionStorage for "session" — of the
+	// tab's TOP FRAME, sorted by key, redacted and size-capped per opts.
+	// ErrOpaqueOrigin when the top frame has no storage area at all.
+	StorageList(ctx context.Context, targetID, scope string, opts StorageListOpts) (map[string]any, error)
+	// StorageGet reads one key raw and uncapped: the caller named the key, so
+	// neither redaction nor the cap applies. present is false, value "", when
+	// the key is not there — not an error.
+	StorageGet(ctx context.Context, targetID, scope, key string) (map[string]any, error)
+	// StorageSet creates or overwrites one key.
+	StorageSet(ctx context.Context, targetID, scope, key, value string) (map[string]any, error)
+	// StorageRemove deletes one key; removing an absent key succeeds silently,
+	// as Chrome's own removeDOMStorageItem does.
+	StorageRemove(ctx context.Context, targetID, scope, key string) (map[string]any, error)
+	// StorageClear removes every key in one storage area.
+	StorageClear(ctx context.Context, targetID, scope string) (map[string]any, error)
 	Raw(ctx context.Context, targetID, method string, params json.RawMessage) (any, error)
 	Close() error
 }

@@ -194,6 +194,108 @@ func TestFullSetAddsRawCDP(t *testing.T) {
 	}
 }
 
+// TestStorageToolIsFullOnly is RFC-0019 VS-16: chrome_cdp_storage is absent
+// from the default tool set (reading the area a session token lives in is a
+// capability a user opts into) and present under --tools full.
+func TestStorageToolIsFullOnly(t *testing.T) {
+	t.Parallel()
+	sess := connect(t, &fakeRunner{}, Options{})
+	res, err := sess.ListTools(ctxT(t), nil)
+	if err != nil {
+		t.Fatalf("tools/list: %v", err)
+	}
+	if hasTool(res.Tools, prefix+"storage") {
+		t.Error("chrome_cdp_storage must not be in the default tool set")
+	}
+
+	fullSess := connect(t, &fakeRunner{}, Options{Tools: SetFull})
+	fullRes, err := fullSess.ListTools(ctxT(t), nil)
+	if err != nil {
+		t.Fatalf("tools/list (full): %v", err)
+	}
+	if !hasTool(fullRes.Tools, prefix+"storage") {
+		t.Error("--tools full does not expose chrome_cdp_storage")
+	}
+}
+
+// TestReadOnlyKeepsStorageListAndGet is RFC-0019 VS-16: under
+// --tools full --read-only, the storage tool's action enum narrows to
+// list/get and set/rm/clear are refused rather than the whole tool
+// disappearing.
+func TestReadOnlyKeepsStorageListAndGet(t *testing.T) {
+	t.Parallel()
+	r := &fakeRunner{}
+	sess := connect(t, r, Options{Tools: SetFull, ReadOnly: true})
+	res, err := sess.ListTools(ctxT(t), nil)
+	if err != nil {
+		t.Fatalf("tools/list: %v", err)
+	}
+	var tool *sdk.Tool
+	for _, tl := range res.Tools {
+		if tl.Name == prefix+"storage" {
+			tool = tl
+		}
+	}
+	if tool == nil {
+		t.Fatal("--tools full --read-only dropped chrome_cdp_storage entirely; it should keep list/get")
+	}
+	enum := actionEnum(t, tool)
+	for _, want := range []string{"list", "get"} {
+		if !contains(enum, want) {
+			t.Errorf("--read-only dropped storage action=%s: %v", want, enum)
+		}
+	}
+	for _, mutating := range []string{"set", "rm", "clear"} {
+		if contains(enum, mutating) {
+			t.Errorf("--read-only still offers storage action=%s: %v", mutating, enum)
+		}
+	}
+
+	out := callTool(t, sess, prefix+"storage", map[string]any{"action": "set", "scope": "local", "key": "k", "value": "v"})
+	if !out.IsError {
+		t.Fatal("a --read-only server ran storage action=set")
+	}
+	if got := structured(t, out); got["code"] != "usage" {
+		t.Errorf("error = %v, want usage", got)
+	}
+	if r.count() != 0 {
+		t.Errorf("the set reached the CLI anyway: %v", r.calls)
+	}
+}
+
+// TestStorageToolBuildsScopedVerb is RFC-0019 VS-16: a call's `scope` and
+// `action` become the real "storage <scope> <action>" verb (not the
+// `actions` map's `local` representative), key/value ride as positionals
+// after the flags, and get with no key is usage before anything runs.
+func TestStorageToolBuildsScopedVerb(t *testing.T) {
+	t.Parallel()
+	r := &fakeRunner{}
+	sess := connect(t, r, Options{Tools: SetFull})
+
+	out := callTool(t, sess, prefix+"storage", map[string]any{"action": "set", "scope": "session", "key": "k", "value": "v"})
+	if out.IsError {
+		t.Fatalf("storage set: %v", textOf(out))
+	}
+	argv := r.argv(0)
+	if !containsSeq(argv, "storage", "session", "set") {
+		t.Errorf("argv = %v, want it to contain \"storage session set\"", argv)
+	}
+	if !containsSeq(argv, "--", "k", "v") {
+		t.Errorf("argv = %v, want key/value as positionals after --", argv)
+	}
+
+	out2 := callTool(t, sess, prefix+"storage", map[string]any{"action": "get", "scope": "local"})
+	if !out2.IsError {
+		t.Fatal("storage get with no key should be usage, not a call")
+	}
+	if got := structured(t, out2); got["code"] != "usage" {
+		t.Errorf("error = %v, want usage", got)
+	}
+	if r.count() != 1 {
+		t.Errorf("the malformed get reached the CLI anyway: %v", r.calls)
+	}
+}
+
 func hasTool(tools []*sdk.Tool, name string) bool {
 	for _, t := range tools {
 		if t.Name == name {

@@ -338,6 +338,36 @@ func (b boundBrowser) CookieClear(ctx context.Context, targetID string) (map[str
 	return b.Browser.CookieClear(ctx, targetID)
 }
 
+func (b boundBrowser) StorageList(ctx context.Context, targetID string, scope string, opts chrome.StorageListOpts) (map[string]any, error) {
+	ctx, cancel := b.bind(ctx)
+	defer cancel()
+	return b.Browser.StorageList(ctx, targetID, scope, opts)
+}
+
+func (b boundBrowser) StorageGet(ctx context.Context, targetID string, scope string, key string) (map[string]any, error) {
+	ctx, cancel := b.bind(ctx)
+	defer cancel()
+	return b.Browser.StorageGet(ctx, targetID, scope, key)
+}
+
+func (b boundBrowser) StorageSet(ctx context.Context, targetID string, scope string, key string, value string) (map[string]any, error) {
+	ctx, cancel := b.bind(ctx)
+	defer cancel()
+	return b.Browser.StorageSet(ctx, targetID, scope, key, value)
+}
+
+func (b boundBrowser) StorageRemove(ctx context.Context, targetID string, scope string, key string) (map[string]any, error) {
+	ctx, cancel := b.bind(ctx)
+	defer cancel()
+	return b.Browser.StorageRemove(ctx, targetID, scope, key)
+}
+
+func (b boundBrowser) StorageClear(ctx context.Context, targetID string, scope string) (map[string]any, error) {
+	ctx, cancel := b.bind(ctx)
+	defer cancel()
+	return b.Browser.StorageClear(ctx, targetID, scope)
+}
+
 func (b boundBrowser) Raw(ctx context.Context, targetID string, method string, params json.RawMessage) (any, error) {
 	ctx, cancel := b.bind(ctx)
 	defer cancel()

@@ -900,6 +900,7 @@ Names are prefixed `chrome_cdp_` so they stay unambiguous in clients that flatte
 | `chrome_cdp_evaluate` | `eval` | powerful and unconstrained; needs `--allow-eval` |
 | `chrome_cdp_batch` | `session` | several tools over one round trip |
 | `chrome_cdp_raw_cdp` | `raw` | `--tools full` (or named in `--tools`), plus `--allow-eval` |
+| `chrome_cdp_storage` | `storage local\|session list\|get\|set\|rm\|clear` | one `action` + `scope` argument; `--tools full` (or named in `--tools`); `--read-only` keeps `list`/`get` and drops `set`/`rm`/`clear` |
 
 Each tool's arguments mirror the CLI flags they wrap, in `snake_case` (`in_row` for `--in-row`), and the element-addressing arguments (`by`, `role`, `nth`, `match`, `in_row`, `wait`, `pierce`) are documented in every schema that takes them — the accessible-name addressing is this tool's advantage on real applications, and an agent only gets it if the schema says so.
 The streaming forms (`console --follow`, `net --follow`) are not exposed: they would break the one-result-per-call contract.
@@ -1089,9 +1090,55 @@ Agents: `record` is deliberately outside the default MCP tool set — an agent s
 | Command | Does |
 |---------|------|
 | `cookie list\|set\|rm\|clear` | read and write cookies for the tab |
+| `storage local\|session list\|get\|set\|rm\|clear` | read and write the tab's `localStorage` / `sessionStorage` |
 | `headers set <k=v> …` | set extra request headers |
 | `emulate viewport\|geo\|reset` | override viewport size / geolocation, or clear overrides |
 | `frame list` | list the tab's frame tree |
+
+### Web storage
+
+`storage` reads and writes the DOM Storage area of the tab's **top frame** — `localStorage` under `local`, `sessionStorage` under `session` — over the DevTools `DOMStorage` domain.
+Nothing runs in the page's JavaScript context, so it works on a hidden tab and is unaffected by a page that has shadowed `window.localStorage`.
+It is shaped like `cookie` on purpose: subcommands rather than flags, positional key and value, `storage` as the envelope's `command`.
+
+```sh
+chrome-cdp storage local list                             # keys + redacted values
+chrome-cdp storage local get theme                         # {"value":"dark","present":true}
+chrome-cdp storage local set onboarding_done 1
+chrome-cdp storage session rm draft
+chrome-cdp storage local clear
+chrome-cdp storage local list --no-redact --max-value 0    # everything, verbatim
+```
+
+| Subcommand | Args | Purpose |
+|------------|------|---------|
+| `storage local\|session list` | none | every key in the area, values redacted and size-capped |
+| `storage local\|session get <key>` | exactly one | one value, raw and uncut; `present: false` when the key is absent |
+| `storage local\|session set <key> <value>` | exactly two | create or overwrite one key |
+| `storage local\|session rm <key>` | exactly one | remove one key; removing an absent key succeeds silently |
+| `storage local\|session clear` | none | remove every key in the area |
+
+| Flag (on `list` only) | Default | Meaning |
+|------------------------|---------|---------|
+| `--no-redact` | off | do **not** redact credential-shaped keys and values |
+| `--max-value <bytes>` | `4096` | cut each listed value at this many bytes and mark it `truncated: true`; `0` means no cap; a negative value is `usage` |
+
+**`list` redacts by default.**
+This CLI drives your real, logged-in Chrome, so `localStorage`/`sessionStorage` hold live session tokens as a matter of course — Supabase, Firebase, MSAL and redux-persist all keep them there.
+`list` withholds a value wholesale when the **key** is credential-shaped, and otherwise redacts credential-shaped fields inside the value, using the same predicates and the same `<redacted>` placeholder [`net`](#network) applies to headers, URL parameters and bodies.
+Redaction runs **before** the size cap, so a token that would straddle `--max-value` is fully withheld rather than partially visible.
+`get <key>` has no `--no-redact` and no cap: naming the key **is** the explicit ask, so it always returns the raw, uncut value.
+`--no-redact` is `list`'s explicit opt-out.
+
+**The area that does not exist is `target_not_found`, not a crash.**
+A `data:` page, a fresh `about:blank` tab, or a sandboxed document has no identifiable security origin, so it has no web storage at all.
+`storage` checks this before issuing any `DOMStorage` command and fails with `error.code: "target_not_found"` (exit 4) and `error.opaque_origin: true`, naming the page's URL in the message.
+
+`get` of an absent key and `rm` of an absent key are both **not errors**: `get` reports `present: false` with `value: ""`, `rm` reports `removed: true`, both exit 0.
+`set`, `rm`, and `clear` are always `set: true` / `removed: true` / `cleared: true` on success — the failure case is an error envelope, never a `false`.
+`clear` removes every key in the area and takes no confirmation flag; bound it with `read_only` or `verbs_denied = ["storage local clear"]` the same way as `cookie clear`.
+
+`chrome_cdp_storage` is exposed over MCP **only under `--tools full`, or named explicitly in `--tools`**: reading the area a session token lives in is a capability a user opts into, not a default.
 
 ### Escape hatch
 
@@ -1315,8 +1362,8 @@ Use `--policy-off` to run while you fix it.
 
 | Verb class | Checked against |
 |-----------|-----------------|
-| Acting (`click`, `type`, `fill`, `select`, `scroll`, `key`, pointer verbs, `upload`, `attr set/rm`, `cookie set/rm/clear`, `headers`, `emulate`, `eval`, `raw`, `dialog accept`/`dismiss`) | `allow`/`deny`, `read_only`, `verbs_denied` |
-| Reading (`snap`, `text`, `html`, `value`, `grid`, `screenshot`, `pdf`, `frame`, `wait`, `attr get/list`, `cookie list`, `dialog status`) | `allow`/`deny`, `verbs_denied` |
+| Acting (`click`, `type`, `fill`, `select`, `scroll`, `key`, pointer verbs, `upload`, `attr set/rm`, `cookie set/rm/clear`, `headers`, `emulate`, `eval`, `raw`, `dialog accept`/`dismiss`, `storage local/session set/rm/clear`) | `allow`/`deny`, `read_only`, `verbs_denied` |
+| Reading (`snap`, `text`, `html`, `value`, `grid`, `screenshot`, `pdf`, `frame`, `wait`, `attr get/list`, `cookie list`, `dialog status`, `storage local/session list/get`) | `allow`/`deny`, `verbs_denied` |
 | Navigating (`nav <url>`, `open`) | the **destination** origin, before navigating |
 | Tabs and meta (`list`, `use`, `close`, `activate`, `version`, `session`, `recipe run`, …) | `verbs_denied` only; no origin check, and every envelope's `target`, and every tab `list` or an ambiguous `close` enumerates, is reduced to a bare origin with no full URL and no title when the policy does not cover it |
 

@@ -136,6 +136,11 @@ func (b *refusalBrowser) CookieSet(context.Context, string, string, string, stri
 	return nil, nil
 }
 
+func (b *refusalBrowser) StorageSet(context.Context, string, string, string, string) (map[string]any, error) {
+	b.acted("StorageSet")
+	return nil, nil
+}
+
 func (b *refusalBrowser) Screenshot(context.Context, string, chrome.ShotOpts) ([]byte, map[string]any, error) {
 	b.acted("Screenshot")
 	return nil, nil, nil
@@ -249,9 +254,9 @@ func TestReadOnlyOriginAtTheBoundary(t *testing.T) {
 	tab := target.Info{ID: "dd44", Title: "Wiki", URL: "https://en.wiki.test/Go"}
 
 	for _, args := range [][]string{
-		{"text", "h1"}, {"snap"}, {"grid"}, {"html"},
+		{"text", "h1"}, {"snap"}, {"grid"}, {"html"}, {"storage", "local", "list"}, {"storage", "session", "get", "k"},
 	} {
-		t.Run("reading/"+args[0], func(t *testing.T) {
+		t.Run("reading/"+strings.Join(args, " "), func(t *testing.T) {
 			t.Parallel()
 			full := append(append([]string{}, args...), "--target", "dd44", "--json")
 			_, _, code := runPolicy(t, &fakeBrowser{tabs: []target.Info{tab}}, pol, full...)
@@ -262,7 +267,7 @@ func TestReadOnlyOriginAtTheBoundary(t *testing.T) {
 	}
 	for _, args := range [][]string{
 		{"click", "#x"}, {"fill", "#x", "v"}, {"type", "#x", "v"},
-		{"eval", "1+1"}, {"cookie", "set", "sid", "abc"},
+		{"eval", "1+1"}, {"cookie", "set", "sid", "abc"}, {"storage", "local", "set", "k", "v"},
 	} {
 		t.Run("mutating/"+strings.Join(args[:2], " "), func(t *testing.T) {
 			t.Parallel()

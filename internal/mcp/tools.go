@@ -120,6 +120,7 @@ func registry() []*tool {
 		evaluateTool(),
 		batchTool(),
 		rawCDPTool(),
+		storageTool(),
 	}
 }
 
@@ -694,6 +695,64 @@ func rawCDPTool() *tool {
 				return "", nil, nil, usagef("raw_cdp needs `method` (or list: true)")
 			}
 			return "raw", c.flags("method", "params"), pos, nil
+		},
+	}
+}
+
+func storageTool() *tool {
+	return &tool{
+		name:  prefix + "storage",
+		title: "Web storage",
+		desc: "Read and write the tab's localStorage / sessionStorage (DOM Storage) of its TOP FRAME, over DevTools' DOMStorage domain — no eval, so it works on a hidden tab and is unaffected by a page that has shadowed window.localStorage.\n\n" +
+			"`action: \"list\"` reports every key, values redacted (the same predicates `net` applies to headers, URL parameters and bodies) and size-capped at `max_value` bytes unless `no_redact`/`max_value: 0` say otherwise; " +
+			"`action: \"get\"` returns one value raw and uncut — the caller named the key, so nothing is withheld — with `present: false` when it is not there. " +
+			"`action: \"set\"`/`\"rm\"`/`\"clear\"` write the area; `clear` removes every key and cannot be undone.\n\n" +
+			"Only exposed under `--tools full` — or with this tool named explicitly in `--tools` — because reading the area a session token lives in is a capability a user opts into, the same reasoning that keeps `raw_cdp`, the other `full`-only tool, out of the default set.",
+		disc: "action",
+		actions: map[string]string{
+			"list": "storage local list", "get": "storage local get", "set": "storage local set",
+			"rm": "storage local rm", "clear": "storage local clear",
+		},
+		verbs: []string{
+			"storage local list", "storage local get", "storage local set", "storage local rm", "storage local clear",
+			"storage session list", "storage session get", "storage session set", "storage session rm", "storage session clear",
+		},
+		full: true,
+		args: concat([]arg{
+			{name: "action", typ: "string", required: true, enum: []string{"list", "get", "set", "rm", "clear"},
+				desc: "which storage operation to run."},
+			{name: "scope", typ: "string", required: true, enum: []string{"local", "session"},
+				desc: "which storage area: local (localStorage) or session (sessionStorage)."},
+			{name: "key", typ: "string", pos: true, desc: "the storage key. Required for get/set/rm; not accepted for list/clear."},
+			{name: "value", typ: "string", pos: true, desc: "the value to store. Required for set; not accepted otherwise."},
+			{name: "no_redact", typ: "boolean", flag: "no-redact", desc: "action=\"list\": do NOT redact credential-shaped keys and values."},
+			{name: "max_value", typ: "integer", flag: "max-value", desc: "action=\"list\": cut each listed value at this many bytes (0 = no cap; default 4096)."},
+		}, targetArgs()),
+		build: func(c *call) (string, []string, []string, error) {
+			action, scope := c.str("action"), c.str("scope")
+			if err := c.only(action, map[string][]string{
+				"no_redact": {"list"}, "max_value": {"list"},
+			}); err != nil {
+				return "", nil, nil, err
+			}
+			var pos []string
+			switch action {
+			case "get", "rm":
+				if !c.has("key") {
+					return "", nil, nil, usagef("storage: action %q needs `key`", action)
+				}
+				pos = []string{c.str("key")}
+			case "set":
+				if !c.has("key") || !c.has("value") {
+					return "", nil, nil, usagef("storage: action \"set\" needs `key` and `value`")
+				}
+				pos = []string{c.str("key"), c.str("value")}
+			case "list", "clear":
+				if c.has("key") || c.has("value") {
+					return "", nil, nil, usagef("storage: action %q takes no `key`/`value`", action)
+				}
+			}
+			return "storage " + scope + " " + action, c.flags("action", "scope", "key", "value"), pos, nil
 		},
 	}
 }

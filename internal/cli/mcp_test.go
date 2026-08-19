@@ -360,6 +360,10 @@ func TestMCPParityWithCLI(t *testing.T) {
 			"evaluate", map[string]any{"expression": "1+1", "target": "aa11"}},
 		{"raw", []string{"raw", "Page.getNavigationHistory", "--target", "aa11"},
 			"raw_cdp", map[string]any{"method": "Page.getNavigationHistory", "target": "aa11"}},
+		{"storage list", []string{"storage", "local", "list", "--no-redact", "--target", "aa11"},
+			"storage", map[string]any{"action": "list", "scope": "local", "no_redact": true, "target": "aa11"}},
+		{"storage set", []string{"storage", "session", "set", "k", "v", "--target", "aa11"},
+			"storage", map[string]any{"action": "set", "scope": "session", "key": "k", "value": "v", "target": "aa11"}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

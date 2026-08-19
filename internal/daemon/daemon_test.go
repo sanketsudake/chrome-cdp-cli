@@ -149,6 +149,45 @@ func (b recordOptsBrowser) RecordStart(_ context.Context, _ string, opts chrome.
 	return map[string]any{"recording": true}, nil
 }
 
+// TestStorageListOptsCrossTheRPC is RFC-0019 VS-15: the scope string and the
+// StorageListOpts struct reach StorageList unchanged through the daemon's
+// dispatch/argStr/argStorageList decoding, not just through the in-process
+// interface.
+func TestStorageListOptsCrossTheRPC(t *testing.T) {
+	got := make(chan storageListCall, 1)
+	sock := filepath.Join(t.TempDir(), "s.sock")
+	ln, err := net.Listen("unix", sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	go Serve(ln, storageListOptsBrowser{seen: got}, time.Minute)
+	t.Cleanup(func() { _ = ln.Close() })
+
+	wantOpts := chrome.StorageListOpts{NoRedact: true, MaxValue: 12}
+	if _, err := Remote(&Client{path: sock}).StorageList(t.Context(), "aa11", "session", wantOpts); err != nil {
+		t.Fatalf("StorageList: %v", err)
+	}
+	seen := <-got
+	if seen.scope != "session" || seen.opts != wantOpts {
+		t.Errorf("the daemon saw scope=%q opts=%+v, want scope=session opts=%+v", seen.scope, seen.opts, wantOpts)
+	}
+}
+
+type storageListCall struct {
+	scope string
+	opts  chrome.StorageListOpts
+}
+
+type storageListOptsBrowser struct {
+	chrometest.StubBrowser
+	seen chan storageListCall
+}
+
+func (b storageListOptsBrowser) StorageList(_ context.Context, _ string, scope string, opts chrome.StorageListOpts) (map[string]any, error) {
+	b.seen <- storageListCall{scope: scope, opts: opts}
+	return map[string]any{"scope": scope, "origin": "https://stub.test", "items": []map[string]any{}, "count": 0, "truncated": false}, nil
+}
+
 // slowBrowser's Eval blocks until its context is cancelled — standing in for a
 // wedged/slow CDP action.
 type slowBrowser struct{ chrometest.StubBrowser }

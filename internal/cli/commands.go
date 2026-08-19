@@ -110,7 +110,7 @@ func (a *App) newRoot() *cobra.Command {
 		a.cmdClick(), a.cmdHover(), a.cmdDblClick(), a.cmdRClick(), a.cmdDrag(), a.cmdKey(),
 		a.cmdTripleClick(), a.cmdType(), a.cmdFill(), a.cmdSelect(), a.cmdUpload(), a.cmdGrid(), a.cmdScroll(), a.cmdAttr(),
 		a.cmdScreenshot(), a.cmdPDF(),
-		a.cmdCookie(), a.cmdHeaders(), a.cmdEmulate(), a.cmdFrame(), a.cmdWait(),
+		a.cmdCookie(), a.cmdStorage(), a.cmdHeaders(), a.cmdEmulate(), a.cmdFrame(), a.cmdWait(),
 		a.cmdConsole(), a.cmdNet(), a.cmdRecord(), a.cmdRaw(), a.cmdDialog(),
 		a.cmdWindow(), a.cmdSession(), a.cmdRecipe(), a.cmdMCP(), a.cmdDoctor(), a.cmdDaemon(), a.cmdPolicy(), a.cmdExitCodes(), a.cmdVersion(), a.cmdSkill(),
 	)
@@ -158,6 +158,12 @@ func (a *App) classifyWithTabHint(b chrome.Browser, id string, err error) (strin
 	// --back` at the start of a history says so instead of timing out.
 	if chrome.IsNoHistory(err) {
 		return result.CodeTargetNotFound, err.Error(), map[string]any{"no_history": true}
+	}
+	// A storage area that does not exist (data:, about:blank, a sandboxed
+	// document) is the same shape of failure: the invocation is well-formed
+	// and the tab is fine, but the thing asked about is not there (RFC-0019).
+	if chrome.IsOpaqueOrigin(err) {
+		return result.CodeTargetNotFound, err.Error(), map[string]any{"opaque_origin": true}
 	}
 	code := classifyActionErr(err)
 	if code != result.CodeTargetTimeout || !a.ariaAddressing() {

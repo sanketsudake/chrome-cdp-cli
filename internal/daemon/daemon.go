@@ -437,6 +437,16 @@ func (s *server) dispatch(ctx context.Context, method string, args []json.RawMes
 		return b.CookieDelete(ctx, argStr(args, 0), argStr(args, 1))
 	case "CookieClear":
 		return b.CookieClear(ctx, argStr(args, 0))
+	case "StorageList":
+		return b.StorageList(ctx, argStr(args, 0), argStr(args, 1), argStorageList(args, 2))
+	case "StorageGet":
+		return b.StorageGet(ctx, argStr(args, 0), argStr(args, 1), argStr(args, 2))
+	case "StorageSet":
+		return b.StorageSet(ctx, argStr(args, 0), argStr(args, 1), argStr(args, 2), argStr(args, 3))
+	case "StorageRemove":
+		return b.StorageRemove(ctx, argStr(args, 0), argStr(args, 1), argStr(args, 2))
+	case "StorageClear":
+		return b.StorageClear(ctx, argStr(args, 0), argStr(args, 1))
 	case "Raw":
 		return b.Raw(ctx, argStr(args, 0), argStr(args, 1), argRaw(args, 2))
 	default:
@@ -514,6 +524,9 @@ func argMap(a []json.RawMessage, i int) map[string]string      { return arg[map[
 func argConsole(a []json.RawMessage, i int) chrome.ConsoleOpts { return arg[chrome.ConsoleOpts](a, i) }
 func argNet(a []json.RawMessage, i int) chrome.NetOpts         { return arg[chrome.NetOpts](a, i) }
 func argNetCond(a []json.RawMessage, i int) chrome.NetCond     { return arg[chrome.NetCond](a, i) }
+func argStorageList(a []json.RawMessage, i int) chrome.StorageListOpts {
+	return arg[chrome.StorageListOpts](a, i)
+}
 
 func argRaw(a []json.RawMessage, i int) json.RawMessage {
 	if i < len(a) {
@@ -890,6 +903,26 @@ func (r *remoteBrowser) CookieDelete(ctx context.Context, id, name string) (map[
 func (r *remoteBrowser) CookieClear(ctx context.Context, id string) (map[string]any, error) {
 	var out map[string]any
 	return out, r.c.call(ctx, "CookieClear", &out, id)
+}
+func (r *remoteBrowser) StorageList(ctx context.Context, id, scope string, opts chrome.StorageListOpts) (map[string]any, error) {
+	var out map[string]any
+	return out, r.c.call(ctx, "StorageList", &out, id, scope, opts)
+}
+func (r *remoteBrowser) StorageGet(ctx context.Context, id, scope, key string) (map[string]any, error) {
+	var out map[string]any
+	return out, r.c.call(ctx, "StorageGet", &out, id, scope, key)
+}
+func (r *remoteBrowser) StorageSet(ctx context.Context, id, scope, key, value string) (map[string]any, error) {
+	var out map[string]any
+	return out, r.c.call(ctx, "StorageSet", &out, id, scope, key, value)
+}
+func (r *remoteBrowser) StorageRemove(ctx context.Context, id, scope, key string) (map[string]any, error) {
+	var out map[string]any
+	return out, r.c.call(ctx, "StorageRemove", &out, id, scope, key)
+}
+func (r *remoteBrowser) StorageClear(ctx context.Context, id, scope string) (map[string]any, error) {
+	var out map[string]any
+	return out, r.c.call(ctx, "StorageClear", &out, id, scope)
 }
 func (r *remoteBrowser) Raw(ctx context.Context, id, method string, params json.RawMessage) (any, error) {
 	var out any

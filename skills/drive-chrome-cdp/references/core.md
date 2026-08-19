@@ -150,7 +150,9 @@ Selector syntax is chosen with `--by`:
 - `--wait visible` (default) `| ready | enabled`; `--no-wait` to fail fast.
   If a read stalls waiting for visibility, retry with `--wait ready`.
 
-Verbs: `open <url>` (new tab → navigate → current), `click`, `type "<sel>" "<text>"` (real keystrokes; **append `\n` to submit** — it presses Enter), `fill "<sel>" "<value>"` (**sets a field, replacing its content** — triple-click-selects then types, so a pre-filled cell showing `0` becomes `8`, not `80`; use this for form/grid fields, `type` only when you mean to append), `select` (see below), `upload` (see below), `nav <url>` (waits for load; `nav --back` / `--forward` / `--reload [--hard]` move through history without re-deriving the URL), `scroll`, `grid`, `screenshot`, `pdf`, `attr get/list/set/rm`, `cookie …`, `raw <domain.method> [json]` (any CDP method — the escape hatch).
+Verbs: `open <url>` (new tab → navigate → current), `click`, `type "<sel>" "<text>"` (real keystrokes; **append `\n` to submit** — it presses Enter), `fill "<sel>" "<value>"` (**sets a field, replacing its content** — triple-click-selects then types, so a pre-filled cell showing `0` becomes `8`, not `80`; use this for form/grid fields, `type` only when you mean to append), `select` (see below), `upload` (see below), `nav <url>` (waits for load; `nav --back` / `--forward` / `--reload [--hard]` move through history without re-deriving the URL), `scroll`, `grid`, `screenshot`, `pdf`, `attr get/list/set/rm`, `cookie …`, `storage local|session list|get|set|rm|clear`, `raw <domain.method> [json]` (any CDP method — the escape hatch).
+
+`cookie` and `storage local|session` read and edit the tab's cookies and Web Storage; `list` redacts credential-shaped values unless `--no-redact`.
 
 `click`/`type`/`fill`/`select` accept **`--wait-text "<substr>"`**: after the action, block until the page contains the text (a `Saved` toast) — folds act + confirm into one call, e.g. `click --by name "Save and Close" --role button --wait-text "saved"`.
 
