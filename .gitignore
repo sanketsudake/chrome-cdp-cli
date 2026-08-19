@@ -17,3 +17,7 @@
 # never commit secrets
 .env
 .env.*
+
+# npm installer shim: downloaded binary + local test deps
+/npm/bin/.bin/
+/npm/node_modules/

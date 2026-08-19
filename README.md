@@ -29,9 +29,9 @@ Because it attaches to the browser you're already using, an app you're signed in
    go install github.com/sanketsudake/chrome-cdp-cli/cmd/chrome-cdp@latest
    # or:
    npx skills add sanketsudake/chrome-cdp-cli
+   # or:
+   npm i -g @sanketsudake/chrome-cdp   # or: npx @sanketsudake/chrome-cdp doctor
    ```
-
-   <!-- npm: @sanketsudake/chrome-cdp once Task 5.3 lands -->
 
    The `skills` line installs the skills in `skills/` (`drive-chrome-cdp` plus the two scenario skills) without installing the binary.
 
