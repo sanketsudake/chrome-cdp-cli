@@ -68,7 +68,7 @@ function verifyChecksum(buffer, checksumsTxt, asset) {
   const line = checksumsTxt
     .split("\n")
     .map((l) => l.trim())
-    .find((l) => l.endsWith(asset));
+    .find((l) => l.split(/\s+/)[1] === asset);
   if (!line) {
     throw new Error(`no checksum entry for ${asset}`);
   }

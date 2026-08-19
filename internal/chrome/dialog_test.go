@@ -52,6 +52,28 @@ func TestDialogEventRetainsLastAndClearsOnClose(t *testing.T) {
 	}
 }
 
+// TestForgetClearsRetainedDialog is the tab-destroyed half of RFC-0018: a
+// dialog retained for a tab must not survive forget(id), the cleanup
+// watchClosedTabs and CloseTabs both funnel through — otherwise a tab that
+// closed with a dialog still open leaves a stale entry in c.dialogs forever.
+func TestForgetClearsRetainedDialog(t *testing.T) {
+	t.Parallel()
+	c := &CDP{tabs: map[string]tabConn{}, dialogs: map[string]dialogState{}}
+	c.configureCapture(0, 0)
+	c.configureNetCapture(0, 0)
+
+	c.dialogEvent("t1", &page.EventJavascriptDialogOpening{Type: page.DialogTypeConfirm, Message: "A"})
+	if _, ok := c.dialog("t1"); !ok {
+		t.Fatal("setup: dialog should be retained before forget")
+	}
+
+	c.forget("t1")
+
+	if _, ok := c.dialog("t1"); ok {
+		t.Fatal("forget should clear the retained dialog, but it is still there")
+	}
+}
+
 // TestDialogStatusResultKeys pins the field table: the open map carries all
 // six keys with no note when not fresh, the closed map carries only `open`,
 // and `note` appears only on a fresh attach.

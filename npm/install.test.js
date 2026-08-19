@@ -76,6 +76,19 @@ test("verifyChecksum: rejects a missing entry", () => {
   );
 });
 
+test("verifyChecksum: a different asset whose name ends with the same suffix does not match", () => {
+  const buf = Buffer.from("hello world");
+  const hash = crypto.createHash("sha256").update(buf).digest("hex");
+  // "unofficial_chrome-cdp_0.2.2_linux_amd64.tar.gz" ends with the asset name
+  // we're about to ask for, so an endsWith match would wrongly accept this
+  // line's hash for it.
+  const checksumsTxt = `${hash}  unofficial_chrome-cdp_0.2.2_linux_amd64.tar.gz\n`;
+  assert.throws(
+    () => verifyChecksum(buf, checksumsTxt, "chrome-cdp_0.2.2_linux_amd64.tar.gz"),
+    /no checksum entry/,
+  );
+});
+
 test("validateVersion: accepts a dotted-triple semver", () => {
   assert.equal(validateVersion("0.2.2"), "0.2.2");
 });
