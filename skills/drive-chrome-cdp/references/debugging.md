@@ -12,5 +12,7 @@ When an action "did nothing", the page usually said why — read that instead of
   `--xhr` for API calls, `--failed` for non-2xx and network-level failures (the 401 behind an empty screen), `net --url /api/save --method POST --body` to inspect a payload.
   Headers/bodies appear only with `--headers`/`--body`, and credential-shaped values are redacted unless `--no-redact` — leave redaction on.
 - **The reset → act → read pattern**: `console --clear` and `net --clear` before the action, act, then `console --only-errors` / `net --failed` — whatever is left is what the action caused.
+- `net --har out.har` exports the retained requests as HAR 1.2 for DevTools/Charles, instead of the listing.
+  Headers are redacted unless `--no-redact`, same as `net` itself.
 - With `--no-daemon` no process was alive to buffer earlier events, so the history is partial (the envelope carries a note saying so).
 

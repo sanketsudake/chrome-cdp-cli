@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -60,6 +62,17 @@ func netTestBrowser(reqs ...any) *netBrowser {
 
 func req(method, url string, status int) map[string]any {
 	return map[string]any{"method": method, "url": url, "status": status, "type": "xhr", "failed": status >= 300}
+}
+
+// reqHar extends req with the extra fields the HAR export tests need to
+// exercise (id, headers, bodies) without every other test having to carry
+// them.
+func reqHar(method, url string, status int, extra map[string]any) map[string]any {
+	m := req(method, url, status)
+	for k, v := range extra {
+		m[k] = v
+	}
+	return m
 }
 
 func TestNetEnvelopeShape(t *testing.T) {
@@ -178,6 +191,8 @@ func TestNetValidationNeverConnects(t *testing.T) {
 		"wait bad status":           {"net", "wait", "--url", "/api", "--status", "2x"},
 		"wait --request bad status": {"wait", "--request", "/api", "--status", "nope"},
 		"wait qualifier no request": {"wait", "--status", "2xx"},
+		"har empty path":            {"net", "--har", ""},
+		"har with follow":           {"net", "--har", "out.har", "--follow"},
 	}
 	for name, args := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -476,4 +491,258 @@ func FuzzNetStatusSpec(f *testing.F) {
 			}
 		}
 	})
+}
+
+// ---------------------------------------------------------------------------
+// RFC-0017: `net --har` — export the tab's retained requests as HAR 1.2
+// ---------------------------------------------------------------------------
+
+// TestNetHarWritesTheFileAndSummarises is VS-1, VS-2 and VS-6: the file is
+// written with the filtered rows, a redacted value survives literally, the
+// summary carries every documented key (and not `requests`), and the file is
+// 0600 and overwritten on a second run.
+func TestNetHarWritesTheFileAndSummarises(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "out.har")
+	b := netTestBrowser(reqHar("GET", "https://app/cb?code=<redacted>", 200, map[string]any{
+		"id":              "r1",
+		"request_headers": map[string]any{"authorization": "<redacted>"},
+	}))
+	env, _, code := run(t, b, "net", "--target", "aa11", "--json", "--har", path)
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0", code)
+	}
+	if !b.gotOpts.Headers {
+		t.Error("--har did not force Headers on to the read")
+	}
+	res := env["result"].(map[string]any)
+	for _, k := range []string{"path", "bytes", "entries", "redacted", "with_content", "truncated_bodies", "pending", "buffered", "dropped", "truncated"} {
+		if _, has := res[k]; !has {
+			t.Errorf("summary is missing %q", k)
+		}
+	}
+	if _, has := res["requests"]; has {
+		t.Error("the summary must not carry `requests`; the file is the deliverable")
+	}
+	if res["path"] != path {
+		t.Errorf("path = %v, want %v (as given, not absolutized)", res["path"], path)
+	}
+	if res["entries"].(float64) != 1 {
+		t.Errorf("entries = %v, want 1", res["entries"])
+	}
+	if res["redacted"] != true {
+		t.Errorf("redacted = %v, want true", res["redacted"])
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("HAR file was not written: %v", err)
+	}
+	if int(res["bytes"].(float64)) != len(data) {
+		t.Errorf("bytes = %v, want %d (the file's actual size)", res["bytes"], len(data))
+	}
+	fi, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fi.Mode().Perm() != 0o600 {
+		t.Errorf("file mode = %v, want 0600", fi.Mode().Perm())
+	}
+	if !strings.Contains(string(data), `"version": "1.2"`) {
+		t.Errorf("file does not look like a HAR: %s", data)
+	}
+	if !strings.Contains(string(data), `"<redacted>"`) {
+		t.Errorf("redacted value did not survive to the file literally: %s", data)
+	}
+
+	// VS-6's overwrite half: a stale existing file is replaced, not appended
+	// to or left alongside a second one.
+	if err := os.WriteFile(path, []byte("stale"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, code := run(t, b, "net", "--target", "aa11", "--json", "--har", path); code != 0 {
+		t.Fatalf("second run exit = %d, want 0", code)
+	}
+	data2, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data2), "stale") {
+		t.Error("the existing file's content was not replaced")
+	}
+}
+
+// TestNetHarBodiesAreOptIn is VS-4: a bare --har carries no postData or
+// content.text, and --har --body carries both. `render` (internal/chrome)
+// only puts request_body/response_body keys on a row when opts.Body is set —
+// the fake browser below is built once per case to mirror that gating,
+// exactly as the real one would hand back different rows for the two calls.
+func TestNetHarBodiesAreOptIn(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+
+	path := filepath.Join(dir, "no-body.har")
+	bare := netTestBrowser(reqHar("POST", "https://app/api", 200, map[string]any{"id": "r1"}))
+	env, _, code := run(t, bare, "net", "--target", "aa11", "--json", "--har", path)
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0", code)
+	}
+	if bare.gotOpts.Body {
+		t.Error("Body reached the browser without --body")
+	}
+	res := env["result"].(map[string]any)
+	if res["with_content"] != false {
+		t.Errorf("with_content = %v, want false", res["with_content"])
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), "postData") || strings.Contains(string(data), `"text": "hello"`) || strings.Contains(string(data), `"text": "world"`) {
+		t.Errorf("bare --har carried content it should not have: %s", data)
+	}
+
+	path = filepath.Join(dir, "with-body.har")
+	withBody := netTestBrowser(reqHar("POST", "https://app/api", 200, map[string]any{
+		"id": "r1", "request_body": "hello", "response_body": "world",
+	}))
+	env, _, code = run(t, withBody, "net", "--target", "aa11", "--json", "--har", path, "--body")
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0", code)
+	}
+	if !withBody.gotOpts.Body {
+		t.Error("--body did not reach the browser")
+	}
+	res = env["result"].(map[string]any)
+	if res["with_content"] != true {
+		t.Errorf("with_content = %v, want true", res["with_content"])
+	}
+	data, err = os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), `"text": "hello"`) || !strings.Contains(string(data), `"text": "world"`) {
+		t.Errorf("--har --body did not carry both bodies: %s", data)
+	}
+}
+
+// TestNetHarNoRedactPassesThrough is VS-3.
+func TestNetHarNoRedactPassesThrough(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "out.har")
+	b := netTestBrowser(reqHar("GET", "https://app/x", 200, map[string]any{"id": "r1"}))
+	env, _, code := run(t, b, "net", "--target", "aa11", "--json", "--har", path, "--no-redact")
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0", code)
+	}
+	if !b.gotOpts.NoRedact {
+		t.Error("--no-redact did not reach the browser")
+	}
+	res := env["result"].(map[string]any)
+	if res["redacted"] != false {
+		t.Errorf("redacted = %v, want false", res["redacted"])
+	}
+}
+
+// TestNetHarBadPathIsGenericBeforeConnecting is VS-5's generic half: a path
+// that names an existing directory, or whose parent does not exist, is
+// `generic`/exit 1 with the browser never contacted — a bad directory needs
+// os.Stat and depends on the environment, not the form of the invocation, so
+// it is `generic` rather than `usage` (unlike the empty-path/--follow cases,
+// which are pure grammar and live in TestNetValidationNeverConnects).
+func TestNetHarBadPathIsGenericBeforeConnecting(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	cases := map[string]string{
+		"path is an existing directory": dir,
+		"parent directory is missing":   filepath.Join(dir, "missing", "out.har"),
+	}
+	for name, path := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			env, _, code := run(t, noCall(t), "net", "--target", "aa11", "--json", "--har", path)
+			if code != 1 {
+				t.Fatalf("exit = %d, want 1 (generic)", code)
+			}
+			if env["error"].(map[string]any)["code"] != "generic" {
+				t.Errorf("error.code = %v, want generic", env["error"])
+			}
+		})
+	}
+}
+
+// TestNetHarClearProbesWritabilityBeforeConnecting is the controller ruling
+// that adds to RFC-0017: with --clear the buffer is dropped inside the read
+// itself before the file is written, so a write failure after that point
+// loses data. --har --clear therefore runs the CreateTemp-style writability
+// probe `record stop -o` uses, not just a stat, and catches an unwritable
+// (but existing) directory before connecting.
+func TestNetHarClearProbesWritabilityBeforeConnecting(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores directory write permissions")
+	}
+	t.Parallel()
+	dir := t.TempDir()
+	sub := filepath.Join(dir, "readonly")
+	if err := os.Mkdir(sub, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(sub, 0o755) })
+	path := filepath.Join(sub, "out.har")
+	env, _, code := run(t, noCall(t), "net", "--target", "aa11", "--json", "--har", path, "--clear")
+	if code != 1 {
+		t.Fatalf("exit = %d, want 1 (generic)", code)
+	}
+	if env["error"].(map[string]any)["code"] != "generic" {
+		t.Errorf("error.code = %v, want generic", env["error"])
+	}
+}
+
+// TestNetHarFailOnMatchComposes: the file is written FIRST, then the
+// assertion is judged on the same count — a tripped assertion must not throw
+// away the export.
+func TestNetHarFailOnMatchComposes(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "out.har")
+	b := netTestBrowser(reqHar("GET", "https://app/api/me", 401, map[string]any{"id": "r1"}))
+	env, _, code := run(t, b, "net", "--target", "aa11", "--json", "--har", path, "--failed", "--fail-on-match")
+	if code != 1 {
+		t.Fatalf("exit = %d, want 1", code)
+	}
+	if got := env["error"].(map[string]any)["code"]; got != "assertion_failed" {
+		t.Errorf("error.code = %v, want assertion_failed", got)
+	}
+	res, ok := env["result"].(map[string]any)
+	if !ok {
+		t.Fatalf("the failing envelope dropped its result: %v", env)
+	}
+	if res["entries"] == nil {
+		t.Errorf("result is not the HAR summary: %v", res)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Errorf("the file must be written even when the assertion trips: %v", err)
+	}
+}
+
+// TestNetHarInsideSessionIsOneEnvelope is VS-13.
+func TestNetHarInsideSessionIsOneEnvelope(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "out.har")
+	b := netTestBrowser(req("GET", "https://app/x", 200))
+	var out, errb bytes.Buffer
+	app := New(b, &out, &errb).WithInput(strings.NewReader(
+		`["net","--har","` + filepath.ToSlash(path) + `","--target","aa11"]` + "\n"))
+	if code := app.Execute("session"); code != 0 {
+		t.Fatalf("session exit = %d, want 0: %s", code, errb.String())
+	}
+	lines := strings.Split(strings.TrimSpace(out.String()), "\n")
+	if len(lines) != 1 {
+		t.Fatalf("got %d lines, want 1 (one envelope): %s", len(lines), out.String())
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Errorf("HAR file was not written: %v", err)
+	}
 }

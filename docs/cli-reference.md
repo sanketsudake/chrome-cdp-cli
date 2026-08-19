@@ -587,6 +587,7 @@ Like `console`, capture starts when the connection **attaches to a tab**, not wh
 | `--clear` | off | drop the buffered requests after reading |
 | `--follow` | off | stream completed requests as NDJSON |
 | `--fail-on-match` | off | exit 1 if any request matched |
+| `--har <path>` | — | write the matching requests to `<path>` as HAR 1.2 and print a summary instead of the listing |
 
 ```sh
 chrome-cdp net --xhr --limit 20                          # recent API calls
@@ -602,7 +603,7 @@ The result carries `requests`, `count` (after filtering), `buffered`, `dropped`,
 It is scoped to the same `--url` / `--method` / `--type` / `--since` filter as the listing, so a permanently open SSE stream or long poll does not make every read look unfinished forever.
 `--status` and `--failed` are deliberately *not* applied to it: a request still in flight has no status, so applying them would make `pending` a constant zero for exactly the reads that ask about an outcome.
 
-Each request carries `id`, `method`, `url`, `type`, `status`, `status_text`, `started_ms` (milliseconds since capture began on this tab), `duration_ms`, `request_size`, `response_size`, `from_cache`, `failed`, and `error`.
+Each request carries `id`, `method`, `url`, `type`, `status`, `status_text`, `started_ms` (milliseconds since capture began on this tab), `started_at` (the same instant as an RFC 3339 UTC timestamp with millisecond precision, `null` when the record has no start), `duration_ms`, `request_size`, `response_size`, `from_cache`, `failed`, and `error`.
 `status`, `duration_ms`, and `error` are `null` when they do not exist yet; `failed` means a non-2xx status **or** a network-level failure, so a delivered 500 and a DNS failure both show up under `--failed`.
 
 **Redaction is on by default.**
@@ -647,6 +648,18 @@ It cannot combine with `--fail-on-match`, and it is a usage error inside `sessio
 A window in which nothing completed produces **no output at all** and exits 0, exactly as with `console --follow`, and it does not block other commands against the same daemon.
 
 **`--no-daemon` has only partial history**, exactly as with `console`: enabling the domain surfaces the handful of resources Chrome still holds for the page, never the session, so the read carries a `note` rather than passing a short list off as the whole story.
+
+**`--har <path>`** writes the same filtered read to `<path>` as an [HTTP Archive 1.2](http://www.softwareishard.com/blog/har-12-spec/) file, for handing evidence to a backend team, a vendor, or DevTools/Charles/Fiddler, instead of pasting JSON nobody's tool reads.
+It runs exactly the read `net` would otherwise print — same `--url` / `--method` / `--status` / `--type` / `--xhr` / `--failed` / `--since` / `--limit` / `--clear` grammar — and forces headers on regardless of `--headers`; add `--body` for request/response payloads ("Save all as HAR with content", in DevTools' own terms).
+Redaction is unchanged: the HAR can contain nothing the listing would not have printed under the same flags, so `--no-redact` is the only way a live credential reaches the file.
+The file is written `0600`, not the `0644` `screenshot`/`pdf` use, because a HAR records the user's logged-in session and, with `--no-redact`, may hold live tokens verbatim; an existing file at the path is overwritten.
+
+Instead of the listing, the result is a summary: `{path, bytes, entries, redacted, with_content, truncated_bodies, pending, buffered, dropped, truncated, note?}`.
+`entries` equals what the listing's `count` would have been; `truncated_bodies` counts entries whose request or response body was cut at `net_max_body`, and is `0` without `--body`; `pending`/`buffered`/`dropped`/`truncated`/`note` carry the same meaning the listing gives them.
+`--har ''` and `--har` combined with `--follow` are `usage` / exit 2; a path naming an existing directory, or whose parent directory does not exist or is not a directory, is `generic` / exit 1 — both checked before Chrome is contacted.
+With `--clear` the buffer is dropped inside the read itself before the file is written, so this pre-connect check also probes the destination is actually writable (not just that it exists), the same way `record stop -o` does, rather than risk losing the buffer to a late write failure.
+`--har` composes with `--fail-on-match`: the file is written first, then the assertion is judged on the same count, so a tripped assertion never costs you the export.
+It works inside `session` and a recipe step exactly like an ordinary `net` line — one envelope, the summary — and is not exposed to the MCP `network` tool, because a path on the CLI's disk is not something an MCP client on the other side of the protocol can use.
 
 Bad `--status` / `--type` / `--url` regex / `--since` values are `usage` / exit 2, validated before anything connects to Chrome.
 

@@ -3,12 +3,15 @@ package cli
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
 
 	"github.com/sanketsudake/chrome-cdp-cli/internal/chrome"
+	"github.com/sanketsudake/chrome-cdp-cli/internal/encode"
 	"github.com/sanketsudake/chrome-cdp-cli/internal/result"
 )
 
@@ -104,6 +107,7 @@ type netFlags struct {
 	clear       bool
 	follow      bool
 	failOnMatch bool
+	har         string
 }
 
 func (nf *netFlags) register(c *cobra.Command) {
@@ -115,6 +119,66 @@ func (nf *netFlags) register(c *cobra.Command) {
 	f.BoolVar(&nf.clear, "clear", false, "drop the buffered requests after reading (with no other flag, just drop them)")
 	f.BoolVar(&nf.follow, "follow", false, "stream completed requests as NDJSON until --timeout or interrupt")
 	f.BoolVar(&nf.failOnMatch, "fail-on-match", false, "exit 1 if at least one request is returned (the requests are still reported)")
+	f.StringVar(&nf.har, "har", "", "write the matching requests to this path as HAR 1.2 (headers included, redacted "+
+		"unless --no-redact; add --body for payloads) and print a summary instead of the listing")
+}
+
+// harUsageErr checks the two --har failures that are pure grammar (RFC-0017):
+// an empty path, and combining with --follow, which streams forever and has
+// no end to write a file at. Both must be caught before nf.validate runs
+// anything else, so they are reported the same way regardless of what other
+// flags happen to be set.
+func (nf *netFlags) harUsageErr(harSet bool) *result.Err {
+	if !harSet {
+		return nil
+	}
+	if nf.follow {
+		return &result.Err{Code: result.CodeUsage, Message: "--har cannot combine with --follow: a stream has no end to write a file at"}
+	}
+	if nf.har == "" {
+		return &result.Err{Code: result.CodeUsage, Message: "--har needs a path to write the HAR to"}
+	}
+	return nil
+}
+
+// checkHarTarget reports whether the HAR could actually be written, BEFORE
+// resolveTarget — the same split `record`'s checkExportTarget makes: an
+// existing directory or a missing/non-directory parent is detected with
+// os.Stat alone and is `generic` because the outcome depends on the
+// environment, not the form of the invocation.
+//
+// With --clear the buffer is dropped inside the read itself, before the file
+// is written, so a write failure after that point loses data rather than
+// just costing a free retry. The controller ruling on RFC-0017 (Open
+// Questions) is to run `record stop -o`'s CreateTemp-style writability probe
+// in that case, so the likely cause of a late failure is removed up front;
+// without --clear the stat-only check is enough, as the RFC specifies.
+func checkHarTarget(path string, clear bool) *result.Err {
+	generic := func(format string, args ...any) *result.Err {
+		return &result.Err{Code: result.CodeGeneric, Message: fmt.Sprintf(format, args...)}
+	}
+	if fi, err := os.Stat(path); err == nil && fi.IsDir() {
+		return generic("cannot write the HAR to %q: it is a directory", path)
+	}
+	dir := filepath.Dir(path)
+	fi, err := os.Stat(dir)
+	if err != nil {
+		return generic("cannot write the HAR to %q: %v", path, err)
+	}
+	if !fi.IsDir() {
+		return generic("cannot write the HAR to %q: %q is not a directory", path, dir)
+	}
+	if !clear {
+		return nil
+	}
+	f, err := os.CreateTemp(dir, ".chrome-cdp-har-*")
+	if err != nil {
+		return generic("cannot write the HAR to %q: %v (--clear drops the buffer before the write — retry with a writable path)", path, err)
+	}
+	name := f.Name()
+	_ = f.Close()
+	_ = os.Remove(name)
+	return nil
 }
 
 // validate checks the flags and builds the browser options WITHOUT touching
@@ -161,10 +225,25 @@ func (a *App) cmdNet() *cobra.Command {
 			"  chrome-cdp net --clear                                # reset before an action",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			harSet := cmd.Flags().Changed("har")
+			if verr := nf.harUsageErr(harSet); verr != nil {
+				a.emitErr("net", verr.Code, verr.Message, nil)
+				return nil
+			}
 			opts, verr := nf.validate(a.inSession, cmd.Flags().Changed("status"))
 			if verr != nil {
 				a.emitErr("net", verr.Code, verr.Message, nil)
 				return nil
+			}
+			if harSet {
+				if verr := checkHarTarget(nf.har, nf.clear); verr != nil {
+					a.emitErr("net", verr.Code, verr.Message, nil)
+					return nil
+				}
+				// RFC-0017: `--har` is an output mode of the existing read, not a
+				// new capability — it forces the headers the export needs
+				// regardless of whether --headers was also passed.
+				opts.Headers = true
 			}
 			ctx, cancel := a.ctx()
 			defer cancel()
@@ -182,13 +261,24 @@ func (a *App) cmdNet() *cobra.Command {
 				a.emitErr("net", classifyActionErr(err), err.Error(), nil)
 				return nil
 			}
+			out := res
+			if harSet {
+				summary, herr := writeNetHar(res, nf.har, opts)
+				if herr != nil {
+					a.emitErr("net", herr.Code, herr.Message, nil)
+					return nil
+				}
+				out = summary
+			}
 			if nf.failOnMatch {
 				if n := netCount(res); n > 0 {
 					// The assertion tripping must not suppress the evidence: the
-					// envelope still carries every matching request, so a CI log
-					// shows WHAT failed, not just that something did.
+					// file (or the listing) still carries every matching request,
+					// so a CI log shows WHAT failed, not just that something did.
+					// The file was already written above, so a tripped assertion
+					// never loses the export.
 					a.emit(result.Envelope{
-						OK: false, Command: "net", Target: tgt, Result: res,
+						OK: false, Command: "net", Target: tgt, Result: out,
 						Error: &result.Err{
 							Code:    result.CodeAssertFailed,
 							Message: fmt.Sprintf("--fail-on-match: %d request(s) matched", n),
@@ -197,7 +287,7 @@ func (a *App) cmdNet() *cobra.Command {
 					return nil
 				}
 			}
-			a.emitOK("net", tgt, res)
+			a.emitOK("net", tgt, out)
 			return nil
 		},
 	}
@@ -300,4 +390,57 @@ func netCount(res any) int {
 		return len(reqs)
 	}
 	return 0
+}
+
+// netHarSummaryPassthrough are the listing's own accounting keys, carried
+// into the HAR summary unchanged in meaning (RFC-0017's result envelope): the
+// daemon's JSON round trip may hand them back as float64 rather than int, and
+// this is deliberately NOT retyped — the envelope only has to reproduce
+// whatever the read itself reported.
+var netHarSummaryPassthrough = []string{"pending", "buffered", "dropped", "truncated", "note"}
+
+// writeNetHar builds the HAR from a net result's rows and writes it to path,
+// returning the summary envelope RFC-0017 documents. It is called AFTER the
+// read (so the filters, redaction and --clear have already run exactly as
+// they do for the listing) and after checkHarTarget (so the browser was
+// never contacted over a bad path).
+func writeNetHar(res any, path string, opts chrome.NetOpts) (map[string]any, *result.Err) {
+	generic := func(format string, args ...any) *result.Err {
+		return &result.Err{Code: result.CodeGeneric, Message: fmt.Sprintf(format, args...)}
+	}
+	m, ok := res.(map[string]any)
+	if !ok {
+		return nil, generic("the network read returned an unexpected shape")
+	}
+	entries, err := encode.DecodeNetEntries(m["requests"])
+	if err != nil {
+		return nil, generic("%s", err.Error())
+	}
+	data, err := encode.HAR(entries, encode.HAROpts{Version: Version, Now: time.Now()})
+	if err != nil {
+		return nil, generic("%s", err.Error())
+	}
+	// The user named the path; an existing file is overwritten, as `record`
+	// and `screenshot -o` already do. 0600, not 0644: a HAR is a record of the
+	// user's logged-in session and, with --no-redact, holds live credentials.
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		return nil, generic("%s", err.Error())
+	}
+	truncatedBodies := 0
+	for _, e := range entries {
+		if e.BodyTruncated {
+			truncatedBodies++
+		}
+	}
+	out := map[string]any{
+		"path": path, "bytes": len(data), "entries": len(entries),
+		"redacted": !opts.NoRedact, "with_content": opts.Body,
+		"truncated_bodies": truncatedBodies,
+	}
+	for _, k := range netHarSummaryPassthrough {
+		if v, has := m[k]; has {
+			out[k] = v
+		}
+	}
+	return out, nil
 }

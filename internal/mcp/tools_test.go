@@ -36,3 +36,25 @@ func TestRecordAndRecipeAreNotExposed(t *testing.T) {
 		}
 	}
 }
+
+// TestNetworkToolDoesNotExposeHar is RFC-0017's stated intent (Design notes,
+// "Policy and MCP"): an MCP client is on the other side of a protocol from
+// the server's disk, so a path in the response is unusable to it. `--har` has
+// no inline form, unlike `screenshot`'s `output`, which is an ALSO beside the
+// image returned inline — so the registry, an explicit allow-list, simply
+// never gets a `har` argument added to it.
+func TestNetworkToolDoesNotExposeHar(t *testing.T) {
+	t.Parallel()
+	for _, tl := range registry() {
+		if tl.name != prefix+"network" {
+			continue
+		}
+		for _, a := range tl.args {
+			if a.name == "har" || a.flag == "har" {
+				t.Fatalf("the network tool exposes `har`, which RFC-0017 deliberately withholds: an MCP client cannot use a path on the server's disk")
+			}
+		}
+		return
+	}
+	t.Fatal("the network tool was not found in the registry")
+}
