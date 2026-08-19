@@ -6,23 +6,21 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
-Branch: [PR #31](https://github.com/sanketsudake/chrome-cdp-cli/pull/31).
+PR: [#31](https://github.com/sanketsudake/chrome-cdp-cli/pull/31).
 
 ### Added
 
-- `--endpoint <url>` — attach to an explicit `ws://` or `http://` debug endpoint.
-  An explicit endpoint never falls back to a managed launch, and a TLS scheme (`wss://`/`https://`) is refused rather than silently ignored.
-  Frozen into `session`'s and a recipe run's per-step defaults, and into the MCP runner's per-call defaults, so a batch never drifts endpoints mid-run.
-  `CHROME_CDP_ENDPOINT` / the `endpoint` config key thread the same value through the daemon.
+- `--endpoint <url>` — attach to an explicit `ws://` or `http://` debug endpoint, wired through `CHROME_CDP_ENDPOINT` / the `endpoint` config key and the daemon.
 - Chromium-family browser detection — Chrome, Chromium, Brave, Edge, Vivaldi, and Arc `DevToolsActivePort` files are found automatically; `CHROME_CDP_BROWSER_BIN` (`browser_bin` config key) launches a different browser for the managed fallback.
 - Windows release target — `windows/amd64` and `windows/arm64` zip archives, and the short test suite now runs on `windows-latest` in CI.
 - `chrome-cdp skill` verb — serves the embedded `drive-chrome-cdp` agent skill (`--full` for the complete text, a short stub otherwise) so an agent can fetch the skill without a separate install step.
   Two scenario skills (`check-logged-in`, `fill-grid-and-confirm`) and their evals ship alongside it.
 - `--session <name>` / `CHROME_CDP_SESSION` — namespaces the sticky current tab, so several agents can share one Chrome without stealing each other's tab (see [Several agents, one Chrome](docs/cli-reference.md#several-agents-one-chrome)).
+  Connection flags (`--endpoint`, `--port`, `--profile-dir`, `--session` itself) are frozen into `session`'s per-line defaults for the whole batch, so a stdin line with none of its own doesn't silently reset to the config default mid-batch.
 - `screenshot --annotate` — numbered reference markers with a legend in the envelope ([RFC-0016](docs/rfc/0016-screenshot-annotate.md)).
 - `net --har` — exports retained requests as a HAR 1.2 file ([RFC-0017](docs/rfc/0017-har-export.md)).
 - `dialog status|accept|dismiss` — act on a native dialog already on screen ([RFC-0018](docs/rfc/0018-dialog-verb.md)).
-- `storage local|session` — read, write, and clear `localStorage`/`sessionStorage` ([RFC-0019](docs/rfc/0019-web-storage.md); in progress on this branch).
+- `storage local|session` — read, write, and clear `localStorage`/`sessionStorage` ([RFC-0019](docs/rfc/0019-web-storage.md)).
 - npm shim `@sanketsudake/chrome-cdp` — `npx @sanketsudake/chrome-cdp` / `npm i -g` downloads the matching release binary, with version validation and temp-file cleanup on every path.
 - README positioning section and explicit non-goals, contrasting `chrome-cdp` with agent-browser, chrome-devtools-mcp, and Playwright-style tools.
 
@@ -34,9 +32,8 @@ Branch: [PR #31](https://github.com/sanketsudake/chrome-cdp-cli/pull/31).
 ### Fixed
 
 - A malformed `endpoint` config value is dropped instead of bricking the CLI.
-- `--by cell` ranks candidates by grid distance, re-resolves a replaced node instead of failing on a stale one, and the `key` result names the cover element and reports `focused_id`.
-- Grid-cell addressing, an empty-selector usage error, and stale-daemon visibility were corrected.
-- The RFC 6455 accept-key GUID was fixed so every attach can complete its WebSocket handshake.
+- An explicit `--endpoint` never falls back to a managed launch, and a TLS scheme (`wss://`/`https://`) is refused rather than silently accepted.
+- `--endpoint` is frozen into the MCP runner's per-call defaults and a recipe run's per-step defaults, so neither re-entrant command tree silently resets it to the config/env default mid-batch.
 
 ## [0.2.2] - 2026-08-16
 
