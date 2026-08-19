@@ -144,6 +144,15 @@ type CDP struct {
 	rec          map[string]*recorder
 	recMaxFrames int
 	recMaxBytes  int
+
+	// The native dialog retained per tab (RFC-0018): the last
+	// Page.javascriptDialogOpening this connection received and has not yet
+	// seen javascriptDialogClosed. It lives here, on the object that holds the
+	// connection, for the same reason console/net/record do — a per-command
+	// process cannot retain an event it was not running to receive. See
+	// dialog.go.
+	dialogMu sync.Mutex
+	dialogs  map[string]dialogState
 }
 
 // tabConn is a cached per-tab context and its cancel func.
@@ -155,8 +164,9 @@ type tabConn struct {
 func newCDP(managed bool, alloc context.Context, allocCancel context.CancelFunc, base context.Context, baseCancel context.CancelFunc) *CDP {
 	c := &CDP{
 		managed: managed, alloc: alloc, allocCancel: allocCancel, base: base, baseCancel: baseCancel,
-		tabs: map[string]tabConn{},
-		rec:  map[string]*recorder{},
+		tabs:    map[string]tabConn{},
+		rec:     map[string]*recorder{},
+		dialogs: map[string]dialogState{},
 	}
 	// Capture is on from the start, at the built-in bounds; Connect resizes it
 	// from the config before the first attach.

@@ -519,6 +519,20 @@ type Browser interface {
 	// already-buffered records first so a request that landed between the action
 	// and the wait is not missed.
 	NetWait(ctx context.Context, targetID string, cond NetCond) (map[string]any, error)
+	// DialogStatus reports the native JavaScript dialog (alert / confirm /
+	// prompt / beforeunload) open on a tab, from the opening event this
+	// connection retained (RFC-0018). It never talks to the renderer, which is
+	// blocked for as long as the dialog is up; on a tab this connection had not
+	// attached it attaches (and so starts retaining) and says in `note` that it
+	// could not have seen an earlier dialog.
+	DialogStatus(ctx context.Context, targetID string) (map[string]any, error)
+	// DialogHandle closes that dialog — accept (OK / confirm true / prompt
+	// text / leave the page) or dismiss — with Page.handleJavaScriptDialog, the
+	// one command that works while the renderer is blocked. text answers a
+	// prompt and is ignored for the other types. ErrNoDialog when nothing is
+	// retained as open: the command is NOT issued blind, because to a session
+	// that did not see the dialog open it hangs instead of failing.
+	DialogHandle(ctx context.Context, targetID string, accept bool, text string) (map[string]any, error)
 	CookieList(ctx context.Context, targetID string) (any, error)
 	CookieSet(ctx context.Context, targetID, name, value, domain, path string) (map[string]any, error)
 	CookieDelete(ctx context.Context, targetID, name string) (map[string]any, error)

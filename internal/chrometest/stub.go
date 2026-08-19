@@ -207,6 +207,22 @@ func (StubBrowser) NetStream(context.Context, string, chrome.NetOpts, func(any) 
 func (StubBrowser) NetWait(context.Context, string, chrome.NetCond) (map[string]any, error) {
 	return map[string]any{"matched": false}, nil
 }
+
+// DialogStatus and DialogHandle default to a permissive success shape, like
+// every other StubBrowser method: a stub whose default is a FAILURE shape
+// would make every test that does not care about dialogs look like the "none"
+// case, and that case is an error (ErrNoDialog) a test overrides to produce
+// (RFC-0018).
+func (StubBrowser) DialogStatus(context.Context, string) (map[string]any, error) {
+	return map[string]any{"open": false}, nil
+}
+func (StubBrowser) DialogHandle(_ context.Context, _ string, accept bool, _ string) (map[string]any, error) {
+	action := "dismiss"
+	if accept {
+		action = "accept"
+	}
+	return map[string]any{"handled": true, "action": action, "type": "confirm", "message": "stub"}, nil
+}
 func (StubBrowser) Raw(context.Context, string, string, json.RawMessage) (any, error) {
 	return map[string]any{}, nil
 }

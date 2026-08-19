@@ -146,6 +146,10 @@ var verbClass = map[string]Class{
 	"attr get":      Reading,
 	"attr list":     Reading,
 	"cookie list":   Reading,
+	// dialog status observes what is on screen; accept/dismiss change what the
+	// page's script sees next (confirm()'s return value is page state, and a
+	// beforeunload accept navigates) — RFC-0018.
+	"dialog status": Reading,
 
 	// Mutating.
 	"open":         Mutating, // checked against the DESTINATION origin
@@ -178,6 +182,8 @@ var verbClass = map[string]Class{
 	"emulate geo":      Mutating,
 	"emulate reset":    Mutating,
 	"upload":           Mutating, // RFC-0006; classified ahead of the verb landing
+	"dialog accept":    Mutating, // RFC-0018
+	"dialog dismiss":   Mutating, // RFC-0018
 }
 
 // Classify returns a verb's class and whether it was declared in the table.

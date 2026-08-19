@@ -4,6 +4,7 @@ import (
 	"context"
 	"net"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -213,6 +214,74 @@ func TestStopRespondsWhileBusy(t *testing.T) {
 	}
 	if d := time.Since(start); d > 3*time.Second {
 		t.Errorf("Stop took %v; it blocked behind the busy action instead of responding", d)
+	}
+}
+
+// dialogArgsBrowser records the arguments DialogHandle crossed the RPC with.
+type dialogArgsBrowser struct {
+	chrometest.StubBrowser
+	mu     sync.Mutex
+	accept bool
+	text   string
+}
+
+func (b *dialogArgsBrowser) DialogHandle(_ context.Context, _ string, accept bool, text string) (map[string]any, error) {
+	b.mu.Lock()
+	b.accept, b.text = accept, text
+	b.mu.Unlock()
+	return map[string]any{"handled": true, "action": "accept"}, nil
+}
+
+// TestDialogHandleArgsCrossTheRPC is RFC-0018 VS-14 (RPC half): accept and
+// text reach DialogHandle unchanged through the daemon's dispatch/argStr/
+// argBool decoding, not just through the in-process interface.
+func TestDialogHandleArgsCrossTheRPC(t *testing.T) {
+	sock := filepath.Join(t.TempDir(), "d.sock")
+	ln, err := net.Listen("unix", sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b := &dialogArgsBrowser{}
+	go Serve(ln, b, time.Minute)
+	t.Cleanup(func() { _ = ln.Close() })
+
+	if _, err := Remote(&Client{path: sock}).DialogHandle(context.Background(), "aa11", true, "bob"); err != nil {
+		t.Fatalf("DialogHandle: %v", err)
+	}
+	b.mu.Lock()
+	accept, text := b.accept, b.text
+	b.mu.Unlock()
+	if !accept || text != "bob" {
+		t.Errorf("DialogHandle crossed the RPC as (%v, %q), want (true, \"bob\")", accept, text)
+	}
+}
+
+// TestDialogHandleRespondsWhileBusy is RFC-0018 VS-14 (mutex-bypass half),
+// the gateBrowser pattern of TestStopRespondsWhileBusy: DialogHandle exists to
+// unblock a tab another call has wedged, so it must answer even while a slow
+// action (an unguarded click behind a confirm(), simulated here by a blocked
+// Eval) holds the dispatch mutex.
+func TestDialogHandleRespondsWhileBusy(t *testing.T) {
+	sock := filepath.Join(t.TempDir(), "d.sock")
+	ln, err := net.Listen("unix", sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	g := &gateBrowser{entered: make(chan struct{}), release: make(chan struct{})}
+	go Serve(ln, g, time.Minute)
+	t.Cleanup(func() { close(g.release); _ = ln.Close() })
+
+	// Occupy the dispatch mutex with a long-running Eval, the way a wedged
+	// click's Input.dispatchMouseEvent would.
+	go func() { _, _ = Remote(&Client{path: sock}).Eval(context.Background(), "x", "y", chrome.EvalOpts{}) }()
+	<-g.entered // Eval now holds the mutex
+
+	start := time.Now()
+	if _, err := Remote(&Client{path: sock}).DialogHandle(context.Background(), "aa11", true, ""); err != nil {
+		t.Fatalf("DialogHandle while busy: %v", err)
+	}
+	if d := time.Since(start); d > 1*time.Second {
+		t.Errorf("DialogHandle took %v; it blocked behind the busy action instead of responding", d)
 	}
 }
 

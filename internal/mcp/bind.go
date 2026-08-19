@@ -302,6 +302,18 @@ func (b boundBrowser) NetWait(ctx context.Context, targetID string, cond chrome.
 	return b.Browser.NetWait(ctx, targetID, cond)
 }
 
+func (b boundBrowser) DialogStatus(ctx context.Context, targetID string) (map[string]any, error) {
+	ctx, cancel := b.bind(ctx)
+	defer cancel()
+	return b.Browser.DialogStatus(ctx, targetID)
+}
+
+func (b boundBrowser) DialogHandle(ctx context.Context, targetID string, accept bool, text string) (map[string]any, error) {
+	ctx, cancel := b.bind(ctx)
+	defer cancel()
+	return b.Browser.DialogHandle(ctx, targetID, accept, text)
+}
+
 func (b boundBrowser) CookieList(ctx context.Context, targetID string) (any, error) {
 	ctx, cancel := b.bind(ctx)
 	defer cancel()

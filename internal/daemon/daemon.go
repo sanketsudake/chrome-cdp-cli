@@ -150,10 +150,37 @@ func (s *server) handle(conn net.Conn) {
 		finishStream(conn, serr)
 		return
 	}
+	// DialogStatus/DialogHandle exist to unblock a tab another call has
+	// wedged — an unguarded click whose Input.dispatchMouseEvent is waiting on
+	// a native dialog holds s.mu for up to its deadline, and a `dialog accept`
+	// queued behind that mutex could never reach the command that unblocks it.
+	// Bypassing the mutex here is safe for the same reason the stream path is
+	// (see isStreamMethod): DialogStatus touches no CDP and only reads a map
+	// under its own mutex, DialogHandle issues exactly the one CDP command
+	// withDialog already issues from a goroutine concurrently with a running
+	// action, and the attach either may trigger is serialised by the CDP
+	// object's own mutex — chromedp targets are safe for concurrent use.
+	if bypassesDispatchMutex(req.Method) {
+		res, err := s.dispatch(ctx, req.Method, req.Args)
+		reply(conn, res, err)
+		return
+	}
 	s.mu.Lock()
 	res, err := s.dispatch(ctx, req.Method, req.Args)
 	s.mu.Unlock()
 	reply(conn, res, err)
+}
+
+// bypassesDispatchMutex reports whether a method must answer even while a slow
+// action holds s.mu, the way __stop already does above. It is DialogStatus and
+// DialogHandle (RFC-0018) — see the comment in handle for why bypassing the
+// mutex is safe for exactly these two.
+func bypassesDispatchMutex(method string) bool {
+	switch method {
+	case "DialogStatus", "DialogHandle":
+		return true
+	}
+	return false
 }
 
 // defaultStreamPing is how often a live stream reports itself to the idle timer.
@@ -376,6 +403,10 @@ func (s *server) dispatch(ctx context.Context, method string, args []json.RawMes
 		return b.Net(ctx, argStr(args, 0), argNet(args, 1))
 	case "NetWait":
 		return b.NetWait(ctx, argStr(args, 0), argNetCond(args, 1))
+	case "DialogStatus":
+		return b.DialogStatus(ctx, argStr(args, 0))
+	case "DialogHandle":
+		return b.DialogHandle(ctx, argStr(args, 0), argBool(args, 1), argStr(args, 2))
 	case "NetStream":
 		// Reachable over the RPC, but via streamDispatch — a unary call has
 		// nowhere to put the emitted values.
@@ -830,6 +861,14 @@ func (r *remoteBrowser) NetStream(ctx context.Context, id string, opts chrome.Ne
 func (r *remoteBrowser) NetWait(ctx context.Context, id string, cond chrome.NetCond) (map[string]any, error) {
 	var out map[string]any
 	return out, r.c.call(ctx, "NetWait", &out, id, cond)
+}
+func (r *remoteBrowser) DialogStatus(ctx context.Context, id string) (map[string]any, error) {
+	var out map[string]any
+	return out, r.c.call(ctx, "DialogStatus", &out, id)
+}
+func (r *remoteBrowser) DialogHandle(ctx context.Context, id string, accept bool, text string) (map[string]any, error) {
+	var out map[string]any
+	return out, r.c.call(ctx, "DialogHandle", &out, id, accept, text)
 }
 func (r *remoteBrowser) PDF(ctx context.Context, id string, opts chrome.PDFOpts) ([]byte, map[string]any, error) {
 	var out captureResult

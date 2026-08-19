@@ -127,19 +127,24 @@ func tabsTool() *tool {
 	return &tool{
 		name:  prefix + "tabs",
 		title: "Tabs",
-		desc: "Tab and window surface in the user's real Chrome: list open tabs, open a new one, set the sticky current tab, close tabs, foreground one, or report/resize the browser window.\n\n" +
+		desc: "Tab and window surface in the user's real Chrome: list open tabs, open a new one, set the sticky current tab, close tabs, foreground one, report/resize the browser window, or inspect/close a native dialog already on screen.\n\n" +
 			"Start here. `action: \"list\"` gives every tab with an `idx` (@N), id, title and URL; `action: \"use\"` then pins one as the current tab so later calls need no `target`. " +
 			"`action: \"activate\"` foregrounds a tab, which is the fix when a read reports `tab_hidden`: Chrome throttles the accessibility tree on a backgrounded tab, so name/ref/cell addressing stalls there. " +
-			"`action: \"window_size\"` resizes the REAL window (not viewport emulation), which is what makes a screenshot's pixel coordinates reproducible across runs — set it before a coordinate workflow.",
+			"`action: \"window_size\"` resizes the REAL window (not viewport emulation), which is what makes a screenshot's pixel coordinates reproducible across runs — set it before a coordinate workflow. " +
+			"`action: \"dialog_status\"`/`\"dialog_accept\"`/`\"dialog_dismiss\"` are the remedy when a call reports `target_timeout` behind a native alert/confirm/prompt: they answer and close it from the connection that was already watching, without touching the blocked renderer.",
 		disc: "action",
 		actions: map[string]string{
 			"list": "list", "open": "open", "use": "use", "close": "close", "activate": "activate",
 			"window_info": "window info", "window_size": "window size",
+			"dialog_status": "dialog status", "dialog_accept": "dialog accept", "dialog_dismiss": "dialog dismiss",
 		},
-		verbs: []string{"list", "open", "use", "close", "activate", "window info", "window size"},
+		verbs: []string{"list", "open", "use", "close", "activate", "window info", "window size",
+			"dialog status", "dialog accept", "dialog dismiss"},
 		args: concat([]arg{
-			{name: "action", typ: "string", required: true, enum: []string{"list", "open", "use", "close", "activate", "window_info", "window_size"},
-				desc: "list: every open tab. open: open `url` in a new tab and make it current. use: make `target` the sticky current tab. close: close `target` (or every tab matching `url`/`title` with `all`). activate: foreground `target`. window_info: report the real window's bounds. window_size: resize the real window to `width` x `height`."},
+			{name: "action", typ: "string", required: true,
+				enum: []string{"list", "open", "use", "close", "activate", "window_info", "window_size",
+					"dialog_status", "dialog_accept", "dialog_dismiss"},
+				desc: "list: every open tab. open: open `url` in a new tab and make it current. use: make `target` the sticky current tab. close: close `target` (or every tab matching `url`/`title` with `all`). activate: foreground `target`. window_info: report the real window's bounds. window_size: resize the real window to `width` x `height`. dialog_status: report the native dialog open on `target`, or open:false. dialog_accept: close it as OK would (answers a prompt with `text`, or \"\" when omitted). dialog_dismiss: close it as Cancel would."},
 			{name: "width", typ: "integer", desc: "action=\"window_size\": target width in CSS pixels."},
 			{name: "height", typ: "integer", desc: "action=\"window_size\": target height in CSS pixels."},
 			{name: "url", typ: "string", flag: "url",
@@ -148,12 +153,15 @@ func tabsTool() *tool {
 				desc: "with action=\"list\"/\"close\": only tabs whose title contains this substring."},
 			{name: "all", typ: "boolean", flag: "all",
 				desc: "with action=\"close\": close every matching tab (required when more than one matches)."},
+			{name: "text", typ: "string", pos: true,
+				desc: "with action=\"dialog_accept\": answers a prompt() with this text; ignored for alert/confirm/beforeunload."},
 		}, targetArgs()),
 		build: func(c *call) (string, []string, []string, error) {
 			action := c.str("action")
 			if err := c.only(action, map[string][]string{
 				"all": {"close"}, "title": {"list", "close"}, "url": {"open", "list", "close"},
 				"width": {"window_size"}, "height": {"window_size"},
+				"text": {"dialog_accept"},
 			}); err != nil {
 				return "", nil, nil, err
 			}
@@ -184,6 +192,14 @@ func tabsTool() *tool {
 					pos = append(pos, c.str("target"))
 				}
 				return action, c.flags("action", "target"), pos, nil
+			case "dialog_status", "dialog_dismiss":
+				return "dialog " + strings.TrimPrefix(action, "dialog_"), c.flags("action", "target"), nil, nil
+			case "dialog_accept":
+				var pos []string
+				if c.has("text") {
+					pos = append(pos, c.str("text"))
+				}
+				return "dialog accept", c.flags("action", "target", "text"), pos, nil
 			}
 			return "", nil, nil, usagef("unknown tabs action %q", action)
 		},

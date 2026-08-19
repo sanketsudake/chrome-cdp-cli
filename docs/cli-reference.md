@@ -51,7 +51,7 @@ These apply to every command.
 | `--nth <n>` | — | with `--by name`: pick the Nth (1-based) match |
 | `--match <mode>` | `exact` | with `--by name`: `exact` \| `contains` \| `regex` |
 | `--in-row <text>` | — | with `--by name`: scope to the table row whose text contains this |
-| `--on-dialog <policy>` | — | on click/type/fill: `accept` \| `dismiss` a native dialog raised during the action |
+| `--on-dialog <policy>` | — | on click/type/fill: `accept` \| `dismiss` a native dialog raised during the action (a dialog already up is [`dialog`](#native-dialogs), not this) |
 | `--pierce` | off | reach into shadow DOM / iframes (via DevTools search) |
 | `--no-daemon` | off | connect directly instead of via the shared daemon |
 | `--no-launch` | off | don't auto-launch a fallback Chrome |
@@ -519,6 +519,38 @@ chrome-cdp wait --request "/api/save" --status 2xx # confirm the write actually 
 `--idle` and `--request` answer different questions.
 `--idle` is "the page settled"; `--request` is "this specific call finished with this outcome", which is the sharper tool on a page whose polling or long-lived stream never lets the network go quiet.
 
+### Native dialogs
+
+A native `alert`/`confirm`/`prompt`/`beforeunload` blocks the tab's renderer for as long as it is up: every `eval`, DOM read and screenshot hangs until it closes.
+`dialog` inspects and closes one that is **already on screen** — the recovery for an unguarded `click` that opened a `confirm()` and timed out — which `--on-dialog` cannot help with, because it only handles a dialog the action it decorates itself opens.
+
+```sh
+chrome-cdp dialog status                      # {"open":true,"type":"confirm","message":"Delete 3 items?",…}
+chrome-cdp dialog accept                      # confirm() -> true; the blocked click completes
+chrome-cdp dialog accept "Quarterly report"   # prompt() -> "Quarterly report"
+chrome-cdp dialog dismiss                     # confirm() -> false / prompt() -> null / beforeunload stays
+```
+
+| Subcommand | Args | Purpose |
+|------------|------|---------|
+| `dialog status` | none | report the dialog open on the target tab, or `open: false` |
+| `dialog accept [text]` | at most one | close it as OK would; `text` answers a `prompt()` (`""` when omitted — **not** the prompt's default) and is ignored for the other types |
+| `dialog dismiss` | none | close it as Cancel would |
+
+`status` answers from an event the connection **retained when the dialog opened**, without sending the browser any CDP traffic; `accept`/`dismiss` issue the one command that still works while the renderer is blocked, `Page.handleJavaScriptDialog`.
+**Both work while the page is blocked** — status because it never talks to the renderer, and accept/dismiss because that one command is exactly the unblocker, so a `dialog accept` in another terminal completes even while a wedged `click` is still waiting out its own deadline in the first.
+
+The retention is the design, and it bounds what `dialog` can see: a dialog is only visible to CDP if a connection with the `Page` domain enabled was attached to the tab **when it opened**.
+With the daemon (the default), a tab is watched from the first command that touches it, so the normal flow — navigate, click, timeout, `dialog accept` — is covered throughout.
+The first `dialog status` on a tab the daemon has never touched cannot know about an earlier dialog and says so once, with a `note`; every call after that is fully watched.
+
+**`--no-daemon` has only partial coverage**, the same shape as [`console`](#console): every invocation is a fresh attach, so `dialog status` always answers `open: false` with the note and `dialog accept`/`dismiss` always refuse with `target_not_found` — unless the commands run inside one [`session`](#batch-mode), where the connection lives across lines and a dialog opened by an earlier line is retained for a later one.
+
+`dialog status` with nothing open is **not an error**: exit 0, `open: false` — so "check, then act" needs no error handling for the normal case.
+`dialog accept`/`dismiss` with nothing retained is `target_not_found` (exit 4) with `error.dialog: "none"` — well-formed, but the thing to act on is not there, so re-read the state rather than fixing the command.
+`dialog status` result: `open`, and when `open` is true also `type` (`alert`\|`confirm`\|`prompt`\|`beforeunload`), `message`, `default_prompt`, `frame_url` (the frame that opened it — an iframe's dialog is not the tab's own URL), `opened_at`.
+`dialog accept`/`dismiss` result: `handled: true`, `action`, `type`, `message`, and — for a `prompt` accepted with text — `text`, or `text_ignored: true` when text was given to a dialog with no input.
+
 ### Console
 
 `console` reads what the page said: `console.*` output and uncaught exceptions, with their stack.
@@ -850,7 +882,7 @@ Names are prefixed `chrome_cdp_` so they stay unambiguous in clients that flatte
 
 | Tool | Wraps | Notes |
 |------|-------|-------|
-| `chrome_cdp_tabs` | `list`, `open`, `use`, `close`, `activate` | one `action` argument |
+| `chrome_cdp_tabs` | `list`, `open`, `use`, `close`, `activate`, `window info`/`size`, `dialog status`/`accept`/`dismiss` | one `action` argument; `--read-only` keeps `dialog_status` and drops `dialog_accept`/`dialog_dismiss` |
 | `chrome_cdp_navigate` | `nav`, including back/forward/reload | |
 | `chrome_cdp_snapshot` | `snap` | the primary read |
 | `chrome_cdp_read` | `text`, `html`, `value`, `grid` | one `kind` argument |
@@ -1283,8 +1315,8 @@ Use `--policy-off` to run while you fix it.
 
 | Verb class | Checked against |
 |-----------|-----------------|
-| Acting (`click`, `type`, `fill`, `select`, `scroll`, `key`, pointer verbs, `upload`, `attr set/rm`, `cookie set/rm/clear`, `headers`, `emulate`, `eval`, `raw`) | `allow`/`deny`, `read_only`, `verbs_denied` |
-| Reading (`snap`, `text`, `html`, `value`, `grid`, `screenshot`, `pdf`, `frame`, `wait`, `attr get/list`, `cookie list`) | `allow`/`deny`, `verbs_denied` |
+| Acting (`click`, `type`, `fill`, `select`, `scroll`, `key`, pointer verbs, `upload`, `attr set/rm`, `cookie set/rm/clear`, `headers`, `emulate`, `eval`, `raw`, `dialog accept`/`dismiss`) | `allow`/`deny`, `read_only`, `verbs_denied` |
+| Reading (`snap`, `text`, `html`, `value`, `grid`, `screenshot`, `pdf`, `frame`, `wait`, `attr get/list`, `cookie list`, `dialog status`) | `allow`/`deny`, `verbs_denied` |
 | Navigating (`nav <url>`, `open`) | the **destination** origin, before navigating |
 | Tabs and meta (`list`, `use`, `close`, `activate`, `version`, `session`, `recipe run`, …) | `verbs_denied` only; no origin check, and every envelope's `target`, and every tab `list` or an ambiguous `close` enumerates, is reduced to a bare origin with no full URL and no title when the policy does not cover it |
 

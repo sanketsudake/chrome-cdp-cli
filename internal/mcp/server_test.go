@@ -294,6 +294,7 @@ func TestArgumentValidation(t *testing.T) {
 		{"unknown action", prefix + "tabs", map[string]any{"action": "explode"}, "is not one of"},
 		{"drag option on hover", prefix + "pointer", map[string]any{"action": "hover", "selector": "#x", "steps": 3}, "applies to action"},
 		{"value without selector", prefix + "read", map[string]any{"kind": "value"}, "needs `selector`"},
+		{"text on dialog_status", prefix + "tabs", map[string]any{"action": "dialog_status", "text": "x"}, "applies to"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -351,6 +352,17 @@ func TestReadOnlyHidesMutatingTools(t *testing.T) {
 		for _, want := range []string{"list", "use", "activate"} {
 			if !contains(enum, want) {
 				t.Errorf("--read-only dropped tabs action=%s: %v", want, enum)
+			}
+		}
+		// RFC-0018 VS-15: dialog_status observes, so --read-only keeps it;
+		// dialog_accept/dialog_dismiss change what the page's script sees
+		// next, so they go the way action=open does.
+		if !contains(enum, "dialog_status") {
+			t.Errorf("--read-only dropped tabs action=dialog_status: %v", enum)
+		}
+		for _, mutating := range []string{"dialog_accept", "dialog_dismiss"} {
+			if contains(enum, mutating) {
+				t.Errorf("--read-only still offers tabs action=%s: %v", mutating, enum)
 			}
 		}
 	}
@@ -641,6 +653,47 @@ func TestArgvMirrorsTheCLISpelling(t *testing.T) {
 			got := append([]string{verb}, pos...)
 			if strings.Join(got, "\x00") != strings.Join(c.want, "\x00") {
 				t.Fatalf("argv = %v, want the verb %q and the positionals %v after `--`", argv, c.want[0], c.want[1:])
+			}
+		})
+	}
+}
+
+// TestTabsToolBuildsDialogVerbs is RFC-0018 VS-15 (build half): dialog_status,
+// dialog_accept (with its text answering a prompt) and dialog_dismiss fold
+// into the tabs tool's two-word verb spelling, which splitAtDash's
+// single-word check cannot see — so this asserts on the full argv instead.
+func TestTabsToolBuildsDialogVerbs(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		args map[string]any
+		// seqs are contiguous runs argv must contain, checked independently —
+		// the verb and the positional are not adjacent once --json is spliced
+		// between them by argvFor.
+		seqs [][]string
+	}{
+		{"dialog_status", map[string]any{"action": "dialog_status"}, [][]string{{"dialog", "status"}}},
+		{"dialog_accept with text", map[string]any{"action": "dialog_accept", "text": "bob"},
+			[][]string{{"dialog", "accept"}, {"--", "bob"}}},
+		{"dialog_accept without text", map[string]any{"action": "dialog_accept"}, [][]string{{"dialog", "accept"}}},
+		{"dialog_dismiss", map[string]any{"action": "dialog_dismiss"}, [][]string{{"dialog", "dismiss"}}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			r := &fakeRunner{}
+			sess := connect(t, r, Options{Tools: SetFull})
+			if out := callTool(t, sess, prefix+"tabs", c.args); out.IsError {
+				t.Fatalf("call failed: %v", structured(t, out))
+			}
+			argv := r.argv(0)
+			if argv[0] != "dialog" {
+				t.Errorf("argv = %v, want it to start with \"dialog\"", argv)
+			}
+			for _, seq := range c.seqs {
+				if !containsSeq(argv, seq...) {
+					t.Errorf("argv = %v, want it to contain %v", argv, seq)
+				}
 			}
 		})
 	}

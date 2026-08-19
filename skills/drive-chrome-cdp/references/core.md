@@ -221,6 +221,8 @@ Policy is how a run is bounded to the app it's meant to drive: a configured `[po
 - **Verify after acting** — re-`snap`/`grid`/`list`, or `wait --text`, to confirm; don't assume.
 - **Avoid native dialogs** (`alert`/`confirm`/`prompt`): they block CDP.
   In-page app modals are fine.
+  `dialog status` tells you whether a native alert/confirm/prompt is blocking the page right now, and `dialog accept|dismiss` clears it if so — the recovery when a command times out behind one you didn't guard.
+  `--on-dialog` still auto-handles a dialog an action itself opens; `dialog` is for one that is already up.
 - **What you capture is the user's real data.**
   `record` exports, screenshots, and `net --headers`/`--body` output show their logged-in session; `net` redacts credential-shaped values by default — leave `--no-redact` alone, and review any capture before it leaves the machine.
 - A live debug endpoint is full control of that Chrome — loopback-only, and the consent dialog/banner are never suppressed.

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	cdplog "github.com/chromedp/cdproto/log"
+	"github.com/chromedp/cdproto/page"
 	cdpruntime "github.com/chromedp/cdproto/runtime"
 	"github.com/chromedp/chromedp"
 
@@ -144,6 +145,7 @@ func (c *CDP) listenCapture(tctx context.Context, id string) {
 	c.listenConsole(tctx, id)
 	c.listenNet(tctx, id)
 	c.startRecordCapture(tctx, id)
+	c.listenDialog(tctx, id)
 }
 
 // enableCapture turns the CDP domains on after the attach.
@@ -162,6 +164,11 @@ func (c *CDP) enableCapture(tctx context.Context, id string) {
 	defer cancel()
 	_ = chromedp.Run(ectx, consoleEnable()...)
 	_ = chromedp.Run(ectx, netEnable(c.netMaxBody)...)
+	// chromedp's own attach already enables Page; this is the same idempotent
+	// belt enableCapture already documents for Runtime/Log/Network, so
+	// listenDialog's javascriptDialogOpening fires even if a future chromedp
+	// stops enabling it itself (RFC-0018).
+	_ = chromedp.Run(ectx, chromedp.ActionFunc(func(actx context.Context) error { return page.Enable().Do(actx) }))
 }
 
 // listenConsole retains console output and uncaught exceptions for a tab.
