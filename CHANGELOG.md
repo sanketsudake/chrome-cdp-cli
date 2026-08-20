@@ -6,6 +6,15 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-08-20
+
+### Fixed
+
+- npm install of `@sanketsudake/chrome-cdp@0.3.0` always failed with `Cannot access 'FETCH_TIMEOUT_MS' before initialization` and fell back to the brew/go-install hint.
+  The postinstall script starts `main()` while the module is still evaluating, so the download timeout constant — declared below that point — was in the temporal dead zone by the time the download began.
+  The constant now sits with the other module-level constants, and two tests run `install.js` as a script rather than requiring it, which is why the released suite was green against a broken package.
+  The 0.3.0 binaries, archives and Homebrew cask were unaffected; only the npm package was.
+
 ## [0.3.0] - 2026-08-20
 
 PR: [#31](https://github.com/sanketsudake/chrome-cdp-cli/pull/31).
@@ -52,7 +61,8 @@ PR: [#31](https://github.com/sanketsudake/chrome-cdp-cli/pull/31).
 
 Baseline tagged release; see [Releases](https://github.com/sanketsudake/chrome-cdp-cli/releases) for the full history up to this point.
 
-[Unreleased]: https://github.com/sanketsudake/chrome-cdp-cli/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/sanketsudake/chrome-cdp-cli/compare/v0.3.1...HEAD
+[0.3.1]: https://github.com/sanketsudake/chrome-cdp-cli/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/sanketsudake/chrome-cdp-cli/compare/v0.2.2...v0.3.0
 [0.2.2]: https://github.com/sanketsudake/chrome-cdp-cli/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/sanketsudake/chrome-cdp-cli/compare/v0.2.0...v0.2.1
