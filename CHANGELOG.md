@@ -21,7 +21,7 @@ PR: [#31](https://github.com/sanketsudake/chrome-cdp-cli/pull/31).
 - `net --har` — exports retained requests as a HAR 1.2 file ([RFC-0017](docs/rfc/0017-har-export.md)).
 - `dialog status|accept|dismiss` — act on a native dialog already on screen ([RFC-0018](docs/rfc/0018-dialog-verb.md)).
 - `storage local|session` — read, write, and clear `localStorage`/`sessionStorage` ([RFC-0019](docs/rfc/0019-web-storage.md)).
-- npm shim `@sanketsudake/chrome-cdp` — `npx @sanketsudake/chrome-cdp` / `npm i -g` downloads the matching release binary, with version validation and temp-file cleanup on every path.
+- npm shim `@sanketsudake/chrome-cdp` — `npx @sanketsudake/chrome-cdp` / `npm i -g` downloads the matching release binary, with strict version validation, a download timeout, staged-file and temp-file cleanup on every path, and a documented trust model.
 - README positioning section and explicit non-goals, contrasting `chrome-cdp` with agent-browser, chrome-devtools-mcp, and Playwright-style tools.
 
 ### Fixed

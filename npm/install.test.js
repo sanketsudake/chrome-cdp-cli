@@ -3,12 +3,18 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const crypto = require("node:crypto");
+const fs = require("node:fs");
+const os = require("node:os");
+const path = require("node:path");
+const net = require("node:net");
 
 const {
   assetName,
   releaseURL,
   verifyChecksum,
   validateVersion,
+  stageAndInstall,
+  fetchBuffer,
 } = require("./install.js");
 
 test("assetName: darwin/arm64", () => {
@@ -109,6 +115,90 @@ test("validateVersion: rejects a missing version", () => {
 test("validateVersion: rejects a non-semver string", () => {
   assert.throws(() => validateVersion("latest"), /invalid version/);
   assert.throws(() => validateVersion("v1.2.3"), /invalid version/);
+});
+
+test("validateVersion: accepts a semver with a build-metadata suffix", () => {
+  assert.equal(validateVersion("1.2.3+build.5"), "1.2.3+build.5");
+});
+
+test("validateVersion: accepts a semver with prerelease and build suffixes", () => {
+  assert.equal(validateVersion("1.2.3-rc.1+build.5"), "1.2.3-rc.1+build.5");
+});
+
+test("validateVersion: accepts a simple prerelease suffix", () => {
+  assert.equal(validateVersion("1.2.3-rc.1"), "1.2.3-rc.1");
+});
+
+test("validateVersion: rejects a path-traversal suffix smuggled after the version", () => {
+  assert.throws(
+    () => validateVersion("1.2.3-evil/../../x"),
+    /invalid version/,
+  );
+});
+
+test("validateVersion: rejects trailing garbage after a valid semver", () => {
+  assert.throws(() => validateVersion("1.2.3abc"), /invalid version/);
+  assert.throws(() => validateVersion("1.2.3 extra"), /invalid version/);
+  assert.throws(() => validateVersion("1.2.3/../etc"), /invalid version/);
+});
+
+test("stageAndInstall: copies, chmods, and atomically renames on success", () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "chrome-cdp-test-"));
+  try {
+    const extractedPath = path.join(tmpDir, "source-binary");
+    fs.writeFileSync(extractedPath, "binary contents");
+    const destPath = path.join(tmpDir, "chrome-cdp");
+
+    stageAndInstall(extractedPath, destPath);
+
+    assert.equal(fs.readFileSync(destPath, "utf8"), "binary contents");
+    assert.equal(fs.existsSync(`${destPath}.new`), false);
+    if (process.platform !== "win32") {
+      assert.equal(fs.statSync(destPath).mode & 0o777, 0o755);
+    }
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test("stageAndInstall: removes the staged .new file when rename fails", () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "chrome-cdp-test-"));
+  try {
+    const extractedPath = path.join(tmpDir, "source-binary");
+    fs.writeFileSync(extractedPath, "binary contents");
+
+    // destPath is an existing directory, so renameSync(stagingPath, destPath)
+    // fails (EISDIR/ENOTEMPTY) after the .new file has already been staged —
+    // simulating a chmod/rename failure post-staging.
+    const destPath = path.join(tmpDir, "chrome-cdp");
+    fs.mkdirSync(destPath);
+
+    assert.throws(() => stageAndInstall(extractedPath, destPath));
+
+    assert.equal(fs.existsSync(`${destPath}.new`), false);
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test("fetchBuffer: rejects with a clear error when the connection hangs", async () => {
+  // A plain TCP server that accepts the connection but never speaks TLS
+  // back: the request never gets a response, so this exercises the same
+  // hang fetchBuffer's timeout is meant to bound.
+  const server = net.createServer((socket) => {
+    socket.on("error", () => {}); // ignore the reset once we destroy it below
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const { port } = server.address();
+
+  try {
+    await assert.rejects(
+      () => fetchBuffer(`https://127.0.0.1:${port}/asset`, 0, 200),
+      /timed out after 200ms/,
+    );
+  } finally {
+    server.close();
+  }
 });
 
 test("releaseURL: shape", () => {

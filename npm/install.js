@@ -54,7 +54,7 @@ function validateVersion(version) {
       `package.json version is unset (${version}); cannot resolve a release`,
     );
   }
-  if (!/^\d+\.\d+\.\d+/.test(version)) {
+  if (!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/.test(version)) {
     throw new Error(`invalid version: ${version}`);
   }
   return version;
@@ -82,7 +82,14 @@ function verifyChecksum(buffer, checksumsTxt, asset) {
   return true;
 }
 
-module.exports = { assetName, releaseURL, verifyChecksum, validateVersion };
+module.exports = {
+  assetName,
+  releaseURL,
+  verifyChecksum,
+  validateVersion,
+  stageAndInstall,
+  fetchBuffer,
+};
 
 // Everything below only runs when this file is executed directly
 // (postinstall), never when required as a test dependency.
@@ -137,16 +144,8 @@ async function main() {
       throw new Error(`${binaryName} not found in downloaded archive`);
     }
 
-    // Stage the new binary in binDir (same filesystem as the destination),
-    // then rename it into place last. rename() is atomic within a
-    // filesystem, so a failure at any earlier step — bad extraction,
-    // missing binary — leaves the previously installed binary (if any)
-    // untouched rather than a half-copied file.
     const destPath = path.join(binDir, binaryName);
-    const stagingPath = `${destPath}.new`;
-    fs.copyFileSync(extractedPath, stagingPath);
-    fs.chmodSync(stagingPath, 0o755);
-    fs.renameSync(stagingPath, destPath);
+    stageAndInstall(extractedPath, destPath);
 
     console.log(`Installed ${binaryName} (${version}) to ${destPath}`);
   } finally {
@@ -187,6 +186,29 @@ function extractArchive(archivePath, destDir) {
   }
 }
 
+/**
+ * Stage `extractedPath` next to `destPath` as `<destPath>.new` (same
+ * filesystem as the destination), make it executable, then rename it into
+ * place last. rename() is atomic within a filesystem, so a failure at any
+ * earlier step — bad extraction, missing binary — leaves the previously
+ * installed binary (if any) untouched rather than a half-copied file.
+ *
+ * If chmod or rename fails after the .new file is staged, it would
+ * otherwise be orphaned in binDir (outside tmpDir, so the caller's
+ * tmpDir cleanup won't touch it); this removes it before rethrowing.
+ */
+function stageAndInstall(extractedPath, destPath) {
+  const stagingPath = `${destPath}.new`;
+  fs.copyFileSync(extractedPath, stagingPath);
+  try {
+    fs.chmodSync(stagingPath, 0o755);
+    fs.renameSync(stagingPath, destPath);
+  } catch (err) {
+    fs.rmSync(stagingPath, { force: true });
+    throw err;
+  }
+}
+
 /** Depth-first search for a file named `name` under `dir`. */
 function findBinary(dir, name) {
   for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
@@ -201,32 +223,75 @@ function findBinary(dir, name) {
   return null;
 }
 
-/** Fetch a URL into a Buffer, following up to 5 redirects. */
-function fetchBuffer(url, redirects = 5) {
+const FETCH_TIMEOUT_MS = 60_000;
+
+/**
+ * Fetch a URL into a Buffer, following up to 5 redirects. Aborts and
+ * rejects with a clear error if no response completes within timeoutMs
+ * (default FETCH_TIMEOUT_MS), so a hung connection can't hang
+ * `npm install` forever. timeoutMs is only overridden by tests.
+ */
+function fetchBuffer(url, redirects = 5, timeoutMs = FETCH_TIMEOUT_MS) {
   return new Promise((resolve, reject) => {
-    https
-      .get(url, { headers: { "User-Agent": "chrome-cdp-npm-installer" } }, (res) => {
-        if (
-          res.statusCode >= 300 &&
-          res.statusCode < 400 &&
-          res.headers.location &&
-          redirects > 0
-        ) {
-          res.resume();
-          resolve(fetchBuffer(res.headers.location, redirects - 1));
+    const controller = new AbortController();
+    const timer = setTimeout(() => {
+      controller.abort();
+    }, timeoutMs);
+
+    const req = https
+      .get(
+        url,
+        {
+          headers: { "User-Agent": "chrome-cdp-npm-installer" },
+          signal: controller.signal,
+        },
+        (res) => {
+          if (
+            res.statusCode >= 300 &&
+            res.statusCode < 400 &&
+            res.headers.location &&
+            redirects > 0
+          ) {
+            res.resume();
+            clearTimeout(timer);
+            resolve(fetchBuffer(res.headers.location, redirects - 1, timeoutMs));
+            return;
+          }
+          if (res.statusCode !== 200) {
+            res.resume();
+            clearTimeout(timer);
+            reject(new Error(`GET ${url} failed: ${res.statusCode}`));
+            return;
+          }
+          const chunks = [];
+          res.on("data", (c) => chunks.push(c));
+          res.on("end", () => {
+            clearTimeout(timer);
+            resolve(Buffer.concat(chunks));
+          });
+          res.on("error", (err) => {
+            clearTimeout(timer);
+            if (controller.signal.aborted) {
+              reject(
+                new Error(`GET ${url} timed out after ${timeoutMs}ms`),
+              );
+              return;
+            }
+            reject(err);
+          });
+        },
+      )
+      .on("error", (err) => {
+        clearTimeout(timer);
+        if (controller.signal.aborted) {
+          reject(
+            new Error(`GET ${url} timed out after ${timeoutMs}ms`),
+          );
           return;
         }
-        if (res.statusCode !== 200) {
-          res.resume();
-          reject(new Error(`GET ${url} failed: ${res.statusCode}`));
-          return;
-        }
-        const chunks = [];
-        res.on("data", (c) => chunks.push(c));
-        res.on("end", () => resolve(Buffer.concat(chunks)));
-        res.on("error", reject);
-      })
-      .on("error", reject);
+        reject(err);
+      });
+    req.on("close", () => clearTimeout(timer));
   });
 }
 
