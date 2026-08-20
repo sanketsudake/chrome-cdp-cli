@@ -33,6 +33,7 @@ import (
 	"fmt"
 	"image"
 	"image/color"
+	"image/draw"
 	"image/gif"
 	"image/jpeg" // decodes a screencast frame; encodes a jpeg --annotate export
 	"image/png"
@@ -664,6 +665,14 @@ func encodeVideo(canvas []*image.RGBA, f Format, fps float64) ([]byte, error) {
 // enough to find in a screenshot, small enough not to hide what was clicked.
 const markRadius = 9
 
+// markRed and markWhite are the marker's disc-and-ring colours, shared by
+// drawMarks (recording pointer marks) and AnnotateImage (screenshot labels)
+// so both draw the identical marker.
+var (
+	markRed   = color.RGBA{R: 0xE1, G: 0x1D, B: 0x48, A: 0xFF}
+	markWhite = color.RGBA{R: 0xFF, G: 0xFF, B: 0xFF, A: 0xFF}
+)
+
 // drawMarks composites the position markers for one frame.
 //
 // A marker is a red disc inside a white ring: two contrasting colours, because
@@ -699,16 +708,14 @@ func drawMarks(dst *image.RGBA, f Frame, src image.Image, pl placement) bool {
 	r := int(math.Round(markRadius * math.Min(kx, ky)))
 	r = max(r, 3)
 
-	red := color.RGBA{R: 0xE1, G: 0x1D, B: 0x48, A: 0xFF}
-	white := color.RGBA{R: 0xFF, G: 0xFF, B: 0xFF, A: 0xFF}
 	drew := false
 	for _, m := range f.Marks {
 		cx := pl.x + int(math.Round(m.X*kx))
 		cy := pl.y + int(math.Round(m.Y*ky))
-		if disc(dst, cx, cy, r+2, white) {
+		if disc(dst, cx, cy, r+2, markWhite) {
 			drew = true
 		}
-		disc(dst, cx, cy, r, red)
+		disc(dst, cx, cy, r, markRed)
 	}
 	return drew
 }
@@ -761,11 +768,7 @@ func AnnotateImage(data []byte, format string, quality int, cssW, cssH float64, 
 	}
 	b := src.Bounds()
 	dst := image.NewRGBA(image.Rect(0, 0, b.Dx(), b.Dy()))
-	for y := 0; y < b.Dy(); y++ {
-		for x := 0; x < b.Dx(); x++ {
-			dst.Set(x, y, src.At(b.Min.X+x, b.Min.Y+y))
-		}
-	}
+	draw.Draw(dst, dst.Bounds(), src, b.Min, draw.Src)
 
 	// CSS pixels -> canvas pixels, the same mapping drawMarks uses (kx, ky
 	// there), so a screenshot label and a recording's pointer mark scale
@@ -779,9 +782,6 @@ func AnnotateImage(data []byte, format string, quality int, cssW, cssH float64, 
 	}
 	r := max(int(math.Round(markRadius*math.Min(kx, ky))), 3)
 
-	red := color.RGBA{R: 0xE1, G: 0x1D, B: 0x48, A: 0xFF}
-	white := color.RGBA{R: 0xFF, G: 0xFF, B: 0xFF, A: 0xFF}
-
 	drawn := make([]bool, len(labels))
 	db := dst.Bounds()
 	for i, l := range labels {
@@ -790,9 +790,9 @@ func AnnotateImage(data []byte, format string, quality int, cssW, cssH float64, 
 		if cx < db.Min.X || cx >= db.Max.X || cy < db.Min.Y || cy >= db.Max.Y {
 			continue
 		}
-		ring := disc(dst, cx, cy, r+2, white)
-		disc(dst, cx, cy, r, red)
-		badge := drawBadge(dst, cx, cy, r, l.N, red, white)
+		ring := disc(dst, cx, cy, r+2, markWhite)
+		disc(dst, cx, cy, r, markRed)
+		badge := drawBadge(dst, cx, cy, r, l.N, markRed, markWhite)
 		drawn[i] = ring || badge
 	}
 

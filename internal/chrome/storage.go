@@ -12,7 +12,6 @@ import (
 	"sort"
 
 	"github.com/chromedp/cdproto/domstorage"
-	"github.com/chromedp/cdproto/page"
 	"github.com/chromedp/chromedp"
 
 	"github.com/sanketsudake/chrome-cdp-cli/internal/eventbuf"
@@ -71,12 +70,8 @@ func (c *CDP) storageID(ctx context.Context, id, scope string) (*domstorage.Stor
 	if err != nil {
 		return nil, "", err
 	}
-	var tree *page.FrameTree
-	if err := c.run(ctx, id, chromedp.ActionFunc(func(ctx context.Context) error {
-		var e error
-		tree, e = page.GetFrameTree().Do(ctx)
-		return e
-	})); err != nil {
+	tree, err := c.frameTree(ctx, id)
+	if err != nil {
 		return nil, "", err
 	}
 	if tree == nil || tree.Frame == nil {
@@ -89,6 +84,20 @@ func (c *CDP) storageID(ctx context.Context, id, scope string) (*domstorage.Stor
 	return &domstorage.StorageID{SecurityOrigin: origin, IsLocalStorage: isLocal}, origin, nil
 }
 
+// storageItems fetches every (key, value) pair in one storage area, the
+// getDOMStorageItems round trip StorageList and StorageGet both need.
+func (c *CDP) storageItems(ctx context.Context, id string, sid *domstorage.StorageID) ([]domstorage.Item, error) {
+	var entries []domstorage.Item
+	if err := c.run(ctx, id, chromedp.ActionFunc(func(ctx context.Context) error {
+		var e error
+		entries, e = domstorage.GetDOMStorageItems(sid).Do(ctx)
+		return e
+	})); err != nil {
+		return nil, err
+	}
+	return entries, nil
+}
+
 // StorageList reads every key in one storage area of the tab's top frame
 // (RFC-0019), sorted by key, redacted and size-capped per opts.
 func (c *CDP) StorageList(ctx context.Context, id, scope string, opts StorageListOpts) (map[string]any, error) {
@@ -96,12 +105,8 @@ func (c *CDP) StorageList(ctx context.Context, id, scope string, opts StorageLis
 	if err != nil {
 		return nil, err
 	}
-	var entries []domstorage.Item
-	if err := c.run(ctx, id, chromedp.ActionFunc(func(ctx context.Context) error {
-		var e error
-		entries, e = domstorage.GetDOMStorageItems(sid).Do(ctx)
-		return e
-	})); err != nil {
+	entries, err := c.storageItems(ctx, id, sid)
+	if err != nil {
 		return nil, err
 	}
 	return storageListResult(origin, scope, entries, opts), nil
@@ -115,12 +120,8 @@ func (c *CDP) StorageGet(ctx context.Context, id, scope, key string) (map[string
 	if err != nil {
 		return nil, err
 	}
-	var entries []domstorage.Item
-	if err := c.run(ctx, id, chromedp.ActionFunc(func(ctx context.Context) error {
-		var e error
-		entries, e = domstorage.GetDOMStorageItems(sid).Do(ctx)
-		return e
-	})); err != nil {
+	entries, err := c.storageItems(ctx, id, sid)
+	if err != nil {
 		return nil, err
 	}
 	for _, e := range entries {

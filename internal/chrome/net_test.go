@@ -656,9 +656,6 @@ func TestRenderCarriesStartedAt(t *testing.T) {
 	}
 }
 
-// TestRenderRowDecodesIntoNetEntry is VS-11: render's map and encode.NetEntry
-// must agree field for field, because DecodeNetEntries is a JSON round trip
-// with no place to catch a drifted key name except this test.
 // netEntryJSONTags returns the JSON tag names encode.NetEntry declares, so a
 // render key with no matching field — renamed, mistagged, or newly added on
 // one side only — is caught structurally rather than only when some test

@@ -27,9 +27,12 @@ func (a *App) cmdSkill() *cobra.Command {
 			"one (a reference, a skill, or `<skill>/<reference>`).",
 		Args: cobra.NoArgs,
 		RunE: func(*cobra.Command, []string) error {
-			content, err := skills.Core()
+			var content []byte
+			var err error
 			if full {
 				content, err = skills.Full()
+			} else {
+				content, err = skills.Core()
 			}
 			if err != nil {
 				// A read failure here is the embedded FS misbehaving, not a

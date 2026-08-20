@@ -16,7 +16,7 @@ import (
 // flags, positional key and value, the family name as the envelope's command.
 //
 // The group itself is RUNNABLE, with a RunE that emits `usage` for a bad or
-// missing scope, so `storage`, `storage lcoal list` and the like are exit 2
+// missing scope, so `storage`, `storage local list` and the like are exit 2
 // before Chrome is ever touched. A non-runnable group is cobra's default and
 // prints help to stdout with exit 0 (what `cookie foo` still does today) —
 // which breaks the one-envelope and exit-code contract at exactly the point a

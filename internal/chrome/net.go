@@ -15,6 +15,7 @@ import (
 	"github.com/chromedp/cdproto/network"
 	"github.com/chromedp/chromedp"
 
+	"github.com/sanketsudake/chrome-cdp-cli/internal/encode"
 	"github.com/sanketsudake/chrome-cdp-cli/internal/eventbuf"
 )
 
@@ -787,7 +788,7 @@ func (r netRecord) render(opts NetOpts, body netBody) map[string]any {
 	if r.HasStart {
 		// RFC-0017: an absolute instant HAR requires and the listing's own
 		// started_ms (relative to a per-tab epoch) cannot supply.
-		out["started_at"] = r.Started.UTC().Format("2006-01-02T15:04:05.000Z07:00")
+		out["started_at"] = r.Started.UTC().Format(encode.HARTimeLayout)
 	}
 	if d := r.durationMs(); d >= 0 {
 		out["duration_ms"] = d

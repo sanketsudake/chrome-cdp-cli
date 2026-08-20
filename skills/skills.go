@@ -61,16 +61,25 @@ func Full() ([]byte, error) {
 	return out, nil
 }
 
-// Reference returns one reference file's content by name (without ".md").
-func Reference(name string) ([]byte, error) {
+// readNamed reads path under an escape guard on name, shared by Reference and
+// Skill: both take a bare name from the caller (never a path), reject
+// anything that could climb out of the embedded FS, and report the same
+// "unknown <noun> %q" whether the guard or the read itself is what failed —
+// a caller must not learn from the error whether the name was well-formed.
+func readNamed(name, path, noun string) ([]byte, error) {
 	if strings.ContainsAny(name, "/\\.") {
-		return nil, fmt.Errorf("unknown reference %q", name)
+		return nil, fmt.Errorf("unknown %s %q", noun, name)
 	}
-	b, err := FS.ReadFile(dir + "/references/" + name + ".md")
+	b, err := FS.ReadFile(path)
 	if err != nil {
-		return nil, fmt.Errorf("unknown reference %q", name)
+		return nil, fmt.Errorf("unknown %s %q", noun, name)
 	}
 	return normalizeLineEndings(b), nil
+}
+
+// Reference returns one reference file's content by name (without ".md").
+func Reference(name string) ([]byte, error) {
+	return readNamed(name, dir+"/references/"+name+".md", "reference")
 }
 
 // References returns every reference name, sorted.
@@ -104,12 +113,5 @@ func Skills() []string {
 
 // Skill returns one skill's SKILL.md content by directory name.
 func Skill(name string) ([]byte, error) {
-	if strings.ContainsAny(name, "/\\.") {
-		return nil, fmt.Errorf("unknown skill %q", name)
-	}
-	b, err := FS.ReadFile(name + "/SKILL.md")
-	if err != nil {
-		return nil, fmt.Errorf("unknown skill %q", name)
-	}
-	return normalizeLineEndings(b), nil
+	return readNamed(name, name+"/SKILL.md", "skill")
 }

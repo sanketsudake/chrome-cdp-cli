@@ -63,10 +63,10 @@ type HAROpts struct {
 	Now     time.Time
 }
 
-// harTimeLayout is the RFC 3339 UTC, millisecond-precision layout both
+// HARTimeLayout is the RFC 3339 UTC, millisecond-precision layout both
 // `started_at` (RFC-0017) and this encoder's fallback use, so a fallback
 // timestamp is indistinguishable in shape from one filled from a real row.
-const harTimeLayout = "2006-01-02T15:04:05.000Z07:00"
+const HARTimeLayout = "2006-01-02T15:04:05.000Z07:00"
 
 // harNVP is one name/value pair, the shape HAR uses for headers, cookies and
 // query-string parameters.
@@ -207,7 +207,7 @@ func HAR(entries []NetEntry, opts HAROpts) ([]byte, error) {
 func harBuildEntry(e NetEntry, now time.Time) harEntry {
 	started, startUnknown := e.StartedAt, false
 	if started == "" {
-		started, startUnknown = now.UTC().Format(harTimeLayout), true
+		started, startUnknown = now.UTC().Format(HARTimeLayout), true
 	}
 
 	var timeMs int64

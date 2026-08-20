@@ -71,6 +71,18 @@ func endpointSource(explicit string, port int, ep browser.Endpoint) string {
 	}
 }
 
+// stampEndpointDiag adds the endpoint_source and browser_bin diagnostics to m
+// when they are known, the same two fields runDoctor reports on every outcome
+// (the connection error, the probed result, and the --no-probe result).
+func (a *App) stampEndpointDiag(m map[string]any, src string) {
+	if src != "" {
+		m["endpoint_source"] = src
+	}
+	if a.defaults.BrowserBin != "" {
+		m["browser_bin"] = a.defaults.BrowserBin
+	}
+}
+
 func (a *App) runDoctor(noProbe bool) {
 	// VS-6. A running daemon has already been through the whole ladder and holds
 	// the connection; re-probing here would raise a second consent request for an
@@ -89,12 +101,7 @@ func (a *App) runDoctor(noProbe bool) {
 	src := endpointSource(a.endpoint, a.port, ep)
 	if ep.Err != nil {
 		details := map[string]any{"state": browser.WSRefused.String(), "port_file": ep.PortFile}
-		if src != "" {
-			details["endpoint_source"] = src
-		}
-		if a.defaults.BrowserBin != "" {
-			details["browser_bin"] = a.defaults.BrowserBin
-		}
+		a.stampEndpointDiag(details, src)
 		a.emitErr("doctor", result.CodeConnection,
 			"the DevToolsActivePort file is unreadable ("+ep.Err.Error()+") — "+browser.EnableAdvice,
 			details)
@@ -110,23 +117,13 @@ func (a *App) runDoctor(noProbe bool) {
 	if ep.PortFile != "" {
 		base["port_file"] = ep.PortFile
 	}
-	if src != "" {
-		base["endpoint_source"] = src
-	}
-	if a.defaults.BrowserBin != "" {
-		base["browser_bin"] = a.defaults.BrowserBin
-	}
+	a.stampEndpointDiag(base, src)
 	if noProbe {
 		res := map[string]any{
 			"endpoint": ep.URL, "port_file": ep.PortFile, "via": "port-file", "probed": false, "state": stateUnverified,
 			"status": "an endpoint was found, but --no-probe means nothing was verified — a stale port file looks exactly like this",
 		}
-		if src != "" {
-			res["endpoint_source"] = src
-		}
-		if a.defaults.BrowserBin != "" {
-			res["browser_bin"] = a.defaults.BrowserBin
-		}
+		a.stampEndpointDiag(res, src)
 		a.emitOK("doctor", nil, res)
 		return
 	}

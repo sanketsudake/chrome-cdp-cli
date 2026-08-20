@@ -154,26 +154,42 @@ func (nf *netFlags) harUsageErr(harSet bool) *result.Err {
 // in that case, so the likely cause of a late failure is removed up front;
 // without --clear the stat-only check is enough, as the RFC specifies.
 func checkHarTarget(path string, clear bool) *result.Err {
-	generic := func(format string, args ...any) *result.Err {
-		return &result.Err{Code: result.CodeGeneric, Message: fmt.Sprintf(format, args...)}
-	}
 	if fi, err := os.Stat(path); err == nil && fi.IsDir() {
-		return generic("cannot write the HAR to %q: it is a directory", path)
+		return genericErr("cannot write the HAR to %q: it is a directory", path)
 	}
 	dir := filepath.Dir(path)
 	fi, err := os.Stat(dir)
 	if err != nil {
-		return generic("cannot write the HAR to %q: %v", path, err)
+		return genericErr("cannot write the HAR to %q: %v", path, err)
 	}
 	if !fi.IsDir() {
-		return generic("cannot write the HAR to %q: %q is not a directory", path, dir)
+		return genericErr("cannot write the HAR to %q: %q is not a directory", path, dir)
 	}
 	if !clear {
 		return nil
 	}
-	f, err := os.CreateTemp(dir, ".chrome-cdp-har-*")
+	if err := probeWritable(dir, ".chrome-cdp-har-*"); err != nil {
+		return genericErr("cannot write the HAR to %q: %v (--clear drops the buffer before the write — retry with a writable path)", path, err)
+	}
+	return nil
+}
+
+// genericErr is the CodeGeneric *result.Err both checkHarTarget and
+// writeNetHar build for an outcome that depends on the environment (a bad
+// path, a write failure), not the form of the invocation.
+func genericErr(format string, args ...any) *result.Err {
+	return &result.Err{Code: result.CodeGeneric, Message: fmt.Sprintf(format, args...)}
+}
+
+// probeWritable checks that dir is actually writable by creating a file in it
+// (a CreateTemp'd name matching pattern), then removing it — the permission
+// bits alone do not answer the question on every platform or filesystem.
+// checkHarTarget and record.go's checkExportTarget both probe this way and
+// wrap the error in their own message.
+func probeWritable(dir, pattern string) error {
+	f, err := os.CreateTemp(dir, pattern)
 	if err != nil {
-		return generic("cannot write the HAR to %q: %v (--clear drops the buffer before the write — retry with a writable path)", path, err)
+		return err
 	}
 	name := f.Name()
 	_ = f.Close()
@@ -405,26 +421,23 @@ var netHarSummaryPassthrough = []string{"pending", "buffered", "dropped", "trunc
 // they do for the listing) and after checkHarTarget (so the browser was
 // never contacted over a bad path).
 func writeNetHar(res any, path string, opts chrome.NetOpts) (map[string]any, *result.Err) {
-	generic := func(format string, args ...any) *result.Err {
-		return &result.Err{Code: result.CodeGeneric, Message: fmt.Sprintf(format, args...)}
-	}
 	m, ok := res.(map[string]any)
 	if !ok {
-		return nil, generic("the network read returned an unexpected shape")
+		return nil, genericErr("the network read returned an unexpected shape")
 	}
 	entries, err := encode.DecodeNetEntries(m["requests"])
 	if err != nil {
-		return nil, generic("%s", err.Error())
+		return nil, genericErr("%s", err.Error())
 	}
 	data, err := encode.HAR(entries, encode.HAROpts{Version: Version, Now: time.Now()})
 	if err != nil {
-		return nil, generic("%s", err.Error())
+		return nil, genericErr("%s", err.Error())
 	}
 	// The user named the path; an existing file is overwritten, as `record`
 	// and `screenshot -o` already do. 0600, not 0644: a HAR is a record of the
 	// user's logged-in session and, with --no-redact, holds live credentials.
 	if err := os.WriteFile(path, data, 0o600); err != nil {
-		return nil, generic("%s", err.Error())
+		return nil, genericErr("%s", err.Error())
 	}
 	truncatedBodies := 0
 	for _, e := range entries {

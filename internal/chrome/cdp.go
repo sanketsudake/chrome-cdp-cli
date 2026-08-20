@@ -1613,14 +1613,24 @@ func (c *CDP) EmulateReset(ctx context.Context, id string) (map[string]any, erro
 	return map[string]any{"reset": true}, nil
 }
 
-// Frames enumerates the tab's frame tree (Page.getFrameTree).
-func (c *CDP) Frames(ctx context.Context, id string) (any, error) {
+// frameTree fetches the tab's frame tree (Page.getFrameTree), the one round
+// trip Frames and storage.go's storageID both need.
+func (c *CDP) frameTree(ctx context.Context, id string) (*page.FrameTree, error) {
 	var tree *page.FrameTree
 	err := c.run(ctx, id, chromedp.ActionFunc(func(ctx context.Context) error {
 		var e error
 		tree, e = page.GetFrameTree().Do(ctx)
 		return e
 	}))
+	if err != nil {
+		return nil, err
+	}
+	return tree, nil
+}
+
+// Frames enumerates the tab's frame tree (Page.getFrameTree).
+func (c *CDP) Frames(ctx context.Context, id string) (any, error) {
+	tree, err := c.frameTree(ctx, id)
 	if err != nil {
 		return nil, err
 	}

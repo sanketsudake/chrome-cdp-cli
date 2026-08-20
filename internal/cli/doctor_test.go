@@ -318,10 +318,11 @@ func TestDoctorEndpointGarbageIsUsage(t *testing.T) {
 		t.Fatalf("exit = %d, want %d (usage): %s", code, result.ExitUsage, out.String())
 	}
 	var env map[string]any
-	if err := json.Unmarshal(out.Bytes(), &env); err == nil {
-		if got := doctorErrCode(env); got != result.CodeUsage {
-			t.Errorf("error.code = %q, want %q", got, result.CodeUsage)
-		}
+	if err := json.Unmarshal(out.Bytes(), &env); err != nil {
+		t.Fatalf("stdout is not one JSON value: %v\n%s", err, out.String())
+	}
+	if got := doctorErrCode(env); got != result.CodeUsage {
+		t.Errorf("error.code = %q, want %q", got, result.CodeUsage)
 	}
 }
 

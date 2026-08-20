@@ -313,13 +313,9 @@ func checkExportTarget(o exportOpts) error {
 		}
 		dir = filepath.Dir(o.out)
 	}
-	f, err := os.CreateTemp(dir, ".chrome-cdp-record-*")
-	if err != nil {
+	if err := probeWritable(dir, ".chrome-cdp-record-*"); err != nil {
 		return fmt.Errorf("cannot write the recording to %q: %w (the recording is untouched — retry with a writable path)", dir, err)
 	}
-	name := f.Name()
-	_ = f.Close()
-	_ = os.Remove(name)
 	return nil
 }
 

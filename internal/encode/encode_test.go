@@ -313,8 +313,6 @@ func TestAnnotationScalesPageCoordinates(t *testing.T) {
 // outside the canvas draws nothing at all, and a jpeg request decodes as jpeg.
 func TestDrawLabels(t *testing.T) {
 	t.Parallel()
-	markRed := color.RGBA{R: 0xE1, G: 0x1D, B: 0x48, A: 0xFF}
-
 	t.Run("disc at centre, badge nearby, both reported drawn", func(t *testing.T) {
 		t.Parallel()
 		src := solidPNG(t, 200, 150, green)
@@ -326,8 +324,11 @@ func TestDrawLabels(t *testing.T) {
 			t.Fatalf("drawn = %v, want [true]", drawn)
 		}
 		img := decodePNG(t, out)
-		if got := rgbaAt(img, 100, 75); got != markRed {
-			t.Errorf("centre pixel = %v, want the marker red %v", got, markRed)
+		// Pinned as a literal on purpose: asserting against the package's
+		// markRed would auto-pass if the palette ever changed by accident.
+		wantRed := color.RGBA{R: 0xE1, G: 0x1D, B: 0x48, A: 0xFF}
+		if got := rgbaAt(img, 100, 75); got != wantRed {
+			t.Errorf("centre pixel = %v, want the marker red %v", got, wantRed)
 		}
 		// The badge sits at the disc's upper-right; somewhere in that quadrant,
 		// close to the disc, a white border pixel must exist.

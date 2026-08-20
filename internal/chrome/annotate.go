@@ -155,7 +155,6 @@ func collectAnnotateLabels(pctx context.Context, clip Rect, imgW, imgH int) (lab
 		return nil, truncated, false
 	}
 
-	n := 0
 	for _, node := range cands {
 		if pctx.Err() != nil {
 			// The pass ran out of time partway through. Returning what was
@@ -184,9 +183,8 @@ func collectAnnotateLabels(pctx context.Context, clip Rect, imgW, imgH int) (lab
 		if imgX < 0 || imgX >= imgW || imgY < 0 || imgY >= imgH {
 			continue // outside the captured clip (US-3)
 		}
-		n++
 		labels = append(labels, annotateLabel{
-			n: n, ref: axRef(node), role: axString(node.Role), name: axString(node.Name),
+			n: len(labels) + 1, ref: axRef(node), role: axString(node.Role), name: axString(node.Name),
 			states:   axStates(node),
 			cssX:     pageX - clip.X,
 			cssY:     pageY - clip.Y,
