@@ -3,6 +3,8 @@ package mcp
 import (
 	"strings"
 	"testing"
+
+	"github.com/sanketsudake/chrome-cdp-cli/internal/policy"
 )
 
 // RFC-0011 Open Question 4 and RFC-0004's tool table both exclude `record` from
@@ -33,6 +35,48 @@ func TestRecordAndRecipeAreNotExposed(t *testing.T) {
 			if why, bad := withheld[root]; bad {
 				t.Errorf("tool %q exposes the %q verb, which is deliberately withheld: %s", tl.name, v, why)
 			}
+		}
+	}
+}
+
+// TestNetworkToolDoesNotExposeHar is RFC-0017's stated intent (Design notes,
+// "Policy and MCP"): an MCP client is on the other side of a protocol from
+// the server's disk, so a path in the response is unusable to it. `--har` has
+// no inline form, unlike `screenshot`'s `output`, which is an ALSO beside the
+// image returned inline — so the registry, an explicit allow-list, simply
+// never gets a `har` argument added to it.
+func TestNetworkToolDoesNotExposeHar(t *testing.T) {
+	t.Parallel()
+	for _, tl := range registry() {
+		if tl.name != prefix+"network" {
+			continue
+		}
+		for _, a := range tl.args {
+			if a.name == "har" || a.flag == "har" {
+				t.Fatalf("the network tool exposes `har`, which RFC-0017 deliberately withholds: an MCP client cannot use a path on the server's disk")
+			}
+		}
+		return
+	}
+	t.Fatal("the network tool was not found in the registry")
+}
+
+// TestStorageActionsShareClassAcrossScopes is RFC-0019 VS-16/VS-17: the
+// storage tool's `actions` map names the `local` verb as the representative
+// for --read-only narrowing (its keys are the discriminator's five values),
+// which is only honest if the `session` verb of the same action classifies
+// the same way. Otherwise --read-only would narrow the enum from one scope's
+// classification while the built call ran the other.
+func TestStorageActionsShareClassAcrossScopes(t *testing.T) {
+	t.Parallel()
+	for _, action := range []string{"list", "get", "set", "rm", "clear"} {
+		local, localOK := policy.Classify("storage local " + action)
+		session, sessionOK := policy.Classify("storage session " + action)
+		if !localOK || !sessionOK {
+			t.Fatalf("storage %s: local classified=%v session classified=%v, want both known", action, localOK, sessionOK)
+		}
+		if local != session {
+			t.Errorf("storage local %s classifies as %v but storage session %s classifies as %v; they must agree", action, local, action, session)
 		}
 	}
 }

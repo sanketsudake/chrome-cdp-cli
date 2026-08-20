@@ -120,6 +120,7 @@ func registry() []*tool {
 		evaluateTool(),
 		batchTool(),
 		rawCDPTool(),
+		storageTool(),
 	}
 }
 
@@ -127,19 +128,24 @@ func tabsTool() *tool {
 	return &tool{
 		name:  prefix + "tabs",
 		title: "Tabs",
-		desc: "Tab and window surface in the user's real Chrome: list open tabs, open a new one, set the sticky current tab, close tabs, foreground one, or report/resize the browser window.\n\n" +
+		desc: "Tab and window surface in the user's real Chrome: list open tabs, open a new one, set the sticky current tab, close tabs, foreground one, report/resize the browser window, or inspect/close a native dialog already on screen.\n\n" +
 			"Start here. `action: \"list\"` gives every tab with an `idx` (@N), id, title and URL; `action: \"use\"` then pins one as the current tab so later calls need no `target`. " +
 			"`action: \"activate\"` foregrounds a tab, which is the fix when a read reports `tab_hidden`: Chrome throttles the accessibility tree on a backgrounded tab, so name/ref/cell addressing stalls there. " +
-			"`action: \"window_size\"` resizes the REAL window (not viewport emulation), which is what makes a screenshot's pixel coordinates reproducible across runs — set it before a coordinate workflow.",
+			"`action: \"window_size\"` resizes the REAL window (not viewport emulation), which is what makes a screenshot's pixel coordinates reproducible across runs — set it before a coordinate workflow. " +
+			"`action: \"dialog_status\"`/`\"dialog_accept\"`/`\"dialog_dismiss\"` are the remedy when a call reports `target_timeout` behind a native alert/confirm/prompt: they answer and close it from the connection that was already watching, without touching the blocked renderer.",
 		disc: "action",
 		actions: map[string]string{
 			"list": "list", "open": "open", "use": "use", "close": "close", "activate": "activate",
 			"window_info": "window info", "window_size": "window size",
+			"dialog_status": "dialog status", "dialog_accept": "dialog accept", "dialog_dismiss": "dialog dismiss",
 		},
-		verbs: []string{"list", "open", "use", "close", "activate", "window info", "window size"},
+		verbs: []string{"list", "open", "use", "close", "activate", "window info", "window size",
+			"dialog status", "dialog accept", "dialog dismiss"},
 		args: concat([]arg{
-			{name: "action", typ: "string", required: true, enum: []string{"list", "open", "use", "close", "activate", "window_info", "window_size"},
-				desc: "list: every open tab. open: open `url` in a new tab and make it current. use: make `target` the sticky current tab. close: close `target` (or every tab matching `url`/`title` with `all`). activate: foreground `target`. window_info: report the real window's bounds. window_size: resize the real window to `width` x `height`."},
+			{name: "action", typ: "string", required: true,
+				enum: []string{"list", "open", "use", "close", "activate", "window_info", "window_size",
+					"dialog_status", "dialog_accept", "dialog_dismiss"},
+				desc: "list: every open tab. open: open `url` in a new tab and make it current. use: make `target` the sticky current tab. close: close `target` (or every tab matching `url`/`title` with `all`). activate: foreground `target`. window_info: report the real window's bounds. window_size: resize the real window to `width` x `height`. dialog_status: report the native dialog open on `target`, or open:false. dialog_accept: close it as OK would (answers a prompt with `text`, or \"\" when omitted). dialog_dismiss: close it as Cancel would."},
 			{name: "width", typ: "integer", desc: "action=\"window_size\": target width in CSS pixels."},
 			{name: "height", typ: "integer", desc: "action=\"window_size\": target height in CSS pixels."},
 			{name: "url", typ: "string", flag: "url",
@@ -148,12 +154,15 @@ func tabsTool() *tool {
 				desc: "with action=\"list\"/\"close\": only tabs whose title contains this substring."},
 			{name: "all", typ: "boolean", flag: "all",
 				desc: "with action=\"close\": close every matching tab (required when more than one matches)."},
+			{name: "text", typ: "string", pos: true,
+				desc: "with action=\"dialog_accept\": answers a prompt() with this text; ignored for alert/confirm/beforeunload."},
 		}, targetArgs()),
 		build: func(c *call) (string, []string, []string, error) {
 			action := c.str("action")
 			if err := c.only(action, map[string][]string{
 				"all": {"close"}, "title": {"list", "close"}, "url": {"open", "list", "close"},
 				"width": {"window_size"}, "height": {"window_size"},
+				"text": {"dialog_accept"},
 			}); err != nil {
 				return "", nil, nil, err
 			}
@@ -184,6 +193,14 @@ func tabsTool() *tool {
 					pos = append(pos, c.str("target"))
 				}
 				return action, c.flags("action", "target"), pos, nil
+			case "dialog_status", "dialog_dismiss":
+				return "dialog " + strings.TrimPrefix(action, "dialog_"), c.flags("action", "target"), nil, nil
+			case "dialog_accept":
+				var pos []string
+				if c.has("text") {
+					pos = append(pos, c.str("text"))
+				}
+				return "dialog accept", c.flags("action", "target", "text"), pos, nil
 			}
 			return "", nil, nil, usagef("unknown tabs action %q", action)
 		},
@@ -546,6 +563,8 @@ func screenshotTool() *tool {
 			{name: "quality", typ: "integer", flag: "quality", desc: "compression quality 0-100 (jpeg/webp only; an error with png)."},
 			{name: "scale", typ: "number", flag: "scale", desc: "output scale factor, 0.1-3."},
 			{name: "padding", typ: "number", flag: "padding", desc: "expand an element capture by this many pixels."},
+			{name: "annotate", typ: "boolean", flag: "annotate",
+				desc: "number every actionable element in the captured area and return the legend in `annotations` (ref, role, name, center) — act on one with `by: \"ref\"` or `at`, no second read needed. On a backgrounded tab the labels are skipped (`annotated: false`); activate the tab first. Not with `format: \"webp\"`."},
 			{name: "output", typ: "string", flag: "output", desc: "also write the image to this path; omit to only return it inline."},
 		}, queryArgs(), targetArgs()),
 		build: func(c *call) (string, []string, []string, error) {
@@ -676,6 +695,64 @@ func rawCDPTool() *tool {
 				return "", nil, nil, usagef("raw_cdp needs `method` (or list: true)")
 			}
 			return "raw", c.flags("method", "params"), pos, nil
+		},
+	}
+}
+
+func storageTool() *tool {
+	return &tool{
+		name:  prefix + "storage",
+		title: "Web storage",
+		desc: "Read and write the tab's localStorage / sessionStorage (DOM Storage) of its TOP FRAME, over DevTools' DOMStorage domain — no eval, so it works on a hidden tab and is unaffected by a page that has shadowed window.localStorage.\n\n" +
+			"`action: \"list\"` reports every key, values redacted (the same predicates `net` applies to headers, URL parameters and bodies) and size-capped at `max_value` bytes unless `no_redact`/`max_value: 0` say otherwise; " +
+			"`action: \"get\"` returns one value raw and uncut — the caller named the key, so nothing is withheld — with `present: false` when it is not there. " +
+			"`action: \"set\"`/`\"rm\"`/`\"clear\"` write the area; `clear` removes every key and cannot be undone.\n\n" +
+			"Only exposed under `--tools full` — or with this tool named explicitly in `--tools` — because reading the area a session token lives in is a capability a user opts into, the same reasoning that keeps `raw_cdp`, the other `full`-only tool, out of the default set.",
+		disc: "action",
+		actions: map[string]string{
+			"list": "storage local list", "get": "storage local get", "set": "storage local set",
+			"rm": "storage local rm", "clear": "storage local clear",
+		},
+		verbs: []string{
+			"storage local list", "storage local get", "storage local set", "storage local rm", "storage local clear",
+			"storage session list", "storage session get", "storage session set", "storage session rm", "storage session clear",
+		},
+		full: true,
+		args: concat([]arg{
+			{name: "action", typ: "string", required: true, enum: []string{"list", "get", "set", "rm", "clear"},
+				desc: "which storage operation to run."},
+			{name: "scope", typ: "string", required: true, enum: []string{"local", "session"},
+				desc: "which storage area: local (localStorage) or session (sessionStorage)."},
+			{name: "key", typ: "string", pos: true, desc: "the storage key. Required for get/set/rm; not accepted for list/clear."},
+			{name: "value", typ: "string", pos: true, desc: "the value to store. Required for set; not accepted otherwise."},
+			{name: "no_redact", typ: "boolean", flag: "no-redact", desc: "action=\"list\": do NOT redact credential-shaped keys and values."},
+			{name: "max_value", typ: "integer", flag: "max-value", desc: "action=\"list\": cut each listed value at this many bytes (0 = no cap; default 4096)."},
+		}, targetArgs()),
+		build: func(c *call) (string, []string, []string, error) {
+			action, scope := c.str("action"), c.str("scope")
+			if err := c.only(action, map[string][]string{
+				"no_redact": {"list"}, "max_value": {"list"},
+			}); err != nil {
+				return "", nil, nil, err
+			}
+			var pos []string
+			switch action {
+			case "get", "rm":
+				if !c.has("key") {
+					return "", nil, nil, usagef("storage: action %q needs `key`", action)
+				}
+				pos = []string{c.str("key")}
+			case "set":
+				if !c.has("key") || !c.has("value") {
+					return "", nil, nil, usagef("storage: action \"set\" needs `key` and `value`")
+				}
+				pos = []string{c.str("key"), c.str("value")}
+			case "list", "clear":
+				if c.has("key") || c.has("value") {
+					return "", nil, nil, usagef("storage: action %q takes no `key`/`value`", action)
+				}
+			}
+			return "storage " + scope + " " + action, c.flags("action", "scope", "key", "value"), pos, nil
 		},
 	}
 }

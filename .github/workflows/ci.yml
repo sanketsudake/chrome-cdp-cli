@@ -13,7 +13,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        os: [ubuntu-latest, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -23,7 +23,13 @@ jobs:
           go-version-file: go.mod
           cache: true
 
+      # Skipped on windows: the runner's git checks files out CRLF (no
+      # .gitattributes forcing LF here) and gofmt -l would flag the entire
+      # tree on line endings alone, not real formatting — a false red. The
+      # same bytes are already checked on ubuntu/macos, so this adds no
+      # coverage windows-side.
       - name: gofmt
+        if: runner.os != 'Windows'
         run: |
           unformatted=$(gofmt -l .)
           if [ -n "$unformatted" ]; then
@@ -38,7 +44,15 @@ jobs:
       # ubuntu-latest ships google-chrome-stable, so the live-Chrome integration
       # test runs there; on macOS (no Chrome) it skips itself gracefully.
       - name: Test
+        if: runner.os != 'Windows'
         run: go test -race ./...
+
+      # windows-latest has no cgo toolchain wired for -race, and no Chrome to
+      # run the live suite against, so it gets the short suite only.
+      - name: Test (short)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: go test -short ./...
 
       - name: Build
         run: go build ./...

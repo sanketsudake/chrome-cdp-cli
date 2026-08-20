@@ -34,7 +34,7 @@ import (
 	"image"
 	"image/color"
 	"image/gif"
-	_ "image/jpeg" // registered so a screencast JPEG frame decodes
+	_ "image/jpeg" // registers the decoder image.Decode needs for screencast frames
 	"image/png"
 	"math"
 	"os"
@@ -663,6 +663,14 @@ func encodeVideo(canvas []*image.RGBA, f Format, fps float64) ([]byte, error) {
 // enough to find in a screenshot, small enough not to hide what was clicked.
 const markRadius = 9
 
+// markRed and markWhite are the marker's disc-and-ring colours, shared by
+// drawMarks (recording pointer marks) and AnnotateImage (screenshot labels)
+// so both draw the identical marker.
+var (
+	markRed   = color.RGBA{R: 0xE1, G: 0x1D, B: 0x48, A: 0xFF}
+	markWhite = color.RGBA{R: 0xFF, G: 0xFF, B: 0xFF, A: 0xFF}
+)
+
 // drawMarks composites the position markers for one frame.
 //
 // A marker is a red disc inside a white ring: two contrasting colours, because
@@ -698,16 +706,14 @@ func drawMarks(dst *image.RGBA, f Frame, src image.Image, pl placement) bool {
 	r := int(math.Round(markRadius * math.Min(kx, ky)))
 	r = max(r, 3)
 
-	red := color.RGBA{R: 0xE1, G: 0x1D, B: 0x48, A: 0xFF}
-	white := color.RGBA{R: 0xFF, G: 0xFF, B: 0xFF, A: 0xFF}
 	drew := false
 	for _, m := range f.Marks {
 		cx := pl.x + int(math.Round(m.X*kx))
 		cy := pl.y + int(math.Round(m.Y*ky))
-		if disc(dst, cx, cy, r+2, white) {
+		if disc(dst, cx, cy, r+2, markWhite) {
 			drew = true
 		}
-		disc(dst, cx, cy, r, red)
+		disc(dst, cx, cy, r, markRed)
 	}
 	return drew
 }

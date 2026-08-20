@@ -308,20 +308,8 @@ func (l *mcpLock) restore(a *App) {
 // newMCPRunner freezes the server's connection-shaped flags into the defaults
 // each tool call is parsed with, and returns the runner.
 func (a *App) newMCPRunner() *mcpRunner {
-	// Only connection and output settings are propagated. Selector semantics
-	// (--by, --role, …) belong to the individual tool call, where the client
-	// chose them.
-	if a.timeout > 0 {
-		// Zero means the flags were never parsed (a caller that built the
-		// runner directly); the built-in default stands rather than becoming an
-		// instantly-expired deadline on every call.
-		a.defaults.Timeout = a.timeout
-	}
-	a.defaults.NoLaunch = a.noLaunch
-	a.defaults.NoDaemon = a.noDaemon
-	a.defaults.ProfileDir = a.profileDir
-	a.defaults.Port = a.port
-	a.defaults.JSON = true
+	// The freeze holds for the server's whole life — no restore.
+	a.freezeConnDefaults()
 
 	// From here on every Execute is a tool call, and the policy flags stop
 	// being per-call arguments.

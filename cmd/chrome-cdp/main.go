@@ -27,6 +27,8 @@ func main() {
 		env := config.FromEnv()
 		opts := chrome.Options{
 			PortFile:        os.Getenv("CHROME_CDP_PORT_FILE"),
+			Endpoint:        env.Endpoint,
+			BrowserBin:      env.BrowserBin,
 			ProfileDir:      env.ProfileDir,
 			Port:            env.Port,
 			NoLaunch:        env.NoLaunch,
@@ -54,11 +56,20 @@ func main() {
 	// The endpoint key (and thus the daemon socket + sticky-state file) depends
 	// on the effective --port, which isn't known until cobra parses flags, so it
 	// must be computed per command from the connection options — not once here.
-	socketFor := func(o cli.ConnOpts) string {
-		return daemon.SocketPath(browser.EndpointKey(portFile, o.Port))
+	// keyFor is the ONE derivation every consumer (socket, state, daemon
+	// start/status) goes through, so they can never key to different Chromes.
+	keyFor := func(o cli.ConnOpts) string {
+		return browser.EndpointKey(o.Endpoint, portFile, o.Port)
 	}
+	socketFor := func(o cli.ConnOpts) string {
+		return daemon.SocketPath(keyFor(o))
+	}
+	// stateFor is per-session, socketFor deliberately is not: the daemon
+	// connection and its console/net event buffers are shared across sessions
+	// on the same endpoint by design, and only the sticky current tab is
+	// namespaced.
 	stateFor := func(o cli.ConnOpts) (*state.Store, error) {
-		return state.New(browser.EndpointKey(portFile, o.Port))
+		return state.New(keyFor(o) + sessionSuffix(o.Session))
 	}
 
 	// Resolve persistent defaults (config file + CHROME_CDP_* env); a malformed
@@ -104,6 +115,15 @@ func main() {
 		if o.Port != 0 {
 			env = append(env, "CHROME_CDP_PORT="+strconv.Itoa(o.Port))
 		}
+		if o.Endpoint != "" {
+			env = append(env, "CHROME_CDP_ENDPOINT="+o.Endpoint)
+		}
+		// BrowserBin has no flag — it comes from config/env only — so it is
+		// forwarded from defs the same way the event-capture bounds are below,
+		// not from o.
+		if defs.BrowserBin != "" {
+			env = append(env, "CHROME_CDP_BROWSER_BIN="+defs.BrowserBin)
+		}
 		if o.NoLaunch {
 			env = append(env, "CHROME_CDP_NO_LAUNCH=1")
 		}
@@ -144,7 +164,7 @@ func main() {
 			if _, err := daemon.Ensure(context.Background(), sock, exe, daemonEnv(o), o.ConsentTimeout); err != nil {
 				return nil, err
 			}
-			return map[string]any{"started": true, "socket": sock, "endpoint": browser.EndpointKey(portFile, o.Port)}, nil
+			return map[string]any{"started": true, "socket": sock, "endpoint": keyFor(o)}, nil
 		},
 		func(o cli.ConnOpts) (map[string]any, error) {
 			c := daemon.TryConnect(socketFor(o))
@@ -157,7 +177,7 @@ func main() {
 			return map[string]any{"stopped": true}, nil
 		},
 		func(o cli.ConnOpts) (map[string]any, error) {
-			return daemon.Status(socketFor(o), browser.EndpointKey(portFile, o.Port))
+			return daemon.Status(socketFor(o), keyFor(o))
 		},
 	)
 

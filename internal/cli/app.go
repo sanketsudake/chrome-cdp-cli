@@ -35,23 +35,31 @@ type App struct {
 	noLaunch       bool
 	profileDir     string
 	port           int
-	byFlag         string
-	waitFlag       string
-	roleFlag       string
-	nthFlag        int
-	matchFlag      string
-	inRowFlag      string // --in-row: scope a --by name match to the row whose text contains this
-	onDialog       string // --on-dialog: auto-handle a native dialog opened during an action (accept|dismiss)
-	noWait         bool
-	actWaitText    string // --wait-text: after an action verb succeeds, wait until this text appears
-	pierce         bool
-	noDaemon       bool
-	quiet          bool
-	verbose        bool
-	noColor        bool
-	noInput        bool
-	allowFlag      []string // --allow: one-off origin allow-list, replacing the configured one
-	policyOff      bool     // --policy-off: explicit, logged, never implicit
+	// endpoint is an explicit --endpoint URL (ws:// or http://); wins over
+	// port and the DevToolsActivePort file. See browser.FindEndpoint.
+	endpoint string
+	// session namespaces the sticky current tab (--session /
+	// CHROME_CDP_SESSION / TOML session), so several agents can share one
+	// Chrome without stealing each other's current tab. It does NOT
+	// namespace the daemon connection: see ConnOpts.Session.
+	session     string
+	byFlag      string
+	waitFlag    string
+	roleFlag    string
+	nthFlag     int
+	matchFlag   string
+	inRowFlag   string // --in-row: scope a --by name match to the row whose text contains this
+	onDialog    string // --on-dialog: auto-handle a native dialog opened during an action (accept|dismiss)
+	noWait      bool
+	actWaitText string // --wait-text: after an action verb succeeds, wait until this text appears
+	pierce      bool
+	noDaemon    bool
+	quiet       bool
+	verbose     bool
+	noColor     bool
+	noInput     bool
+	allowFlag   []string // --allow: one-off origin allow-list, replacing the configured one
+	policyOff   bool     // --policy-off: explicit, logged, never implicit
 
 	// verbPath is the running command's full cobra path minus the root
 	// ("click", "cookie set"), captured per Execute in PersistentPreRun. It is
@@ -138,10 +146,20 @@ func (a *App) WithStickyTarget(get func(ConnOpts) string, set func(ConnOpts, str
 
 // ConnOpts are the connection-related flags handed to the connector.
 type ConnOpts struct {
-	NoLaunch   bool
+	NoLaunch bool
+	// Endpoint is an explicit --endpoint URL (ws:// or http://); wins over
+	// Port and the DevToolsActivePort file. See browser.FindEndpoint.
+	Endpoint   string
 	ProfileDir string
 	Port       int
 	NoDaemon   bool
+	// Session namespaces the sticky current tab (--session /
+	// CHROME_CDP_SESSION), so the caller building a state.Store key can
+	// append it to the endpoint key. It does NOT key the daemon socket:
+	// sessions on the same endpoint share one connection and its
+	// console/net event buffers by design (see cmd/chrome-cdp/main.go's
+	// socketFor, which reads Endpoint/Port only).
+	Session string
 	// ConsentTimeout travels with the connection options because it is the
 	// daemon that does the waiting, and the daemon is spawned from these. It is
 	// always normalised — see connOpts.
@@ -150,8 +168,8 @@ type ConnOpts struct {
 
 func (a *App) connOpts() ConnOpts {
 	return ConnOpts{
-		NoLaunch: a.noLaunch, ProfileDir: a.profileDir, Port: a.port,
-		NoDaemon: a.noDaemon,
+		NoLaunch: a.noLaunch, ProfileDir: a.profileDir, Port: a.port, Endpoint: a.endpoint,
+		NoDaemon: a.noDaemon, Session: a.session,
 		// The flag is the last of the three ways this value gets set (config
 		// resolution clamps the file and the environment), so it is clamped
 		// here — with the same function, so no layer can read the number
@@ -161,6 +179,45 @@ func (a *App) connOpts() ConnOpts {
 		// happened.
 		ConsentTimeout: chrome.ClampConsentTimeout(a.consentTimeout),
 	}
+}
+
+// freezeConnDefaults folds the connection-shaped flags this invocation was
+// actually given into a.defaults, so re-entrant Execute calls (session lines,
+// recipe steps, MCP tool calls) re-parse against them instead of silently
+// resetting to the config defaults. It is the ONE list of what
+// "connection-shaped" means; session, recipe run and mcp all call it, so the
+// next such flag is one edit here instead of three that can drift (Timeout
+// and ConsentTimeout each used to be frozen at some sites and not others).
+//
+// Timeout and ConsentTimeout freeze only when positive: zero means the flags
+// were never parsed (a caller that built the runner directly), and the
+// built-in default should stand rather than become an instantly-expired
+// deadline on every call — an explicit `--consent-timeout 0s` is normalised
+// by ClampConsentTimeout in connOpts either way.
+//
+// Selector semantics (--by, --role, …) are deliberately NOT frozen: they
+// belong in each line's own argv, where a reader of the batch can see them.
+// Re-entrant output is one JSON envelope per line/step/call, so JSON is
+// always frozen on.
+//
+// The caller owns the defaults' lifetime: session and recipe run BORROW them
+// (defer the returned restore), mcp keeps the freeze for the server's life.
+func (a *App) freezeConnDefaults() (restore func()) {
+	saved := a.defaults
+	if a.timeout > 0 {
+		a.defaults.Timeout = a.timeout
+	}
+	if a.consentTimeout > 0 {
+		a.defaults.ConsentTimeout = a.consentTimeout
+	}
+	a.defaults.Endpoint = a.endpoint
+	a.defaults.Port = a.port
+	a.defaults.ProfileDir = a.profileDir
+	a.defaults.NoLaunch = a.noLaunch
+	a.defaults.NoDaemon = a.noDaemon
+	a.defaults.Session = a.session
+	a.defaults.JSON = true
+	return func() { a.defaults = saved }
 }
 
 // WithConnector wires a lazy Browser connector (used by main()); it is invoked

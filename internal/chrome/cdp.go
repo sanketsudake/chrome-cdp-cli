@@ -35,7 +35,15 @@ import (
 
 // Options controls how CDP connects.
 type Options struct {
-	PortFile   string // override DevToolsActivePort location (else OS candidates)
+	PortFile string // override DevToolsActivePort location (else OS candidates)
+	// Endpoint is an explicit browser endpoint, ws:// or http://; wins over
+	// Port and PortFile. See browser.FindEndpoint.
+	Endpoint string
+	// BrowserBin is a non-Chrome binary the managed-launch fallback execs
+	// instead of Chrome (config key browser_bin, env CHROME_CDP_BROWSER_BIN).
+	// Ignored on the attach path: it only matters when there is no
+	// debug-enabled browser to attach to.
+	BrowserBin string
 	ProfileDir string // managed-launch profile dir (else CHROME_CDP_PROFILE / default)
 	Port       int    // explicit debug port to attach to / launch with (0 = auto)
 	NoLaunch   bool   // don't fall back to launching a managed Chrome
@@ -136,6 +144,15 @@ type CDP struct {
 	rec          map[string]*recorder
 	recMaxFrames int
 	recMaxBytes  int
+
+	// The native dialog retained per tab (RFC-0018): the last
+	// Page.javascriptDialogOpening this connection received and has not yet
+	// seen javascriptDialogClosed. It lives here, on the object that holds the
+	// connection, for the same reason console/net/record do — a per-command
+	// process cannot retain an event it was not running to receive. See
+	// dialog.go.
+	dialogMu sync.Mutex
+	dialogs  map[string]dialogState
 }
 
 // tabConn is a cached per-tab context and its cancel func.
@@ -147,8 +164,9 @@ type tabConn struct {
 func newCDP(managed bool, alloc context.Context, allocCancel context.CancelFunc, base context.Context, baseCancel context.CancelFunc) *CDP {
 	c := &CDP{
 		managed: managed, alloc: alloc, allocCancel: allocCancel, base: base, baseCancel: baseCancel,
-		tabs: map[string]tabConn{},
-		rec:  map[string]*recorder{},
+		tabs:    map[string]tabConn{},
+		rec:     map[string]*recorder{},
+		dialogs: map[string]dialogState{},
 	}
 	// Capture is on from the start, at the built-in bounds; Connect resizes it
 	// from the config before the first attach.
@@ -223,7 +241,7 @@ func Connect(_ context.Context, opts Options) (*CDP, error) {
 	// An explicit --port takes precedence over the DevToolsActivePort file.
 	// Shared with `doctor` so the command that diagnoses the connection and the
 	// command that makes it are talking about the same Chrome.
-	endpoint := browser.FindEndpoint(opts.PortFile, opts.Port).URL
+	endpoint := browser.FindEndpoint(opts.Endpoint, opts.PortFile, opts.Port).URL
 	// Already clamped by whoever resolved the flag/env/config; run it again
 	// rather than trust that. It is the same function, so this cannot become a
 	// second, disagreeing policy — which is the only thing that went wrong here
@@ -253,9 +271,20 @@ func Connect(_ context.Context, opts Options) (*CDP, error) {
 		ChromeRunning: chromeRunning(),
 		NoLaunch:      opts.NoLaunch,
 	}
+	action := browser.DecideConnection(probe)
+	// An explicit --endpoint names a specific Chrome to reach; it is never a
+	// hint to fall back to launching (or instructing the user to enable) some
+	// OTHER, local Chrome. Only the two outcomes that actually talk about
+	// opts.Endpoint's own probe are legal here.
+	if opts.Endpoint != "" && action != browser.Attach && action != browser.ConsentPending {
+		return nil, &ConnectError{
+			Code:    result.CodeConnection,
+			Message: fmt.Sprintf("nothing answered at --endpoint %s (is the tunnel/port-forward up?) — chrome-cdp will not launch or instruct toggling a different, local Chrome when --endpoint is set", opts.Endpoint),
+		}
+	}
 	var c *CDP
 	var err error
-	switch browser.DecideConnection(probe) {
+	switch action {
 	case browser.Attach:
 		// The RESOLVED ws:// URL, not the endpoint: ResolveWSURL already did
 		// this lookup, and handing chromedp the http:// form made it repeat the
@@ -275,7 +304,7 @@ func Connect(_ context.Context, opts Options) (*CDP, error) {
 			Message: "no debug-enabled Chrome found and --no-launch is set — " + browser.EnableAdvice + ", or drop --no-launch",
 		}
 	default: // Launch
-		c, err = launch(opts.Headless, opts.ProfileDir, opts.Port)
+		c, err = launch(opts.Headless, opts.ProfileDir, opts.Port, opts.BrowserBin)
 	}
 	if err != nil {
 		return nil, err
@@ -293,7 +322,7 @@ func attach(ws string) (*CDP, error) {
 	return startBase(false, alloc, allocCancel, "attach to "+ws)
 }
 
-func launch(headless bool, profileDir string, port int) (*CDP, error) {
+func launch(headless bool, profileDir string, port int, browserBin string) (*CDP, error) {
 	// A dedicated, persistent profile so managed-Chrome logins survive across
 	// runs (rather than chromedp's default ephemeral temp dir).
 	dir := resolveProfileDir(profileDir)
@@ -302,6 +331,9 @@ func launch(headless bool, profileDir string, port int) (*CDP, error) {
 
 	execOpts := append([]chromedp.ExecAllocatorOption{}, chromedp.DefaultExecAllocatorOptions[:]...)
 	execOpts = append(execOpts, chromedp.UserDataDir(dir))
+	if browserBin != "" {
+		execOpts = append(execOpts, chromedp.ExecPath(browserBin))
+	}
 	if port != 0 {
 		execOpts = append(execOpts, chromedp.Flag("remote-debugging-port", strconv.Itoa(port)))
 	}
@@ -1581,14 +1613,24 @@ func (c *CDP) EmulateReset(ctx context.Context, id string) (map[string]any, erro
 	return map[string]any{"reset": true}, nil
 }
 
-// Frames enumerates the tab's frame tree (Page.getFrameTree).
-func (c *CDP) Frames(ctx context.Context, id string) (any, error) {
+// frameTree fetches the tab's frame tree (Page.getFrameTree), the one round
+// trip Frames and storage.go's storageID both need.
+func (c *CDP) frameTree(ctx context.Context, id string) (*page.FrameTree, error) {
 	var tree *page.FrameTree
 	err := c.run(ctx, id, chromedp.ActionFunc(func(ctx context.Context) error {
 		var e error
 		tree, e = page.GetFrameTree().Do(ctx)
 		return e
 	}))
+	if err != nil {
+		return nil, err
+	}
+	return tree, nil
+}
+
+// Frames enumerates the tab's frame tree (Page.getFrameTree).
+func (c *CDP) Frames(ctx context.Context, id string) (any, error) {
+	tree, err := c.frameTree(ctx, id)
 	if err != nil {
 		return nil, err
 	}

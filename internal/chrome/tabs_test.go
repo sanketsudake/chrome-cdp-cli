@@ -25,7 +25,7 @@ func liveCDP(t *testing.T) *CDP {
 	if testing.Short() {
 		t.Skip("skipping live-Chrome integration in -short mode")
 	}
-	b, err := launch(true, tmpProfile(t), 0)
+	b, err := launch(true, tmpProfile(t), 0, "")
 	if err != nil {
 		t.Skipf("cannot launch a managed headless Chrome here: %v", err)
 	}

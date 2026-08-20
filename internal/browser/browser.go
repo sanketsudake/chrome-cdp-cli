@@ -47,20 +47,53 @@ func WSURLFromPortFile(path string) (string, error) {
 	return fmt.Sprintf("ws://127.0.0.1:%d%s", port, wsPath), nil
 }
 
-// CandidatePortFiles returns the OS-specific locations Chrome writes
-// DevToolsActivePort to (Chrome family), first match wins. Overridable by the
+// CandidatePortFiles returns the OS-specific locations a Chromium-family
+// browser writes DevToolsActivePort to, first match wins. Overridable by the
 // caller via CHROME_CDP_PORT_FILE.
 func CandidatePortFiles() []string {
 	home, _ := os.UserHomeDir()
-	switch runtime.GOOS {
+	return candidatePortFiles(runtime.GOOS, home, os.Getenv("LOCALAPPDATA"))
+}
+
+// candidatePortFiles is CandidatePortFiles' pure core: it takes GOOS, $HOME
+// and $LOCALAPPDATA as arguments instead of reading them, so the list and its
+// order are table-tested without touching the real OS or environment.
+//
+// Chrome is first on every OS, and both of its existing macOS paths
+// (top-level and Default/) are kept, so a user who was already relying on
+// this list sees no change. Arc is macOS-only: its Windows and Linux builds,
+// where they exist at all, do not share this profile-directory layout.
+func candidatePortFiles(goos, home, localAppData string) []string {
+	switch goos {
 	case "darwin":
-		base := home + "/Library/Application Support/Google/Chrome"
-		return []string{base + "/DevToolsActivePort", base + "/Default/DevToolsActivePort"}
+		base := home + "/Library/Application Support/"
+		return []string{
+			base + "Google/Chrome/DevToolsActivePort",
+			base + "Google/Chrome/Default/DevToolsActivePort",
+			base + "Chromium/DevToolsActivePort",
+			base + "BraveSoftware/Brave-Browser/DevToolsActivePort",
+			base + "Microsoft Edge/DevToolsActivePort",
+			base + "Vivaldi/DevToolsActivePort",
+			base + "Arc/User Data/DevToolsActivePort",
+		}
 	case "windows":
-		la := os.Getenv("LOCALAPPDATA")
-		return []string{la + `\Google\Chrome\User Data\DevToolsActivePort`}
+		base := localAppData + `\`
+		return []string{
+			base + `Google\Chrome\User Data\DevToolsActivePort`,
+			base + `Chromium\User Data\DevToolsActivePort`,
+			base + `BraveSoftware\Brave-Browser\User Data\DevToolsActivePort`,
+			base + `Microsoft\Edge\User Data\DevToolsActivePort`,
+			base + `Vivaldi\User Data\DevToolsActivePort`,
+		}
 	default:
-		return []string{home + "/.config/google-chrome/DevToolsActivePort"}
+		base := home + "/.config/"
+		return []string{
+			base + "google-chrome/DevToolsActivePort",
+			base + "chromium/DevToolsActivePort",
+			base + "BraveSoftware/Brave-Browser/DevToolsActivePort",
+			base + "microsoft-edge/DevToolsActivePort",
+			base + "vivaldi/DevToolsActivePort",
+		}
 	}
 }
 
@@ -98,10 +131,60 @@ type Endpoint struct {
 	Err error
 }
 
-// FindEndpoint resolves the debug endpoint from an explicit port, else the
-// DevToolsActivePort file. An explicit --port wins: it names a specific Chrome,
-// and a port file naming a different one is not a fallback for it.
-func FindEndpoint(portFileOverride string, port int) Endpoint {
+// ValidateEndpoint reports whether s is an acceptable explicit --endpoint
+// value: a ws:// or http:// URL. An empty string (no --endpoint given) is
+// valid too — it means "nothing explicit", not "reject this".
+//
+// wss:// and https:// are rejected, not merely undocumented: the upgrade
+// probe (AwaitUpgrade) dials plaintext TCP, so a TLS endpoint can never
+// complete a handshake through it — accepting the scheme here would only
+// defer the failure to a confusing timeout deep in the connection ladder.
+//
+// It is the ONE scheme check FindEndpoint and the CLI's pre-connect validation
+// both call, so a garbage --endpoint is refused the same way — usage, before
+// any connection — whether it is caught while resolving the endpoint or before
+// the command even runs.
+func ValidateEndpoint(s string) error {
+	if s == "" {
+		return nil
+	}
+	if hasScheme(s, "wss://", "https://") {
+		return fmt.Errorf("--endpoint %q: TLS endpoints are not supported; forward the port locally and pass ws:// or http://", s)
+	}
+	if !hasScheme(s, "ws://", "http://") {
+		return fmt.Errorf("--endpoint %q: expected a ws:// or http:// URL", s)
+	}
+	// The scheme alone is not an endpoint: EndpointKey keys the daemon socket
+	// and sticky state by the URL's host:port, and a value it cannot key would
+	// silently fall through to the port-file Chrome's key while the dial
+	// target stays the malformed URL — a daemon bound to one Chrome's socket
+	// trying to reach another. Refuse it here, as usage, before any of that.
+	if _, ok := HostPort(s); !ok {
+		return fmt.Errorf("--endpoint %q: missing host (expected ws://host:port/... or http://host:port)", s)
+	}
+	return nil
+}
+
+func hasScheme(s string, schemes ...string) bool {
+	for _, p := range schemes {
+		if strings.HasPrefix(s, p) {
+			return true
+		}
+	}
+	return false
+}
+
+// FindEndpoint resolves the debug endpoint: an explicit --endpoint URL wins,
+// then an explicit --port, then the DevToolsActivePort file. A --port names a
+// specific Chrome, and a port file naming a different one is not a fallback
+// for it.
+func FindEndpoint(explicit, portFileOverride string, port int) Endpoint {
+	if explicit != "" {
+		if err := ValidateEndpoint(explicit); err != nil {
+			return Endpoint{Err: err}
+		}
+		return Endpoint{URL: explicit}
+	}
 	if port != 0 {
 		return Endpoint{URL: fmt.Sprintf("http://127.0.0.1:%d", port)}
 	}
@@ -118,10 +201,16 @@ func FindEndpoint(portFileOverride string, port int) Endpoint {
 
 // EndpointKey identifies the debug endpoint a command targets, so the daemon
 // socket and sticky state are keyed to the actual Chrome instance rather than a
-// fixed port. An explicit --port wins (distinct ports get distinct keys);
-// otherwise the key comes from the discovered DevToolsActivePort file, falling
-// back to "default".
-func EndpointKey(portFile string, port int) string {
+// fixed port. An explicit --endpoint wins (keyed by its host:port, so two
+// Chromes never share a daemon socket or sticky state), then an explicit
+// --port (distinct ports get distinct keys), then the discovered
+// DevToolsActivePort file, falling back to "default".
+func EndpointKey(explicit, portFile string, port int) string {
+	if explicit != "" {
+		if hp, ok := HostPort(explicit); ok {
+			return hp
+		}
+	}
 	if port != 0 {
 		return fmt.Sprintf("127.0.0.1:%d", port)
 	}

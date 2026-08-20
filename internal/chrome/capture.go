@@ -28,6 +28,8 @@ import (
 	"github.com/chromedp/cdproto/page"
 	cdpruntime "github.com/chromedp/cdproto/runtime"
 	"github.com/chromedp/chromedp"
+
+	"github.com/sanketsudake/chrome-cdp-cli/internal/encode"
 )
 
 // ErrZeroArea reports that an element resolved but occupies no space —
@@ -59,6 +61,12 @@ func IsZeroArea(err error) bool {
 // The returned metadata carries `mode` and the resolved `clip` because a capture
 // that came out wrong is otherwise undebuggable: the image alone cannot tell you
 // whether the wrong rectangle was chosen or the right one was rendered badly.
+//
+// With Annotate, the order is: resolve clip -> capture -> annotation pass ->
+// encode (RFC-0016), all inside the same action so the pass shares the clip and
+// runs on the action context annotateTimeout bounds. The pass never turns a
+// successful capture into a failure — every RFC-0008 field below is still
+// reported even when the annotation degrades.
 func (c *CDP) Screenshot(ctx context.Context, id string, opts ShotOpts) ([]byte, map[string]any, error) {
 	scale := opts.Scale
 	if scale <= 0 {
@@ -68,13 +76,21 @@ func (c *CDP) Screenshot(ctx context.Context, id string, opts ShotOpts) ([]byte,
 	if format == "" {
 		format = "png"
 	}
+	// A jpeg re-encode of a jpeg capture would be a second lossy generation on
+	// top of the label pixels, so an annotated jpeg is captured lossless (PNG)
+	// from Chrome and encoded to jpeg once, in Go, after drawing.
+	captureFormat := format
+	if opts.Annotate && format == "jpeg" {
+		captureFormat = "png"
+	}
 
 	mode := ShotViewport
 	var clip Rect
 	var buf []byte
+	var annotateMeta map[string]any
 
-	err := c.run(ctx, id, chromedp.ActionFunc(func(ctx context.Context) error {
-		metrics, err := layoutRects(ctx)
+	err := c.run(ctx, id, chromedp.ActionFunc(func(actx context.Context) error {
+		metrics, err := layoutRects(actx)
 		if err != nil {
 			return err
 		}
@@ -84,7 +100,7 @@ func (c *CDP) Screenshot(ctx context.Context, id string, opts ShotOpts) ([]byte,
 		switch {
 		case opts.Selector != "":
 			mode = ShotElement
-			if clip, err = elementPageRect(ctx, opts); err != nil {
+			if clip, err = elementPageRect(actx, opts); err != nil {
 				return err
 			}
 			// Re-read the page bounds AFTER the element settled, for the same
@@ -92,7 +108,7 @@ func (c *CDP) Screenshot(ctx context.Context, id string, opts ShotOpts) ([]byte,
 			// the page's scroll handlers, and those can grow or shrink the
 			// document. Clamping the clip to the pre-scroll page box would crop a
 			// capture against bounds that no longer exist.
-			if metrics, err = layoutRects(ctx); err != nil {
+			if metrics, err = layoutRects(actx); err != nil {
 				return err
 			}
 			clip = padRect(clip, opts.Padding, metrics.page)
@@ -112,9 +128,9 @@ func (c *CDP) Screenshot(ctx context.Context, id string, opts ShotOpts) ([]byte,
 		}
 
 		p := page.CaptureScreenshot().
-			WithFormat(page.CaptureScreenshotFormat(format)).
+			WithFormat(page.CaptureScreenshotFormat(captureFormat)).
 			WithFromSurface(true)
-		if format != "png" {
+		if captureFormat != "png" {
 			p = p.WithQuality(int64(opts.Quality))
 		}
 		if clipped {
@@ -125,22 +141,118 @@ func (c *CDP) Screenshot(ctx context.Context, id string, opts ShotOpts) ([]byte,
 				X: clip.X, Y: clip.Y, Width: clip.Width, Height: clip.Height, Scale: scale,
 			}).WithCaptureBeyondViewport(true)
 		}
-		buf, err = p.Do(ctx)
-		return err
+		buf, err = p.Do(actx)
+		if err != nil {
+			return err
+		}
+		if opts.Annotate {
+			buf, annotateMeta = c.annotatePass(actx, buf, format, opts.Quality, clip, scale)
+		}
+		return nil
 	}))
 	if err != nil {
 		return nil, nil, err
 	}
 
 	w, h := imageDims(buf, clip, scale)
-	return buf, map[string]any{
+	meta := map[string]any{
 		"format": format,
 		"scale":  scale,
 		"mode":   string(mode),
 		"clip":   clip,
 		"width":  w,
 		"height": h,
-	}, nil
+	}
+	for k, v := range annotateMeta {
+		meta[k] = v
+	}
+	return buf, meta, nil
+}
+
+// annotatePass runs the RFC-0016 actionable-node pass over an already-captured
+// image and draws numbered labels onto it. It NEVER fails the capture: any
+// timeout, tree-read error, or empty result degrades to `annotated: false`
+// plus a reason, carrying the plain (possibly format-converted) bytes.
+//
+// actx is the ACTION context, unexpired — the pass itself runs under a bounded
+// child (annotateTimeout), but tabHidden is probed on actx so a pass that timed
+// out can still be told apart from one that ran clean and found nothing.
+func (c *CDP) annotatePass(actx context.Context, buf []byte, outFormat string, quality int, clip Rect, scale float64) ([]byte, map[string]any) {
+	imgW, imgH := imageDims(buf, clip, scale)
+
+	pctx, cancel := context.WithTimeout(actx, annotateTimeout)
+	defer cancel()
+	labels, truncated, ok := collectAnnotateLabels(pctx, clip, imgW, imgH)
+
+	degrade := func(reason string) ([]byte, map[string]any) {
+		out := buf
+		meta := map[string]any{
+			// truncated can be true here even with zero labels: a --selector
+			// clip can leave every one of the (capped) candidates outside its
+			// own bounds, which is "no_actionable_nodes" in this clip but
+			// still means the page had more actionable nodes than the cap
+			// allowed.
+			"annotated": false, "annotations": []any{}, "truncated": truncated, "reason": reason,
+		}
+		// The capture may have been taken as PNG on jpeg's behalf (see
+		// Screenshot); the envelope still reports `format: "jpeg"`, so the
+		// bytes must actually be jpeg even on a degrade — draw zero labels,
+		// which is exactly what AnnotateImage's conversion-only path is.
+		if outFormat == "jpeg" {
+			if converted, _, err := encode.AnnotateImage(buf, outFormat, quality, clip.Width, clip.Height, nil); err == nil {
+				out = converted
+			} else {
+				// The conversion itself failed (an unexpected AnnotateImage
+				// error): out stays the PNG bytes Chrome actually produced, so
+				// the envelope must say png too — reporting jpeg over png
+				// bytes would be a lie a caller could act on (decode, upload,
+				// check the extension against the content).
+				meta["format"] = "png"
+			}
+		}
+		return out, meta
+	}
+
+	if !ok || len(labels) == 0 {
+		// Chrome throttles the accessibility tree on a backgrounded tab, which
+		// can surface as an error, a timeout, OR a successfully empty tree — so
+		// tabHidden is checked for both outcomes, exactly as find's fallback
+		// does for its own empty-result case.
+		return degrade(annotateDegradeReason(ok, tabHidden(actx)))
+	}
+
+	encLabels := make([]encode.Label, len(labels))
+	for i, l := range labels {
+		encLabels[i] = encode.Label{N: l.n, X: l.cssX, Y: l.cssY}
+	}
+	newBuf, drawn, err := encode.AnnotateImage(buf, outFormat, quality, clip.Width, clip.Height, encLabels)
+	if err != nil {
+		return degrade("tree_unavailable")
+	}
+
+	annotated := false
+	arr := make([]any, len(labels))
+	for i, l := range labels {
+		if drawn[i] {
+			annotated = true
+		}
+		entry := map[string]any{
+			"n": l.n, "ref": l.ref, "role": l.role, "name": l.name,
+			"center": map[string]any{"x": math.Round(l.centerX), "y": math.Round(l.centerY)},
+		}
+		if len(l.states) > 0 {
+			entry["states"] = l.states
+		}
+		if l.occluded {
+			entry["occluded"] = true
+		}
+		arr[i] = entry
+	}
+	return newBuf, map[string]any{
+		"annotated":   annotated,
+		"annotations": arr,
+		"truncated":   truncated,
+	}
 }
 
 // PDF prints the page to PDF (no chromedp Action; raw page.PrintToPDF).

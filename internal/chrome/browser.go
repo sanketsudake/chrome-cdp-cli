@@ -263,6 +263,12 @@ type ShotOpts struct {
 	Scale   float64 // output scale factor, 0.1–3 (0 means 1)
 	Padding float64 // expand an element clip by this many px, clamped to the page
 
+	// Annotate numbers every actionable element in the captured area and draws
+	// the labels on the image (RFC-0016). The CLI has already rejected the two
+	// combinations that cannot honour it (--format webp, -o -), so the driver
+	// never re-checks them.
+	Annotate bool
+
 	Query QueryOpts
 }
 
@@ -513,10 +519,40 @@ type Browser interface {
 	// already-buffered records first so a request that landed between the action
 	// and the wait is not missed.
 	NetWait(ctx context.Context, targetID string, cond NetCond) (map[string]any, error)
+	// DialogStatus reports the native JavaScript dialog (alert / confirm /
+	// prompt / beforeunload) open on a tab, from the opening event this
+	// connection retained (RFC-0018). It never talks to the renderer, which is
+	// blocked for as long as the dialog is up; on a tab this connection had not
+	// attached it attaches (and so starts retaining) and says in `note` that it
+	// could not have seen an earlier dialog.
+	DialogStatus(ctx context.Context, targetID string) (map[string]any, error)
+	// DialogHandle closes that dialog — accept (OK / confirm true / prompt
+	// text / leave the page) or dismiss — with Page.handleJavaScriptDialog, the
+	// one command that works while the renderer is blocked. text answers a
+	// prompt and is ignored for the other types. ErrNoDialog when nothing is
+	// retained as open: the command is NOT issued blind, because to a session
+	// that did not see the dialog open it hangs instead of failing.
+	DialogHandle(ctx context.Context, targetID string, accept bool, text string) (map[string]any, error)
 	CookieList(ctx context.Context, targetID string) (any, error)
 	CookieSet(ctx context.Context, targetID, name, value, domain, path string) (map[string]any, error)
 	CookieDelete(ctx context.Context, targetID, name string) (map[string]any, error)
 	CookieClear(ctx context.Context, targetID string) (map[string]any, error)
+	// StorageList reads every key of one DOM Storage area (RFC-0019) —
+	// localStorage for scope "local", sessionStorage for "session" — of the
+	// tab's TOP FRAME, sorted by key, redacted and size-capped per opts.
+	// ErrOpaqueOrigin when the top frame has no storage area at all.
+	StorageList(ctx context.Context, targetID, scope string, opts StorageListOpts) (map[string]any, error)
+	// StorageGet reads one key raw and uncapped: the caller named the key, so
+	// neither redaction nor the cap applies. present is false, value "", when
+	// the key is not there — not an error.
+	StorageGet(ctx context.Context, targetID, scope, key string) (map[string]any, error)
+	// StorageSet creates or overwrites one key.
+	StorageSet(ctx context.Context, targetID, scope, key, value string) (map[string]any, error)
+	// StorageRemove deletes one key; removing an absent key succeeds silently,
+	// as Chrome's own removeDOMStorageItem does.
+	StorageRemove(ctx context.Context, targetID, scope, key string) (map[string]any, error)
+	// StorageClear removes every key in one storage area.
+	StorageClear(ctx context.Context, targetID, scope string) (map[string]any, error)
 	Raw(ctx context.Context, targetID, method string, params json.RawMessage) (any, error)
 	Close() error
 }

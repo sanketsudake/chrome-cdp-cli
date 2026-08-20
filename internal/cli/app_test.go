@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sanketsudake/chrome-cdp-cli/internal/chrome"
 	"github.com/sanketsudake/chrome-cdp-cli/internal/chrometest"
@@ -110,5 +112,46 @@ func TestExitCodesCommand(t *testing.T) {
 		if !strings.Contains(out.String(), n+"  ") {
 			t.Errorf("exit-codes output is missing code %s:\n%s", n, out.String())
 		}
+	}
+}
+
+// TestFreezeConnDefaults pins the ONE list of connection-shaped flags that
+// survive into re-entrant Execute calls (session lines, recipe steps, MCP tool
+// calls). Before the helper existed, session, recipe run and mcp each carried
+// their own hand-maintained copy of this list and they drifted: ConsentTimeout
+// was frozen only by session, Timeout only by mcp and recipe. A field missing
+// here means one of the three silently resets that flag to the config default
+// on every re-entrant line.
+func TestFreezeConnDefaults(t *testing.T) {
+	t.Parallel()
+	app := New(&fakeBrowser{}, &bytes.Buffer{}, &bytes.Buffer{})
+	app.endpoint = "ws://10.0.0.5:9222/devtools/browser/x"
+	app.port = 9333
+	app.profileDir = "/tmp/p"
+	app.noLaunch = true
+	app.noDaemon = true
+	app.session = "agent-1"
+	app.timeout = 5 * time.Second
+	app.consentTimeout = 7 * time.Minute
+	before := app.defaults
+
+	restore := app.freezeConnDefaults()
+	d := app.defaults
+	if d.Endpoint != app.endpoint || d.Port != 9333 || d.ProfileDir != "/tmp/p" ||
+		!d.NoLaunch || !d.NoDaemon || d.Session != "agent-1" ||
+		d.Timeout != 5*time.Second || d.ConsentTimeout != 7*time.Minute || !d.JSON {
+		t.Errorf("frozen defaults = %+v, want every connection-shaped flag folded in", d)
+	}
+	restore()
+	if !reflect.DeepEqual(app.defaults, before) {
+		t.Errorf("restore() left defaults = %+v, want %+v", app.defaults, before)
+	}
+
+	// Zero durations mean "flags never parsed": the built-in default stands
+	// rather than becoming an instantly-expired deadline on every call.
+	app.timeout, app.consentTimeout = 0, 0
+	defer app.freezeConnDefaults()()
+	if app.defaults.Timeout != before.Timeout || app.defaults.ConsentTimeout != before.ConsentTimeout {
+		t.Errorf("zero durations must not clobber the built-in defaults: %+v", app.defaults)
 	}
 }

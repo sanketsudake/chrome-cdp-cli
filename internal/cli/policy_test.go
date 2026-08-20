@@ -77,6 +77,66 @@ func runnableCommands(root *cobra.Command) []string {
 	return out
 }
 
+// TestEveryGroupIsRunnable is the guard on runnableGroup's coverage: a verb
+// group cobra leaves non-runnable prints help to stdout and exits 0, breaking
+// the one-envelope and exit-code contract on the likeliest typo. The root is
+// exempt (bare `chrome-cdp` printing help is the CLI convention), as are
+// cobra's own help/completion trees.
+func TestEveryGroupIsRunnable(t *testing.T) {
+	t.Parallel()
+	app := New(&fakeBrowser{}, &bytes.Buffer{}, &bytes.Buffer{})
+	root := app.newRoot()
+
+	var walk func(c *cobra.Command)
+	walk = func(c *cobra.Command) {
+		if c.Name() == "help" || c.Name() == "completion" {
+			return
+		}
+		if c != root && len(c.Commands()) > 0 && !c.Runnable() {
+			t.Errorf("group %q has subcommands but no RunE — wrap it in runnableGroup "+
+				"so a bare or typoed invocation is a usage envelope (exit 2), not help (exit 0)",
+				c.CommandPath())
+		}
+		for _, sub := range c.Commands() {
+			walk(sub)
+		}
+	}
+	walk(root)
+}
+
+// TestGroupTypoIsUsage pins the behavior TestEveryGroupIsRunnable guards
+// structurally: bare groups and typoed subcommands emit one usage envelope
+// with exit 2, never cobra's help with exit 0.
+func TestGroupTypoIsUsage(t *testing.T) {
+	t.Parallel()
+	cases := [][]string{
+		{"dialog"}, {"dialog", "acept"},
+		{"cookie", "foo"},
+		{"attr"},
+		{"headers", "get"},
+		{"emulate", "device"},
+		{"frame", "tree"},
+		{"daemon", "restart"},
+		{"policy", "show"},
+		{"record", "begin"},
+		{"recipe"},
+		{"window", "move"},
+		{"storage", "local", "typo"}, {"storage", "session"},
+	}
+	for _, args := range cases {
+		t.Run(strings.Join(args, " "), func(t *testing.T) {
+			t.Parallel()
+			env, _, code := run(t, noCall(t), append(append([]string{}, args...), "--json")...)
+			if code != 2 {
+				t.Fatalf("exit = %d, want 2: %v", code, env)
+			}
+			if env["error"].(map[string]any)["code"] != "usage" {
+				t.Errorf("code = %v, want usage", env["error"])
+			}
+		})
+	}
+}
+
 // refusalBrowser serves a tab list and fails the test if the CLI acts on it.
 //
 // Asserting the exit code alone would pass for a command that refused AND acted
@@ -133,6 +193,11 @@ func (b *refusalBrowser) Open(context.Context, string) (map[string]any, error) {
 
 func (b *refusalBrowser) CookieSet(context.Context, string, string, string, string, string) (map[string]any, error) {
 	b.acted("CookieSet")
+	return nil, nil
+}
+
+func (b *refusalBrowser) StorageSet(context.Context, string, string, string, string) (map[string]any, error) {
+	b.acted("StorageSet")
 	return nil, nil
 }
 
@@ -249,9 +314,9 @@ func TestReadOnlyOriginAtTheBoundary(t *testing.T) {
 	tab := target.Info{ID: "dd44", Title: "Wiki", URL: "https://en.wiki.test/Go"}
 
 	for _, args := range [][]string{
-		{"text", "h1"}, {"snap"}, {"grid"}, {"html"},
+		{"text", "h1"}, {"snap"}, {"grid"}, {"html"}, {"storage", "local", "list"}, {"storage", "session", "get", "k"},
 	} {
-		t.Run("reading/"+args[0], func(t *testing.T) {
+		t.Run("reading/"+strings.Join(args, " "), func(t *testing.T) {
 			t.Parallel()
 			full := append(append([]string{}, args...), "--target", "dd44", "--json")
 			_, _, code := runPolicy(t, &fakeBrowser{tabs: []target.Info{tab}}, pol, full...)
@@ -262,7 +327,7 @@ func TestReadOnlyOriginAtTheBoundary(t *testing.T) {
 	}
 	for _, args := range [][]string{
 		{"click", "#x"}, {"fill", "#x", "v"}, {"type", "#x", "v"},
-		{"eval", "1+1"}, {"cookie", "set", "sid", "abc"},
+		{"eval", "1+1"}, {"cookie", "set", "sid", "abc"}, {"storage", "local", "set", "k", "v"},
 	} {
 		t.Run("mutating/"+strings.Join(args[:2], " "), func(t *testing.T) {
 			t.Parallel()

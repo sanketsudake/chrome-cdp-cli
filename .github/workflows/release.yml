@@ -30,3 +30,27 @@ jobs:
           # and a PAT with `repo` scope on it, saved as this secret. Without it,
           # add `--skip=homebrew` to args above to release binaries only.
           HOMEBREW_TAP_GITHUB_TOKEN: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}
+
+  npm:
+    needs: goreleaser
+    runs-on: ubuntu-latest
+    # Gated on a repository variable (not `secrets.NPM_TOKEN != ''`, which is
+    # not valid in an `if:`) so a fork or a repo without NPM_TOKEN configured
+    # doesn't fail the release. Set the `NPM_PUBLISH` repository variable to
+    # "true" once NPM_TOKEN holds a granular automation token scoped to the
+    # `@sanketsudake` npm org/user.
+    if: vars.NPM_PUBLISH == 'true'
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          registry-url: https://registry.npmjs.org
+
+      - run: cd npm && npm version "${GITHUB_REF_NAME#v}" --no-git-tag-version && npm test && npm publish --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

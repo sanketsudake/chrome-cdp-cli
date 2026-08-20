@@ -15,6 +15,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -128,6 +129,9 @@ func TestUploadBadPathsAreUsageAndNeverConnect(t *testing.T) {
 // would surface far from the argument that caused it.
 func TestUploadUnreadableFileIsUsage(t *testing.T) {
 	t.Parallel()
+	if runtime.GOOS == "windows" {
+		t.Skip("os.Chmod does not restrict read access on Windows, so the permission bit proves nothing")
+	}
 	if os.Geteuid() == 0 {
 		t.Skip("running as root: the permission bits would not be enforced")
 	}
@@ -301,6 +305,12 @@ func TestUploadRootsResistTraversalAndSymlinks(t *testing.T) {
 // is "no" — the point is that it is never "yes".
 func TestUploadRootsRejectCaseVariantSpelling(t *testing.T) {
 	t.Parallel()
+	if runtime.GOOS == "windows" {
+		// Windows filesystems are case-insensitive, so ALLOWED/ok.txt genuinely
+		// IS inside root allowed — accepting it is correct there, not a bug this
+		// test can pin. Case-sensitivity is exercised on darwin/linux instead.
+		t.Skip("case-insensitive filesystem: a case-variant path is genuinely inside the root on windows")
+	}
 	root, p := uploadRootsFixture(t)
 	variant := filepath.Join(filepath.Dir(root), "ALLOWED", filepath.Base(p["inside"]))
 	if _, rerr := resolveUploadPaths([]string{variant}, []string{root}, ""); rerr == nil {

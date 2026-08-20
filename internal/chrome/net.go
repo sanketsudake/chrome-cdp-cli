@@ -15,6 +15,7 @@ import (
 	"github.com/chromedp/cdproto/network"
 	"github.com/chromedp/chromedp"
 
+	"github.com/sanketsudake/chrome-cdp-cli/internal/encode"
 	"github.com/sanketsudake/chrome-cdp-cli/internal/eventbuf"
 )
 
@@ -772,6 +773,7 @@ func (r netRecord) render(opts NetOpts, body netBody) map[string]any {
 		"status":        nil,
 		"status_text":   r.StatusText,
 		"started_ms":    r.StartedMs,
+		"started_at":    nil,
 		"duration_ms":   nil,
 		"request_size":  r.RequestSize,
 		"response_size": r.ResponseSize,
@@ -782,6 +784,11 @@ func (r netRecord) render(opts NetOpts, body netBody) map[string]any {
 	}
 	if r.HasStatus {
 		out["status"] = r.Status
+	}
+	if r.HasStart {
+		// RFC-0017: an absolute instant HAR requires and the listing's own
+		// started_ms (relative to a per-tab epoch) cannot supply.
+		out["started_at"] = r.Started.UTC().Format(encode.HARTimeLayout)
 	}
 	if d := r.durationMs(); d >= 0 {
 		out["duration_ms"] = d

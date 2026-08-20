@@ -673,6 +673,82 @@ func TestCodeForExitRoundTrips(t *testing.T) {
 // each step's Execute — and has to put them back. They used to leak into every
 // later `session` line, which is the mutation the RFC guidance names outright:
 // do not cache flag-derived state on App across invocations.
+// TestRecipeRunFreezesEndpoint mirrors TestMCPRunnerFreezesEndpoint
+// (mcp_test.go): --endpoint is a connection-shaped flag exactly like --port
+// and --profile-dir, and runPlan has to freeze it into a.defaults the same
+// way. Each step is a fresh a.Execute(st.Argv) that rebuilds the command tree
+// via newRoot, which re-registers --endpoint with a.defaults.Endpoint as its
+// default; an argv with no --endpoint of its own (every real step) then
+// resets a.endpoint to that default. `use` keys its sticky-target write on
+// a.connOpts().Endpoint on every step regardless of whether the browser
+// connection itself is cached, so an unfrozen Endpoint would silently key
+// steps after the first under the wrong (empty) endpoint.
+func TestRecipeRunFreezesEndpoint(t *testing.T) {
+	project, _ := isolateRecipes(t)
+	writeRecipe(t, project, "twouse", `name: twouse
+target: aa11
+steps:
+  - run: ["use", "aa11"]
+  - run: ["use", "aa11"]
+`)
+	const explicit = "ws://127.0.0.1:9222/devtools/browser/abc"
+	var gotEndpoints []string
+
+	var out, errb bytes.Buffer
+	app := New(&recordingBrowser{}, &out, &errb)
+	app.WithStickyTarget(
+		func(ConnOpts) string { return "" },
+		func(o ConnOpts, id string) error { gotEndpoints = append(gotEndpoints, o.Endpoint); return nil },
+	)
+
+	if code := app.Execute("recipe", "run", "twouse", "--endpoint", explicit); code != 0 {
+		t.Fatalf("exit = %d\nstdout: %s\nstderr: %s", code, out.String(), errb.String())
+	}
+	if len(gotEndpoints) != 2 {
+		t.Fatalf("stickySet called %d times, want 2 (one per step)", len(gotEndpoints))
+	}
+	for i, got := range gotEndpoints {
+		if got != explicit {
+			t.Errorf("step %d: ConnOpts.Endpoint = %q, want the frozen --endpoint %q", i+1, got, explicit)
+		}
+	}
+}
+
+// TestRecipeRunFreezesSession is TestRecipeRunFreezesEndpoint's sibling for
+// --session: it is exactly as connection-shaped as --endpoint, and an
+// unfrozen Session would key steps after the first under the wrong (unset)
+// session namespace.
+func TestRecipeRunFreezesSession(t *testing.T) {
+	project, _ := isolateRecipes(t)
+	writeRecipe(t, project, "twousesess", `name: twousesess
+target: aa11
+steps:
+  - run: ["use", "aa11"]
+  - run: ["use", "aa11"]
+`)
+	const wantSession = "task-a"
+	var gotSessions []string
+
+	var out, errb bytes.Buffer
+	app := New(&recordingBrowser{}, &out, &errb)
+	app.WithStickyTarget(
+		func(ConnOpts) string { return "" },
+		func(o ConnOpts, id string) error { gotSessions = append(gotSessions, o.Session); return nil },
+	)
+
+	if code := app.Execute("recipe", "run", "twousesess", "--session", wantSession); code != 0 {
+		t.Fatalf("exit = %d\nstdout: %s\nstderr: %s", code, out.String(), errb.String())
+	}
+	if len(gotSessions) != 2 {
+		t.Fatalf("stickySet called %d times, want 2 (one per step)", len(gotSessions))
+	}
+	for i, got := range gotSessions {
+		if got != wantSession {
+			t.Errorf("step %d: ConnOpts.Session = %q, want the frozen --session %q", i+1, got, wantSession)
+		}
+	}
+}
+
 func TestRecipeRestoresTheAppDefaults(t *testing.T) {
 	project, _ := isolateRecipes(t)
 	writeRecipe(t, project, "three", threeStep)

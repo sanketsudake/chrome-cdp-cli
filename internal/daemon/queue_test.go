@@ -6,7 +6,6 @@ import (
 	"os"
 	"path/filepath"
 	"sync/atomic"
-	"syscall"
 	"testing"
 	"time"
 
@@ -101,10 +100,10 @@ func TestEnsureLockWaitHonoursTheContext(t *testing.T) {
 		t.Fatalf("open lock: %v", err)
 	}
 	defer held.Close()
-	if err := syscall.Flock(int(held.Fd()), syscall.LOCK_EX); err != nil {
+	if err := flockBlock(held); err != nil {
 		t.Fatalf("flock: %v", err)
 	}
-	defer syscall.Flock(int(held.Fd()), syscall.LOCK_UN)
+	defer flockUnlock(held)
 
 	restore := swapSpawn(func(string, string, []string) (*daemonProc, error) {
 		t.Error("spawned a daemon while another process held the lock")

@@ -115,6 +115,53 @@ func TestConnectRefusedEndpointFailsFast(t *testing.T) {
 	}
 }
 
+// TestConnectExplicitEndpointNeverFallsBackToLaunch pins the controller's
+// ruling: with opts.Endpoint set, the ladder's only legal outcomes are Attach
+// and ConsentPending. Chrome happening to be running locally (irrelevant to a
+// remote/tunnelled --endpoint) must never turn an unreachable --endpoint into
+// InstructToggle, InstructNoLaunch, or — worst of all — silently launching a
+// brand new, unrelated managed Chrome while the caller believes they are
+// talking to the endpoint they named.
+func TestConnectExplicitEndpointNeverFallsBackToLaunch(t *testing.T) {
+	ep := probetest.Closed(t) // nothing listening at the explicit endpoint
+	pinChromeRunning(t, false)
+
+	start := time.Now()
+	_, cerr := Connect(context.Background(), Options{
+		Endpoint: ep.WS(),
+		NoLaunch: false, // exactly the case that used to fall through to Launch
+	})
+	elapsed := time.Since(start)
+
+	if got := connectErrCode(t, cerr); got != result.CodeConnection {
+		t.Errorf("error.code = %q, want %q", got, result.CodeConnection)
+	}
+	if elapsed > 3*time.Second {
+		t.Fatalf("a closed --endpoint took %v to fail — it must fail fast, not launch or wait", elapsed)
+	}
+	msg := cerr.Error()
+	if !strings.Contains(msg, ep.WS()) {
+		t.Errorf("error message does not name the --endpoint that was unreachable:\n%s", msg)
+	}
+}
+
+// TestConnectExplicitEndpointNeverInstructsToggleForLocalChrome is the same
+// ruling with the OTHER wrong fallback: a local Chrome happening to be running
+// (unrelated to the remote endpoint) must not turn an unreachable --endpoint
+// into "enable remote debugging" advice about that unrelated Chrome.
+func TestConnectExplicitEndpointNeverInstructsToggleForLocalChrome(t *testing.T) {
+	ep := probetest.Closed(t)
+	pinChromeRunning(t, true) // a local Chrome IS running, but it is not the endpoint
+
+	_, cerr := Connect(context.Background(), Options{
+		Endpoint: ep.WS(),
+		NoLaunch: true,
+	})
+	if got := connectErrCode(t, cerr); got != result.CodeConnection {
+		t.Errorf("error.code = %q, want %q — a local Chrome must not turn an unreachable --endpoint into not_debug_enabled advice", got, result.CodeConnection)
+	}
+}
+
 // TestConnectLateConsentIsNotAbandoned is VS-3: consent answered long after the
 // old ~10s dial timeout still finds the connection there.
 //

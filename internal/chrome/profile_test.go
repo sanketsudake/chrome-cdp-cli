@@ -1,7 +1,8 @@
 package chrome
 
 import (
-	"strings"
+	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -31,16 +32,26 @@ func TestResolveProfileDir(t *testing.T) {
 		t.Errorf("env: got %q", got)
 	}
 
-	// default under a cache base
+	// default under a cache base. XDG_CACHE_HOME is set to a forward-slash
+	// literal (the env var's own value, unrelated to the host OS), but
+	// resolveProfileDir joins it with filepath.Join, which renders backslashes
+	// on windows — so the expectation is built the same way, not compared
+	// against the literal.
 	t.Setenv("CHROME_CDP_PROFILE", "")
 	t.Setenv("XDG_CACHE_HOME", "/tmp/cache")
-	if got := resolveProfileDir(""); got != "/tmp/cache/chrome-cdp/profile" {
-		t.Errorf("default: got %q, want /tmp/cache/chrome-cdp/profile", got)
+	wantDefault := filepath.Join("/tmp/cache", "chrome-cdp", "profile")
+	if got := resolveProfileDir(""); got != wantDefault {
+		t.Errorf("default: got %q, want %q", got, wantDefault)
 	}
 
 	// default via home when XDG unset ends at the documented path
 	t.Setenv("XDG_CACHE_HOME", "")
-	if got := resolveProfileDir(""); !strings.HasSuffix(got, "/.cache/chrome-cdp/profile") {
-		t.Errorf("home default: got %q", got)
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatalf("UserHomeDir: %v", err)
+	}
+	wantHomeDefault := filepath.Join(home, ".cache", "chrome-cdp", "profile")
+	if got := resolveProfileDir(""); got != wantHomeDefault {
+		t.Errorf("home default: got %q, want %q", got, wantHomeDefault)
 	}
 }

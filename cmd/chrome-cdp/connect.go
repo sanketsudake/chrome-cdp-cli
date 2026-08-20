@@ -21,7 +21,11 @@ import (
 // .pending marker and no Ensure to read it.
 func directConnectOptions(portFile string, o cli.ConnOpts, defs config.Defaults, w io.Writer) chrome.Options {
 	return chrome.Options{
-		PortFile: portFile, NoLaunch: o.NoLaunch, ProfileDir: o.ProfileDir, Port: o.Port,
+		PortFile: portFile, NoLaunch: o.NoLaunch, ProfileDir: o.ProfileDir, Port: o.Port, Endpoint: o.Endpoint,
+		// BrowserBin has no --browser-bin flag, so it comes from defs
+		// (config/env), not o — the same reason ConsoleBuffer et al. below read
+		// from defs too.
+		BrowserBin:     defs.BrowserBin,
 		ConsentTimeout: o.ConsentTimeout,
 		// Fires once, the moment the upgrade is classified as pending — while
 		// the dialog is still on screen, which is the only time saying so helps.
@@ -32,4 +36,18 @@ func directConnectOptions(portFile string, o cli.ConnOpts, defs config.Defaults,
 		NetBuffer: defs.NetBuffer, NetMaxBody: defs.NetMaxBody,
 		RecordBuffer: defs.RecordBuffer, RecordMaxBytes: defs.RecordMaxBytes,
 	}
+}
+
+// sessionSuffix turns --session into the extra path segment stateFor appends
+// to the endpoint key, so state.New's sanitize sees the two joined by "/"
+// exactly once and two sessions on the same endpoint never collide (see the
+// proof on sanitize in internal/state/state.go). An unset session appends
+// nothing, so a no-session invocation keys its sticky target exactly as it
+// always has — this is what makes upgrading to a --session-aware binary a
+// no-op for anyone who never passes the flag.
+func sessionSuffix(session string) string {
+	if session == "" {
+		return ""
+	}
+	return "/" + session
 }

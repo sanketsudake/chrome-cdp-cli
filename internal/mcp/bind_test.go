@@ -171,6 +171,48 @@ func TestScreenshotReturnsAnImageBlock(t *testing.T) {
 	}
 }
 
+// RFC-0016 VS-10: the `annotate` argument builds --annotate, and the legend
+// reaches the client through structuredContent alongside the image block.
+func TestScreenshotAnnotateArgBuildsFlagAndLegendReachesClient(t *testing.T) {
+	t.Parallel()
+	png := []byte("\x89PNG\r\n\x1a\nfake")
+	var sawAnnotate bool
+	r := &fakeRunner{reply: func(argv []string) ([]byte, int) {
+		for _, a := range argv {
+			if a == "--annotate" {
+				sawAnnotate = true
+			}
+		}
+		path := flagValue(argv, "--output")
+		if err := os.WriteFile(path, png, 0o600); err != nil {
+			t.Errorf("write capture: %v", err)
+		}
+		return okEnvelope("screenshot", map[string]any{
+			"path": path, "bytes": len(png), "format": "png", "mode": "viewport",
+			"annotated": true, "truncated": false,
+			"annotations": []any{
+				map[string]any{"n": 1.0, "ref": "e41", "role": "button", "name": "Save",
+					"center": map[string]any{"x": 64.0, "y": 22.0}},
+			},
+		}), 0
+	}}
+	sess := connect(t, r, Options{})
+	out := callTool(t, sess, prefix+"screenshot", map[string]any{"annotate": true})
+	if out.IsError {
+		t.Fatalf("screenshot failed: %v", structured(t, out))
+	}
+	if !sawAnnotate {
+		t.Errorf("--annotate did not reach the CLI argv: %v", r.calls)
+	}
+	got := structured(t, out)
+	if got["annotated"] != true {
+		t.Errorf("structuredContent.annotated = %v, want true", got["annotated"])
+	}
+	if _, ok := got["annotations"]; !ok {
+		t.Errorf("structuredContent.annotations is missing: %v", got)
+	}
+}
+
 // With an explicit output path the file is kept and reported, exactly as the
 // CLI does.
 func TestScreenshotKeepsAnExplicitOutput(t *testing.T) {

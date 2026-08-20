@@ -3,6 +3,7 @@ package browser
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -52,6 +53,71 @@ func TestWSURLFromPortFileMissing(t *testing.T) {
 	}
 }
 
+// TestCandidatePortFiles pins candidatePortFiles as a PURE function of
+// (goos, home, localAppData): CandidatePortFiles() only wraps it with
+// runtime.GOOS / os.UserHomeDir / $LOCALAPPDATA, so the browser list and its
+// order are tested here without touching the real OS. Chrome stays first
+// (both existing macOS paths kept) so existing users see no change; the rest
+// follow in the order the brief lists.
+func TestCandidatePortFiles(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name         string
+		goos         string
+		home         string
+		localAppData string
+		want         []string
+	}{
+		{
+			name: "darwin", goos: "darwin", home: "/Users/x",
+			want: []string{
+				"/Users/x/Library/Application Support/Google/Chrome/DevToolsActivePort",
+				"/Users/x/Library/Application Support/Google/Chrome/Default/DevToolsActivePort",
+				"/Users/x/Library/Application Support/Chromium/DevToolsActivePort",
+				"/Users/x/Library/Application Support/BraveSoftware/Brave-Browser/DevToolsActivePort",
+				"/Users/x/Library/Application Support/Microsoft Edge/DevToolsActivePort",
+				"/Users/x/Library/Application Support/Vivaldi/DevToolsActivePort",
+				"/Users/x/Library/Application Support/Arc/User Data/DevToolsActivePort",
+			},
+		},
+		{
+			name: "linux", goos: "linux", home: "/home/x",
+			want: []string{
+				"/home/x/.config/google-chrome/DevToolsActivePort",
+				"/home/x/.config/chromium/DevToolsActivePort",
+				"/home/x/.config/BraveSoftware/Brave-Browser/DevToolsActivePort",
+				"/home/x/.config/microsoft-edge/DevToolsActivePort",
+				"/home/x/.config/vivaldi/DevToolsActivePort",
+			},
+		},
+		{
+			name: "windows", goos: "windows", localAppData: `C:\Users\x\AppData\Local`,
+			want: []string{
+				`C:\Users\x\AppData\Local\Google\Chrome\User Data\DevToolsActivePort`,
+				`C:\Users\x\AppData\Local\Chromium\User Data\DevToolsActivePort`,
+				`C:\Users\x\AppData\Local\BraveSoftware\Brave-Browser\User Data\DevToolsActivePort`,
+				`C:\Users\x\AppData\Local\Microsoft\Edge\User Data\DevToolsActivePort`,
+				`C:\Users\x\AppData\Local\Vivaldi\User Data\DevToolsActivePort`,
+			},
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			got := candidatePortFiles(c.goos, c.home, c.localAppData)
+			if len(got) != len(c.want) {
+				t.Fatalf("candidatePortFiles(%q) = %d entries, want %d\ngot:  %v\nwant: %v",
+					c.goos, len(got), len(c.want), got, c.want)
+			}
+			for i := range got {
+				if got[i] != c.want[i] {
+					t.Errorf("[%d] = %q, want %q", i, got[i], c.want[i])
+				}
+			}
+		})
+	}
+}
+
 func TestDecideConnection(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
@@ -92,15 +158,15 @@ func TestDecideConnection(t *testing.T) {
 func TestEndpointKey(t *testing.T) {
 	t.Parallel()
 	// An explicit port yields a distinct, port-specific key (no collisions).
-	if k := EndpointKey("", 9333); k != "127.0.0.1:9333" {
+	if k := EndpointKey("", "", 9333); k != "127.0.0.1:9333" {
 		t.Errorf("explicit port key = %q, want 127.0.0.1:9333", k)
 	}
-	if EndpointKey("", 9333) == EndpointKey("", 9444) {
+	if EndpointKey("", "", 9333) == EndpointKey("", "", 9444) {
 		t.Error("distinct --port values must not share an endpoint key")
 	}
 
 	// With no port and no port file, the key is the stable default.
-	if k := EndpointKey("", 0); k != "default" {
+	if k := EndpointKey("", "", 0); k != "default" {
 		t.Errorf("no port / no file key = %q, want default", k)
 	}
 
@@ -109,11 +175,79 @@ func TestEndpointKey(t *testing.T) {
 	if err := os.WriteFile(pf, []byte("9222\n/devtools/browser/abc\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if k := EndpointKey(pf, 0); k != "127.0.0.1:9222" {
+	if k := EndpointKey("", pf, 0); k != "127.0.0.1:9222" {
 		t.Errorf("port-file key = %q, want 127.0.0.1:9222", k)
 	}
 	// An explicit port still overrides the file.
-	if k := EndpointKey(pf, 9333); k != "127.0.0.1:9333" {
+	if k := EndpointKey("", pf, 9333); k != "127.0.0.1:9333" {
 		t.Errorf("explicit port should override the file, got %q", k)
+	}
+}
+
+func TestFindEndpointExplicitWins(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name     string
+		explicit string
+		port     int
+		wantURL  string
+		wantErr  bool
+	}{
+		{"ws verbatim", "ws://127.0.0.1:9222/devtools/browser/abc", 9333, "ws://127.0.0.1:9222/devtools/browser/abc", false},
+		{"http kept for /json/version lookup", "http://10.0.0.5:9222", 0, "http://10.0.0.5:9222", false},
+		{"garbage is an error, not a fallback", "9222", 0, "", true},
+		{"empty explicit falls through to port", "", 9333, "http://127.0.0.1:9333", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ep := FindEndpoint(tc.explicit, "", tc.port)
+			if (ep.Err != nil) != tc.wantErr {
+				t.Fatalf("err = %v, wantErr %v", ep.Err, tc.wantErr)
+			}
+			if ep.URL != tc.wantURL {
+				t.Fatalf("URL = %q, want %q", ep.URL, tc.wantURL)
+			}
+		})
+	}
+}
+
+func TestValidateEndpoint(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name    string
+		s       string
+		wantErr bool
+		wantMsg string // substring, checked only when wantErr
+	}{
+		{"empty is valid (no --endpoint given)", "", false, ""},
+		{"ws accepted", "ws://127.0.0.1:9222/devtools/browser/abc", false, ""},
+		{"http accepted", "http://127.0.0.1:9222", false, ""},
+		{"wss rejected as TLS, not a generic bad scheme", "wss://example.com:9222/devtools/browser/abc", true, "TLS endpoints are not supported"},
+		{"https rejected as TLS, not a generic bad scheme", "https://example.com:9222", true, "TLS endpoints are not supported"},
+		{"schemeless garbage rejected", "9222", true, "expected a ws:// or http:// URL"},
+		{"scheme-only ws rejected", "ws://", true, "missing host"},
+		{"scheme-only http rejected", "http://", true, "missing host"},
+		{"scheme and path but no host rejected", "ws:///devtools/browser/abc", true, "missing host"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := ValidateEndpoint(tc.s)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("ValidateEndpoint(%q) err = %v, wantErr %v", tc.s, err, tc.wantErr)
+			}
+			if tc.wantErr && !strings.Contains(err.Error(), tc.wantMsg) {
+				t.Fatalf("ValidateEndpoint(%q) error = %q, want it to contain %q", tc.s, err.Error(), tc.wantMsg)
+			}
+		})
+	}
+}
+
+func TestEndpointKeyExplicit(t *testing.T) {
+	t.Parallel()
+	if got := EndpointKey("ws://10.0.0.5:9222/devtools/browser/x", "", 0); got != "10.0.0.5:9222" {
+		t.Fatalf("got %q", got)
+	}
+	if got := EndpointKey("", "", 9333); got != "127.0.0.1:9333" {
+		t.Fatalf("got %q", got)
 	}
 }

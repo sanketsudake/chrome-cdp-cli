@@ -53,6 +53,36 @@ func (a *App) cmdDoctor() *cobra.Command {
 	return c
 }
 
+// endpointSource names where a resolved Endpoint came from, so the envelope
+// can say "flag" versus "port" versus "port-file" instead of leaving a caller
+// to infer it — the same three-way precedence FindEndpoint itself decides on.
+// "" means no endpoint was found at all, e.g. no --endpoint, no --port, and no
+// DevToolsActivePort file; there is no source to name.
+func endpointSource(explicit string, port int, ep browser.Endpoint) string {
+	switch {
+	case explicit != "":
+		return "flag"
+	case port != 0:
+		return "port"
+	case ep.PortFile != "":
+		return "port-file"
+	default:
+		return ""
+	}
+}
+
+// stampEndpointDiag adds the endpoint_source and browser_bin diagnostics to m
+// when they are known, the same two fields runDoctor reports on every outcome
+// (the connection error, the probed result, and the --no-probe result).
+func (a *App) stampEndpointDiag(m map[string]any, src string) {
+	if src != "" {
+		m["endpoint_source"] = src
+	}
+	if a.defaults.BrowserBin != "" {
+		m["browser_bin"] = a.defaults.BrowserBin
+	}
+}
+
 func (a *App) runDoctor(noProbe bool) {
 	// VS-6. A running daemon has already been through the whole ladder and holds
 	// the connection; re-probing here would raise a second consent request for an
@@ -62,15 +92,19 @@ func (a *App) runDoctor(noProbe bool) {
 		return
 	}
 
-	// --port names a SPECIFIC Chrome, and every other verb resolves it before
-	// the port file. doctor read the port file directly and never looked at the
-	// flag, so `doctor --port 9333` diagnosed whichever browser the file
-	// happened to name and reported that one healthy.
-	ep := browser.FindEndpoint("", a.port)
+	// --endpoint names an EXACT Chrome; --port names a SPECIFIC one; every
+	// other verb resolves both before the port file. doctor read the port file
+	// directly and never looked at either, so `doctor --port 9333` diagnosed
+	// whichever browser the file happened to name and reported that one
+	// healthy.
+	ep := browser.FindEndpoint(a.endpoint, "", a.port)
+	src := endpointSource(a.endpoint, a.port, ep)
 	if ep.Err != nil {
+		details := map[string]any{"state": browser.WSRefused.String(), "port_file": ep.PortFile}
+		a.stampEndpointDiag(details, src)
 		a.emitErr("doctor", result.CodeConnection,
 			"the DevToolsActivePort file is unreadable ("+ep.Err.Error()+") — "+browser.EnableAdvice,
-			map[string]any{"state": browser.WSRefused.String(), "port_file": ep.PortFile})
+			details)
 		return
 	}
 	if ep.URL == "" {
@@ -83,11 +117,14 @@ func (a *App) runDoctor(noProbe bool) {
 	if ep.PortFile != "" {
 		base["port_file"] = ep.PortFile
 	}
+	a.stampEndpointDiag(base, src)
 	if noProbe {
-		a.emitOK("doctor", nil, map[string]any{
+		res := map[string]any{
 			"endpoint": ep.URL, "port_file": ep.PortFile, "via": "port-file", "probed": false, "state": stateUnverified,
 			"status": "an endpoint was found, but --no-probe means nothing was verified — a stale port file looks exactly like this",
-		})
+		}
+		a.stampEndpointDiag(res, src)
+		a.emitOK("doctor", nil, res)
 		return
 	}
 

@@ -360,6 +360,10 @@ func TestMCPParityWithCLI(t *testing.T) {
 			"evaluate", map[string]any{"expression": "1+1", "target": "aa11"}},
 		{"raw", []string{"raw", "Page.getNavigationHistory", "--target", "aa11"},
 			"raw_cdp", map[string]any{"method": "Page.getNavigationHistory", "target": "aa11"}},
+		{"storage list", []string{"storage", "local", "list", "--no-redact", "--target", "aa11"},
+			"storage", map[string]any{"action": "list", "scope": "local", "no_redact": true, "target": "aa11"}},
+		{"storage set", []string{"storage", "session", "set", "k", "v", "--target", "aa11"},
+			"storage", map[string]any{"action": "set", "scope": "session", "key": "k", "value": "v", "target": "aa11"}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -826,6 +830,66 @@ func TestMCPRunnerIsAuthoritativeForPolicyFlags(t *testing.T) {
 	}
 	if strings.Contains(errb.String(), "--policy-off") {
 		t.Errorf("--policy-off was honoured on a tool call: %q", errb.String())
+	}
+}
+
+// TestMCPRunnerFreezesEndpoint: --endpoint is a connection-shaped flag exactly
+// like --port and --profile-dir, and newMCPRunner has to freeze it into
+// a.defaults the same way. Each tool call is a fresh a.Execute(argv) that
+// rebuilds the command tree via newRoot, which re-registers --endpoint with
+// a.defaults.Endpoint as its default; an argv with no --endpoint of its own
+// (every real tool call) then resets a.endpoint to that default. If Endpoint
+// were not frozen, an operator's `chrome-cdp mcp --endpoint ws://...` would
+// parse fine at startup and then silently lose the endpoint on the very first
+// tool call.
+func TestMCPRunnerFreezesEndpoint(t *testing.T) {
+	t.Parallel()
+	const explicit = "ws://127.0.0.1:9222/devtools/browser/abc"
+	var got ConnOpts
+	b := &fakeBrowser{tabs: mcpTabs}
+	app := New(nil, &bytes.Buffer{}, &bytes.Buffer{}).WithConnector(func(_ context.Context, o ConnOpts) (chrome.Browser, error) {
+		got = o
+		return b, nil
+	})
+	// Simulates the state right after cobra parsed a genuine `--endpoint` flag
+	// on the `mcp` invocation itself, before newMCPRunner freezes it.
+	app.endpoint = explicit
+	runner := app.newMCPRunner()
+
+	env, exit := runner.Run(mcpCtx(t), []string{"list", "--json"})
+	if exit != result.ExitOK {
+		t.Fatalf("list: exit = %d, want %d: %s", exit, result.ExitOK, env)
+	}
+	if got.Endpoint != explicit {
+		t.Errorf("ConnOpts.Endpoint on a tool call = %q, want the frozen --endpoint %q", got.Endpoint, explicit)
+	}
+}
+
+// TestMCPRunnerFreezesSession is TestMCPRunnerFreezesEndpoint's sibling for
+// --session: it is exactly as connection-shaped as --port and --endpoint, and
+// newMCPRunner has to freeze it into a.defaults the same way, or an
+// operator's `chrome-cdp mcp --session agent-1` would parse fine at startup
+// and then silently lose the session on the very first tool call.
+func TestMCPRunnerFreezesSession(t *testing.T) {
+	t.Parallel()
+	const wantSession = "agent-1"
+	var got ConnOpts
+	b := &fakeBrowser{tabs: mcpTabs}
+	app := New(nil, &bytes.Buffer{}, &bytes.Buffer{}).WithConnector(func(_ context.Context, o ConnOpts) (chrome.Browser, error) {
+		got = o
+		return b, nil
+	})
+	// Simulates the state right after cobra parsed a genuine `--session` flag
+	// on the `mcp` invocation itself, before newMCPRunner freezes it.
+	app.session = wantSession
+	runner := app.newMCPRunner()
+
+	env, exit := runner.Run(mcpCtx(t), []string{"list", "--json"})
+	if exit != result.ExitOK {
+		t.Fatalf("list: exit = %d, want %d: %s", exit, result.ExitOK, env)
+	}
+	if got.Session != wantSession {
+		t.Errorf("ConnOpts.Session on a tool call = %q, want the frozen --session %q", got.Session, wantSession)
 	}
 }
 

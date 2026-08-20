@@ -1,0 +1,26 @@
+{
+  "skill_name": "drive-chrome-cdp",
+  "evals": [
+    {
+      "id": "list-tabs-find-github",
+      "name": "List tabs and identify the GitHub one",
+      "prompt": "List my tabs and tell me which is on github.com",
+      "expected_output": "Runs `chrome-cdp list --url github --json` to filter the tab list to github.com directly, rather than listing everything and filtering client-side, then reports the matching tab's id and title from the result.",
+      "files": []
+    },
+    {
+      "id": "click-sign-in-current-tab",
+      "name": "Click Sign in on the current tab",
+      "prompt": "Click Sign in on the current tab",
+      "expected_output": "Locates the control by accessible name first with `chrome-cdp find \"Sign in\" --json` (or `chrome-cdp snap --json`) to confirm it exists and get its ref/name, then clicks it with `chrome-cdp click --by name \"Sign in\" --role button --json` (adding `--nth`/`--match` if the name is ambiguous) rather than guessing coordinates.",
+      "files": []
+    },
+    {
+      "id": "save-button-did-nothing",
+      "name": "Diagnose a save button that did nothing",
+      "prompt": "The save button did nothing",
+      "expected_output": "Does not blind-retry the click. Runs `chrome-cdp console --only-errors --json` to check for a JS error and `chrome-cdp net --failed --json` to check for a failed request, then reports what those show (or, if both are clean, checks `chrome-cdp net --url \"<save endpoint>\" --json` for a request that fired but returned a non-2xx status) before deciding whether to retry.",
+      "files": []
+    }
+  ]
+}

@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -284,8 +285,13 @@ func TestMalformedPolicyIsRecordedNotSwallowed(t *testing.T) {
 func TestPathHonorsXDG(t *testing.T) {
 	t.Parallel()
 	got := pathFrom(envFrom(map[string]string{"XDG_CONFIG_HOME": "/x/cfg"}))
-	if got != "/x/cfg/chrome-cdp/config.toml" {
-		t.Errorf("XDG path = %q", got)
+	// filepath.Join normalizes separators for the host OS, so the expectation
+	// is built the same way rather than hardcoded with forward slashes — a
+	// literal "/x/cfg/chrome-cdp/config.toml" is wrong on windows, where Join
+	// renders backslashes.
+	want := filepath.Join("/x/cfg", "chrome-cdp", "config.toml")
+	if got != want {
+		t.Errorf("XDG path = %q, want %q", got, want)
 	}
 }
 
@@ -298,6 +304,9 @@ func TestPathHonorsXDG(t *testing.T) {
 // ran unbounded. Same situation, opposite answer. This asserts they now match.
 func TestUnreadableConfigIsARefusedPolicy(t *testing.T) {
 	t.Parallel()
+	if runtime.GOOS == "windows" {
+		t.Skip("os.Chmod does not restrict read access on Windows, so the permission bit proves nothing")
+	}
 	if os.Geteuid() == 0 {
 		t.Skip("root can read a 0000 file, so the permission bit proves nothing")
 	}
@@ -599,5 +608,159 @@ func TestConsentTimeoutPrecedence(t *testing.T) {
 	d, _ = ResolveFrom(writeConfig(t, "consent_timeout = \"nope\"\n"), noEnv)
 	if d.ConsentTimeout != chrome.DefaultConsentTimeout {
 		t.Errorf("a malformed file value should leave the built-in alone, got %v", d.ConsentTimeout)
+	}
+}
+
+// TestEndpointPrecedence: an explicit endpoint can come from the config file or
+// CHROME_CDP_ENDPOINT, and the env wins — the same precedence every other key
+// here follows.
+func TestEndpointPrecedence(t *testing.T) {
+	t.Parallel()
+
+	// Built-in: unset.
+	d, _ := ResolveFrom(filepath.Join(t.TempDir(), "absent.toml"), noEnv)
+	if d.Endpoint != "" {
+		t.Errorf("built-in endpoint = %q, want empty", d.Endpoint)
+	}
+
+	p := writeConfig(t, `endpoint = "http://127.0.0.1:9222"`+"\n")
+	d, err := ResolveFrom(p, noEnv)
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if d.Endpoint != "http://127.0.0.1:9222" {
+		t.Errorf("config endpoint = %q, want http://127.0.0.1:9222", d.Endpoint)
+	}
+
+	// Env beats the file.
+	d, _ = ResolveFrom(p, envFrom(map[string]string{"CHROME_CDP_ENDPOINT": "ws://127.0.0.1:9222/devtools/browser/x"}))
+	if d.Endpoint != "ws://127.0.0.1:9222/devtools/browser/x" {
+		t.Errorf("env endpoint should win, got %q", d.Endpoint)
+	}
+}
+
+// TestBrowserBinPrecedence: CHROME_CDP_BROWSER_BIN/config browser_bin has no
+// --browser-bin flag, but it follows the same file-then-env precedence as
+// every other scalar key here. Unlike Endpoint, a bad value has no scheme to
+// validate, so there is no malformed-value case.
+func TestBrowserBinPrecedence(t *testing.T) {
+	t.Parallel()
+
+	// Built-in: unset.
+	d, _ := ResolveFrom(filepath.Join(t.TempDir(), "absent.toml"), noEnv)
+	if d.BrowserBin != "" {
+		t.Errorf("built-in browser_bin = %q, want empty", d.BrowserBin)
+	}
+
+	p := writeConfig(t, `browser_bin = "/usr/bin/chromium"`+"\n")
+	d, err := ResolveFrom(p, noEnv)
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if d.BrowserBin != "/usr/bin/chromium" {
+		t.Errorf("config browser_bin = %q, want /usr/bin/chromium", d.BrowserBin)
+	}
+
+	// Env beats the file.
+	d, _ = ResolveFrom(p, envFrom(map[string]string{"CHROME_CDP_BROWSER_BIN": "/opt/brave/brave"}))
+	if d.BrowserBin != "/opt/brave/brave" {
+		t.Errorf("env browser_bin should win, got %q", d.BrowserBin)
+	}
+}
+
+// TestSessionPrecedence: --session's namespace can come from the config file
+// or CHROME_CDP_SESSION, and the env wins, matching TestEndpointPrecedence.
+func TestSessionPrecedence(t *testing.T) {
+	t.Parallel()
+
+	// Built-in: unset.
+	d, _ := ResolveFrom(filepath.Join(t.TempDir(), "absent.toml"), noEnv)
+	if d.Session != "" {
+		t.Errorf("built-in session = %q, want empty", d.Session)
+	}
+
+	p := writeConfig(t, `session = "task-a"`+"\n")
+	d, err := ResolveFrom(p, noEnv)
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if d.Session != "task-a" {
+		t.Errorf("config session = %q, want task-a", d.Session)
+	}
+
+	// Env beats the file.
+	d, _ = ResolveFrom(p, envFrom(map[string]string{"CHROME_CDP_SESSION": "task-b"}))
+	if d.Session != "task-b" {
+		t.Errorf("env session should win, got %q", d.Session)
+	}
+}
+
+// TestMalformedSessionIsDroppedNotFatal: an invalid session name in
+// config.toml or CHROME_CDP_SESSION must not brick the CLI. Session becomes
+// the --session flag's DEFAULT, and the CLI validates that flag ahead of
+// every command (including ones that never touch Chrome) — so an unvalidated
+// bad value here would turn one stray config line into a usage failure across
+// the whole CLI, the same reasoning TestMalformedEndpointIsDroppedNotFatal
+// documents for --endpoint.
+func TestMalformedSessionIsDroppedNotFatal(t *testing.T) {
+	t.Parallel()
+
+	p := writeConfig(t, `session = "has a space"`+"\n") // fails ^[A-Za-z0-9._-]{1,64}$
+	d, err := ResolveFrom(p, noEnv)
+	if err != nil {
+		t.Fatalf("a malformed session value must not fail the whole config: %v", err)
+	}
+	if d.Session != "" {
+		t.Errorf("malformed file session = %q, want dropped (empty)", d.Session)
+	}
+
+	// A malformed env value must not clobber a valid file value either.
+	valid := writeConfig(t, `session = "task-a"`+"\n")
+	d, _ = ResolveFrom(valid, envFrom(map[string]string{"CHROME_CDP_SESSION": "bad value"}))
+	if d.Session != "task-a" {
+		t.Errorf("a malformed env session should leave the file value alone, got %q", d.Session)
+	}
+
+	// A malformed env value with no file underneath leaves the built-in
+	// (empty) alone.
+	d, _ = ResolveFrom(filepath.Join(t.TempDir(), "absent.toml"), envFrom(map[string]string{"CHROME_CDP_SESSION": "bad value"}))
+	if d.Session != "" {
+		t.Errorf("malformed env session with no file = %q, want dropped (empty)", d.Session)
+	}
+}
+
+// TestMalformedEndpointIsDroppedNotFatal: a bad scheme in config.toml or
+// CHROME_CDP_ENDPOINT must not brick the CLI. Endpoint becomes the --endpoint
+// flag's DEFAULT, and the CLI validates that flag ahead of every command
+// (including ones that never touch Chrome) — so an unvalidated bad value here
+// would turn one stray config line into a usage failure across the whole CLI,
+// contradicting "a malformed config is a warning on stderr, not a fatal
+// error." It is dropped instead, the same way a malformed consent_timeout or
+// CHROME_CDP_PORT is silently left at the lower-precedence value rather than
+// erroring (see TestConsentTimeoutPrecedence).
+func TestMalformedEndpointIsDroppedNotFatal(t *testing.T) {
+	t.Parallel()
+
+	p := writeConfig(t, `endpoint = "9222"`+"\n") // no scheme: not ws:// or http://
+	d, err := ResolveFrom(p, noEnv)
+	if err != nil {
+		t.Fatalf("a malformed endpoint value must not fail the whole config: %v", err)
+	}
+	if d.Endpoint != "" {
+		t.Errorf("malformed file endpoint = %q, want dropped (empty)", d.Endpoint)
+	}
+
+	// A malformed env value must not clobber a valid file value either.
+	valid := writeConfig(t, `endpoint = "http://127.0.0.1:9222"`+"\n")
+	d, _ = ResolveFrom(valid, envFrom(map[string]string{"CHROME_CDP_ENDPOINT": "garbage"}))
+	if d.Endpoint != "http://127.0.0.1:9222" {
+		t.Errorf("a malformed env endpoint should leave the file value alone, got %q", d.Endpoint)
+	}
+
+	// A malformed env value with no file underneath leaves the built-in
+	// (empty) alone.
+	d, _ = ResolveFrom(filepath.Join(t.TempDir(), "absent.toml"), envFrom(map[string]string{"CHROME_CDP_ENDPOINT": "garbage"}))
+	if d.Endpoint != "" {
+		t.Errorf("malformed env endpoint with no file = %q, want dropped (empty)", d.Endpoint)
 	}
 }

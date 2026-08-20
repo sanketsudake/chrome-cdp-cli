@@ -102,9 +102,33 @@ var verbClass = map[string]Class{
 	"daemon status": Exempt,
 	"exit-codes":    Exempt,
 	"version":       Exempt,
+	// `skill` (and its `list`/`get` subcommands) never touches a tab — the
+	// content comes entirely from the binary's embedded skills.FS.
+	"skill":      Exempt,
+	"skill list": Exempt,
+	"skill get":  Exempt,
 	// `policy init` writes the policy; it must stay reachable even when the
 	// configured policy would refuse everything, or a bad policy traps the user.
 	"policy init": Exempt,
+	// Verb-group commands are all RUNNABLE (cli.runnableGroup): the group
+	// itself never reaches Chrome, only emitting `usage` for a bad or missing
+	// subcommand so that case is exit 2 instead of cobra's default
+	// help-and-exit-0 for a non-runnable group. The leaves are what actually
+	// touch a tab and carry the real classes.
+	"storage":         Exempt,
+	"storage local":   Exempt,
+	"storage session": Exempt,
+	"dialog":          Exempt,
+	"cookie":          Exempt,
+	"attr":            Exempt,
+	"headers":         Exempt,
+	"emulate":         Exempt,
+	"frame":           Exempt,
+	"daemon":          Exempt,
+	"policy":          Exempt,
+	"record":          Exempt,
+	"recipe":          Exempt,
+	"window":          Exempt,
 
 	// Reading.
 	"snap":  Reading,
@@ -141,6 +165,17 @@ var verbClass = map[string]Class{
 	"attr get":      Reading,
 	"attr list":     Reading,
 	"cookie list":   Reading,
+	// dialog status observes what is on screen; accept/dismiss change what the
+	// page's script sees next (confirm()'s return value is page state, and a
+	// beforeunload accept navigates) — RFC-0018.
+	"dialog status": Reading,
+	// storage list/get only observe the area (RFC-0019); set/rm/clear (below)
+	// write it, so a read_only origin gets the same list/get-yes,
+	// write-no split cookie has.
+	"storage local list":   Reading,
+	"storage local get":    Reading,
+	"storage session list": Reading,
+	"storage session get":  Reading,
 
 	// Mutating.
 	"open":         Mutating, // checked against the DESTINATION origin
@@ -173,6 +208,18 @@ var verbClass = map[string]Class{
 	"emulate geo":      Mutating,
 	"emulate reset":    Mutating,
 	"upload":           Mutating, // RFC-0006; classified ahead of the verb landing
+	"dialog accept":    Mutating, // RFC-0018
+	"dialog dismiss":   Mutating, // RFC-0018
+	// storage set/rm/clear write the area; clear is irreversible and takes no
+	// confirm flag, so an operator bounds it with read_only or
+	// verbs_denied = ["storage local clear"] the same way as cookie clear
+	// (RFC-0019).
+	"storage local set":     Mutating,
+	"storage local rm":      Mutating,
+	"storage local clear":   Mutating,
+	"storage session set":   Mutating,
+	"storage session rm":    Mutating,
+	"storage session clear": Mutating,
 }
 
 // Classify returns a verb's class and whether it was declared in the table.

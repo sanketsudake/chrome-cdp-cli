@@ -17,6 +17,8 @@ chrome-cdp click --by name "Sign in"    # act by meaning, not a brittle CSS id
 chrome-cdp click --at 512,340           # or at a pixel, for canvas/WebGL surfaces
 ```
 
+![click by name; the page reacts](docs/demos/click-by-name.gif)
+
 Because it attaches to the browser you're already using, an app you're signed into loads **authenticated** — no headless browser, no second login, no credential ever typed.
 
 ## Quickstart
@@ -27,10 +29,18 @@ Because it attaches to the browser you're already using, an app you're signed in
    brew install --cask sanketsudake/tap/chrome-cdp
    # or:
    go install github.com/sanketsudake/chrome-cdp-cli/cmd/chrome-cdp@latest
+   # or:
+   npx skills add sanketsudake/chrome-cdp-cli
+   # or:
+   npm i -g @sanketsudake/chrome-cdp   # or: npx @sanketsudake/chrome-cdp doctor
    ```
+
+   The `skills` line installs the skills in `skills/` (`drive-chrome-cdp` plus the two scenario skills) without installing the binary.
 
    Recent Homebrew may print a tap-trust notice for third-party taps on first install.
    The install still proceeds; to acknowledge it explicitly, run `brew trust --cask sanketsudake/tap/chrome-cdp` first.
+
+   Windows: download the `chrome-cdp_<version>_windows_amd64.zip` (or `_arm64_`) archive from [Releases](https://github.com/sanketsudake/chrome-cdp-cli/releases) and unzip `chrome-cdp.exe` onto your `PATH`.
 
 2. **Let Chrome accept a debugger.**
    Launch it with the flag — this never prompts:
@@ -38,11 +48,20 @@ Because it attaches to the browser you're already using, an app you're signed in
    ```sh
    open -a "Google Chrome" --args --remote-debugging-port=9222   # macOS
    google-chrome --remote-debugging-port=9222                    # Linux
+   chrome.exe --remote-debugging-port=9222                       # Windows
    ```
 
    Or, to attach to a Chrome that is already running on the default profile, toggle `chrome://inspect/#remote-debugging` on.
    That path raises a consent prompt on **every fresh attach**, and the prompt is modal to the whole browser — until it is answered Chrome accepts no other input, and it can sit behind the window, so an unanswered one looks like a crash.
    `chrome-cdp` waits for it (see `--consent-timeout`) and never suppresses it.
+
+   For a forwarded or remote Chrome that this tool cannot discover on its own, point at it directly with `--endpoint`:
+
+   ```sh
+   chrome-cdp --endpoint "ws://127.0.0.1:9222/devtools/browser/<id>" doctor
+   ```
+
+   Chrome, Chromium, Brave, Edge, Vivaldi, Arc — `chrome-cdp` finds whichever wrote a `DevToolsActivePort` file; set `CHROME_CDP_BROWSER_BIN` to launch a different browser in the managed fallback.
 
 3. **Check the connection** — `chrome-cdp doctor` actually connects and reports `ready`, `consent_pending`, or `no_endpoint`, with the exact fix.
 
@@ -72,6 +91,25 @@ The [logged-in web app guide](docs/scenarios/automating-a-logged-in-web-app.md) 
   Portal menus, multi-level cascade prompts, and native `<select>`s that a synthetic click can't open — the [`select`](docs/scenarios/driving-widgets-with-select.md) verb opens them.
 - **Works on modern Chrome.**
   It reads Chrome's `DevToolsActivePort` and connects directly, so it keeps working where the classic `--remote-debugging-port` flag stopped (default profile, Chrome M136+).
+- **Attaches where others can't.**
+  On the `chrome://inspect` path, Chrome serves no `/json/*` discovery — so port-only CDP clients and auto-connect fail there ([agent-browser #1003](https://github.com/vercel-labs/agent-browser/issues/1003), [#1321](https://github.com/vercel-labs/agent-browser/issues/1321)).
+  `chrome-cdp` reads `DevToolsActivePort`, waits out the consent prompt, and connects — and with `--endpoint ws://…` you can hand it the browser WebSocket URL directly.
+
+## When to use something else
+
+| Tool | Pick it when you need | Why not chrome-cdp |
+|---|---|---|
+| [agent-browser](https://github.com/vercel-labs/agent-browser) | headless or cloud runs, iOS, a dashboard, or a huge existing ecosystem | chrome-cdp only attaches to a real, already-running Chrome — it never launches, runs headless, or targets cloud/iOS |
+| [chrome-devtools-mcp](https://github.com/ChromeDevTools/chrome-devtools-mcp) | an MCP-first tool maintained by the ChromeDevTools team — your client speaks only MCP and you want Google's own maintenance | chrome-cdp is CLI-first, with MCP as a second interface on top |
+| [pasky/chrome-cdp-skill](https://github.com/pasky/chrome-cdp-skill) | a zero-install Node script for mostly read-only inspection | chrome-cdp is a full CLI with fill/click/upload/select and a policy-guarded write surface |
+
+### Non-goals
+
+These are deliberate, so please do not file them as gaps:
+
+- headless mode, explicit browser launching, cloud providers, iOS, a dashboard, an AI chat, or a plugin system;
+- an auth vault — it would contradict "reuses your live logins, types no credentials";
+- network mocking or route interception on a real browser.
 
 ## The loop, in commands
 
@@ -111,6 +149,7 @@ Full command, flag, and exit-code tables live in the **[CLI reference](docs/cli-
 See **[Using chrome-cdp from an AI agent](docs/using-with-ai-agents.md)**.
 
 An [Agent Skill](https://docs.claude.com/en/docs/claude-code/skills) that teaches the whole loop ships in [`skills/drive-chrome-cdp`](skills/drive-chrome-cdp/SKILL.md) — point your harness at it.
+`chrome-cdp skill --full` prints the same guide from the installed binary, so it always matches the version you run.
 
 ## Use it from an MCP client
 

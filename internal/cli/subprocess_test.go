@@ -7,12 +7,20 @@ package cli_test
 import (
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
 func buildBinary(t *testing.T) string {
 	t.Helper()
-	bin := filepath.Join(t.TempDir(), "chrome-cdp")
+	name := "chrome-cdp"
+	if runtime.GOOS == "windows" {
+		// A `go build -o` target with no extension on windows produces a file
+		// exec can't launch (exec.Command's own lookup expects .exe), which
+		// surfaces as ProcessState.ExitCode() == -1 rather than a build error.
+		name += ".exe"
+	}
+	bin := filepath.Join(t.TempDir(), name)
 	out, err := exec.Command("go", "build", "-o", bin, "github.com/sanketsudake/chrome-cdp-cli/cmd/chrome-cdp").CombinedOutput()
 	if err != nil {
 		t.Fatalf("build binary: %v\n%s", err, out)

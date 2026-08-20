@@ -155,6 +155,21 @@ func (StubBrowser) CookieDelete(context.Context, string, string) (map[string]any
 func (StubBrowser) CookieClear(context.Context, string) (map[string]any, error) {
 	return map[string]any{"cleared": true}, nil
 }
+func (StubBrowser) StorageList(_ context.Context, _ string, scope string, _ chrome.StorageListOpts) (map[string]any, error) {
+	return map[string]any{"scope": scope, "origin": "https://stub.test", "items": []map[string]any{}, "count": 0, "truncated": false}, nil
+}
+func (StubBrowser) StorageGet(_ context.Context, _ string, scope, key string) (map[string]any, error) {
+	return map[string]any{"scope": scope, "origin": "https://stub.test", "key": key, "value": "stub", "present": true}, nil
+}
+func (StubBrowser) StorageSet(_ context.Context, _ string, scope, key, _ string) (map[string]any, error) {
+	return map[string]any{"scope": scope, "origin": "https://stub.test", "key": key, "set": true}, nil
+}
+func (StubBrowser) StorageRemove(_ context.Context, _ string, scope, key string) (map[string]any, error) {
+	return map[string]any{"scope": scope, "origin": "https://stub.test", "key": key, "removed": true}, nil
+}
+func (StubBrowser) StorageClear(_ context.Context, _ string, scope string) (map[string]any, error) {
+	return map[string]any{"scope": scope, "origin": "https://stub.test", "cleared": true}, nil
+}
 func (StubBrowser) AttrGet(context.Context, string, string, string, chrome.QueryOpts) (map[string]any, error) {
 	return map[string]any{"name": "n", "value": "v", "present": true}, nil
 }
@@ -206,6 +221,22 @@ func (StubBrowser) NetStream(context.Context, string, chrome.NetOpts, func(any) 
 }
 func (StubBrowser) NetWait(context.Context, string, chrome.NetCond) (map[string]any, error) {
 	return map[string]any{"matched": false}, nil
+}
+
+// DialogStatus and DialogHandle default to a permissive success shape, like
+// every other StubBrowser method: a stub whose default is a FAILURE shape
+// would make every test that does not care about dialogs look like the "none"
+// case, and that case is an error (ErrNoDialog) a test overrides to produce
+// (RFC-0018).
+func (StubBrowser) DialogStatus(context.Context, string) (map[string]any, error) {
+	return map[string]any{"open": false}, nil
+}
+func (StubBrowser) DialogHandle(_ context.Context, _ string, accept bool, _ string) (map[string]any, error) {
+	action := "dismiss"
+	if accept {
+		action = "accept"
+	}
+	return map[string]any{"handled": true, "action": action, "type": "confirm", "message": "stub"}, nil
 }
 func (StubBrowser) Raw(context.Context, string, string, json.RawMessage) (any, error) {
 	return map[string]any{}, nil

@@ -10,6 +10,7 @@ import (
 
 	"github.com/sanketsudake/chrome-cdp-cli/internal/browser"
 	"github.com/sanketsudake/chrome-cdp-cli/internal/chrome"
+	"github.com/sanketsudake/chrome-cdp-cli/internal/config"
 	"github.com/sanketsudake/chrome-cdp-cli/internal/probetest"
 	"github.com/sanketsudake/chrome-cdp-cli/internal/result"
 )
@@ -302,6 +303,91 @@ func TestConsentTimeoutFlagIsNormalised(t *testing.T) {
 				t.Errorf("--consent-timeout %s reached the connector as %v, want %v", c.flag, got, c.want)
 			}
 		})
+	}
+}
+
+// TestDoctorEndpointGarbageIsUsage: a malformed --endpoint is a usage error
+// for every verb, doctor included — validated before any connection is
+// attempted, exactly like every other malformed invocation here.
+func TestDoctorEndpointGarbageIsUsage(t *testing.T) {
+	t.Parallel()
+	var out, errb bytes.Buffer
+	app := New(noCall(t), &out, &errb)
+	code := app.Execute("doctor", "--endpoint", "garbage", "--json")
+	if code != result.ExitUsage {
+		t.Fatalf("exit = %d, want %d (usage): %s", code, result.ExitUsage, out.String())
+	}
+	var env map[string]any
+	if err := json.Unmarshal(out.Bytes(), &env); err != nil {
+		t.Fatalf("stdout is not one JSON value: %v\n%s", err, out.String())
+	}
+	if got := doctorErrCode(env); got != result.CodeUsage {
+		t.Errorf("error.code = %q, want %q", got, result.CodeUsage)
+	}
+}
+
+// TestDoctorEndpointFlagReportsSource: an explicit --endpoint is reported as
+// the source in the envelope, so a caller can tell it apart from --port or
+// the DevToolsActivePort file.
+func TestDoctorEndpointFlagReportsSource(t *testing.T) {
+	t.Parallel()
+	var out, errb bytes.Buffer
+	app := New(noCall(t), &out, &errb)
+	code := app.Execute("doctor", "--endpoint", "ws://127.0.0.1:9222/devtools/browser/abc", "--no-probe", "--json")
+	if code != result.ExitOK {
+		t.Fatalf("exit = %d, want 0 (ok): %s", code, out.String())
+	}
+	var env map[string]any
+	if err := json.Unmarshal(out.Bytes(), &env); err != nil {
+		t.Fatalf("stdout is not one JSON value: %v\n%s", err, out.String())
+	}
+	res, _ := env["result"].(map[string]any)
+	if res["endpoint_source"] != "flag" {
+		t.Errorf("endpoint_source = %v, want flag: %v", res["endpoint_source"], res)
+	}
+}
+
+// TestDoctorReportsBrowserBinWhenSet: CHROME_CDP_BROWSER_BIN/config
+// browser_bin has no --browser-bin flag, so doctor reads it from a.defaults
+// rather than a flag — this pins that it surfaces in the envelope so a caller
+// can tell what the managed-launch fallback would exec, the same way
+// endpoint_source tells them where the endpoint came from.
+func TestDoctorReportsBrowserBinWhenSet(t *testing.T) {
+	t.Parallel()
+	var out, errb bytes.Buffer
+	app := New(noCall(t), &out, &errb).WithDefaults(config.Defaults{BrowserBin: "/opt/chromium/chrome"})
+	code := app.Execute("doctor", "--endpoint", "ws://127.0.0.1:9222/devtools/browser/abc", "--no-probe", "--json")
+	if code != result.ExitOK {
+		t.Fatalf("exit = %d, want 0 (ok): %s", code, out.String())
+	}
+	var env map[string]any
+	if err := json.Unmarshal(out.Bytes(), &env); err != nil {
+		t.Fatalf("stdout is not one JSON value: %v\n%s", err, out.String())
+	}
+	res, _ := env["result"].(map[string]any)
+	if res["browser_bin"] != "/opt/chromium/chrome" {
+		t.Errorf("browser_bin = %v, want /opt/chromium/chrome: %v", res["browser_bin"], res)
+	}
+}
+
+// TestDoctorOmitsBrowserBinWhenUnset: no config browser_bin /
+// CHROME_CDP_BROWSER_BIN means nothing to report, and an absent key is
+// easier for a caller to check than "" would be.
+func TestDoctorOmitsBrowserBinWhenUnset(t *testing.T) {
+	t.Parallel()
+	var out, errb bytes.Buffer
+	app := New(noCall(t), &out, &errb)
+	code := app.Execute("doctor", "--endpoint", "ws://127.0.0.1:9222/devtools/browser/abc", "--no-probe", "--json")
+	if code != result.ExitOK {
+		t.Fatalf("exit = %d, want 0 (ok): %s", code, out.String())
+	}
+	var env map[string]any
+	if err := json.Unmarshal(out.Bytes(), &env); err != nil {
+		t.Fatalf("stdout is not one JSON value: %v\n%s", err, out.String())
+	}
+	res, _ := env["result"].(map[string]any)
+	if _, ok := res["browser_bin"]; ok {
+		t.Errorf("browser_bin present with Defaults.BrowserBin unset: %v", res)
 	}
 }
 

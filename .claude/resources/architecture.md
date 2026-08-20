@@ -23,7 +23,7 @@ Data flows outermost → innermost: `cli` parses → resolves a `target` → get
 - `browser` — endpoint discovery and classification: finds Chrome's `DevToolsActivePort` file, computes the per-endpoint key, and probes the debug endpoint's WebSocket upgrade (`WSState`, `AwaitUpgrade`) — see connection model below.
 - `chrome` — the `Browser` interface and its chromedp-backed implementation: snapshot, click/type/fill/select, grid, wait, raw CDP. The real driver logic lives here.
 - `chrometest` — `StubBrowser`, a permissive `chrome.Browser` double embedded by the `cli` and `daemon` tests.
-- `state` — the sticky current-target store, keyed per endpoint so distinct `--port`s don't share a "current tab".
+- `state` — the sticky current-target store, keyed per endpoint and per `--session` name, so distinct `--port`s and distinct sessions don't share a "current tab".
 - `daemon` — the held-connection RPC: a background process holds the CDP attach so Chrome's consent prompt appears once per session, not per command.
 - `cli` — the cobra command tree (`app.go` = wiring + envelope emission, `commands.go` = the verbs). Knows nothing about how the browser connects; `main` injects that.
 
@@ -32,7 +32,7 @@ Data flows outermost → innermost: `cli` parses → resolves a `target` → get
 `cli.App` is deliberately ignorant of daemons, sockets, and process spawning — it holds function seams that `main` wires up:
 
 - `WithConnector` — how to get a `chrome.Browser` (daemon client vs. `--no-daemon` direct connect), invoked lazily only when a command needs Chrome.
-- `WithStickyTarget` — get/set the current target; keyed by `ConnOpts` so each endpoint has its own.
+- `WithStickyTarget` — get/set the current target; keyed by `ConnOpts` so each endpoint and each `--session` name has its own.
 - `WithDaemonCtl` — start/stop/status for the per-endpoint daemon.
 - `WithDefaults` — inject config+env defaults (tests keep `config.Builtin()`).
 

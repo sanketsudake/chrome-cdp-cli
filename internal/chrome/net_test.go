@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -16,6 +17,7 @@ import (
 	"github.com/chromedp/cdproto/cdp"
 	"github.com/chromedp/cdproto/network"
 
+	"github.com/sanketsudake/chrome-cdp-cli/internal/encode"
 	"github.com/sanketsudake/chrome-cdp-cli/internal/eventbuf"
 	"github.com/sanketsudake/chrome-cdp-cli/internal/result"
 )
@@ -616,7 +618,7 @@ func TestRenderOmitsHeaderAndBodyKeysUnlessRequested(t *testing.T) {
 	}
 	// The documented always-present keys must all be there, so a consumer can
 	// index them without existence checks.
-	for _, k := range []string{"id", "method", "url", "type", "status", "status_text", "started_ms", "duration_ms", "request_size", "response_size", "from_cache", "failed", "error"} {
+	for _, k := range []string{"id", "method", "url", "type", "status", "status_text", "started_ms", "started_at", "duration_ms", "request_size", "response_size", "from_cache", "failed", "error"} {
 		if _, has := plain[k]; !has {
 			t.Errorf("result is missing %q — it is part of the documented envelope", k)
 		}
@@ -628,6 +630,168 @@ func TestRenderOmitsHeaderAndBodyKeysUnlessRequested(t *testing.T) {
 	}
 	if _, has := withBody["body_unavailable"]; has {
 		t.Error("an available body was marked unavailable")
+	}
+}
+
+// TestRenderCarriesStartedAt is RFC-0017's one envelope change: every row
+// gains an absolute timestamp beside the relative started_ms, because HAR
+// requires startedDateTime and the buffer has no epoch to add started_ms to.
+func TestRenderCarriesStartedAt(t *testing.T) {
+	t.Parallel()
+	start := time.Date(2026, 8, 19, 10, 15, 0, 0, time.UTC)
+	r := netRecord{
+		ID: "r1", Method: "GET", URL: "https://app.example/api",
+		Started: start, HasStart: true,
+	}
+	got := r.render(NetOpts{}, netBody{})
+	want := "2026-08-19T10:15:00.000Z"
+	if got["started_at"] != want {
+		t.Errorf("started_at = %v, want %v", got["started_at"], want)
+	}
+
+	noStart := netRecord{ID: "r2", Method: "GET", URL: "https://app.example/other"}
+	got = noStart.render(NetOpts{}, netBody{})
+	if got["started_at"] != nil {
+		t.Errorf("started_at = %v, want null for a record with no start", got["started_at"])
+	}
+}
+
+// netEntryJSONTags returns the JSON tag names encode.NetEntry declares, so a
+// render key with no matching field — renamed, mistagged, or newly added on
+// one side only — is caught structurally rather than only when some test
+// happens to assert on that exact key.
+func netEntryJSONTags(t *testing.T) map[string]bool {
+	t.Helper()
+	typ := reflect.TypeOf(encode.NetEntry{})
+	tags := make(map[string]bool, typ.NumField())
+	for i := 0; i < typ.NumField(); i++ {
+		name, _, _ := strings.Cut(typ.Field(i).Tag.Get("json"), ",")
+		if name != "" {
+			tags[name] = true
+		}
+	}
+	return tags
+}
+
+// assertKeysHaveNetEntryTags fails if row carries a key encode.NetEntry has no
+// json tag for.
+func assertKeysHaveNetEntryTags(t *testing.T, tags map[string]bool, row map[string]any) {
+	t.Helper()
+	for k := range row {
+		if !tags[k] {
+			t.Errorf("render emitted %q, which has no matching encode.NetEntry json tag", k)
+		}
+	}
+}
+
+// TestRenderRowDecodesIntoNetEntry is VS-11: render's map and encode.NetEntry
+// must agree field for field. A single all-fields-set-once fixture is not
+// enough — Pending, Failed, Error, BodyUnavailable, BodyTruncated and
+// RequestBodyUnavailable all default to their JSON zero value, so a drifted
+// key for any of them would leave the decoded field at zero and a test that
+// never sets them true would stay green regardless. This covers four
+// corners: a clean finished delivery, a still-pending request, a
+// network-level failure, and body-fetch trouble — plus, on every one of them,
+// a reflection check that every key `render` emitted has a matching
+// encode.NetEntry tag, so a future key with no tag is caught even before it
+// is asserted on below.
+func TestRenderRowDecodesIntoNetEntry(t *testing.T) {
+	t.Parallel()
+	tags := netEntryJSONTags(t)
+
+	// Corner 1: a clean, finished, delivered request with headers and bodies.
+	clean := netRecord{
+		ID: "r1", Method: "POST", URL: "https://app.example/api", Type: "xhr",
+		Started: time.Date(2026, 8, 19, 10, 15, 0, 0, time.UTC), HasStart: true, StartedMs: 150,
+		Ended: time.Date(2026, 8, 19, 10, 15, 0, 42_000_000, time.UTC), HasEnd: true,
+		Status: 200, StatusText: "OK", HasStatus: true,
+		RequestSize: 12, ResponseSize: 34, FromCache: true,
+		ReqHeaders:  map[string]string{"content-type": "application/json"},
+		RespHeaders: map[string]string{"content-type": "application/json"},
+		RequestBody: `{"hours":8}`, Finished: true,
+	}
+	cleanRow := clean.render(NetOpts{Headers: true, Body: true}, netBody{Text: `{"ok":true}`, Available: true})
+	assertKeysHaveNetEntryTags(t, tags, cleanRow)
+	cleanEntries, err := encode.DecodeNetEntries([]any{cleanRow})
+	if err != nil {
+		t.Fatalf("DecodeNetEntries (clean): %v", err)
+	}
+	if len(cleanEntries) != 1 {
+		t.Fatalf("got %d entries, want 1", len(cleanEntries))
+	}
+	e := cleanEntries[0]
+	if e.ID != "r1" || e.Method != "POST" || e.URL != "https://app.example/api" || e.Type != "xhr" {
+		t.Errorf("identity fields = %+v", e)
+	}
+	if e.Status == nil || *e.Status != 200 || e.StatusText != "OK" {
+		t.Errorf("status fields = %+v", e)
+	}
+	if _, err := time.Parse(time.RFC3339Nano, e.StartedAt); err != nil {
+		t.Errorf("StartedAt %q does not parse as RFC3339: %v", e.StartedAt, err)
+	}
+	if e.StartedMs != 150 {
+		t.Errorf("StartedMs = %d, want 150", e.StartedMs)
+	}
+	if e.DurationMs == nil || *e.DurationMs != 42 {
+		t.Errorf("DurationMs = %v, want 42", e.DurationMs)
+	}
+	if e.RequestSize != 12 || e.ResponseSize != 34 || !e.FromCache {
+		t.Errorf("size/cache fields = %+v", e)
+	}
+	if len(e.RequestHeaders) != 1 || len(e.ResponseHeaders) != 1 {
+		t.Errorf("headers did not survive the round trip: %+v", e)
+	}
+	if e.RequestBody == nil || *e.RequestBody != `{"hours":8}` {
+		t.Errorf("RequestBody = %v", e.RequestBody)
+	}
+	if e.ResponseBody == nil || *e.ResponseBody != `{"ok":true}` {
+		t.Errorf("ResponseBody = %v", e.ResponseBody)
+	}
+	if e.Failed || e.Pending || e.Error != nil || e.BodyUnavailable || e.BodyTruncated || e.RequestBodyUnavailable {
+		t.Errorf("a clean, finished, delivered record set a failure/pending/unavailable flag: %+v", e)
+	}
+
+	// Corner 2: still in flight — Pending true, no status, no duration.
+	pendingRow := netRecord{ID: "r2", Method: "GET", URL: "https://app.example/slow"}.
+		render(NetOpts{}, netBody{})
+	assertKeysHaveNetEntryTags(t, tags, pendingRow)
+	pendingEntries, err := encode.DecodeNetEntries([]any{pendingRow})
+	if err != nil {
+		t.Fatalf("DecodeNetEntries (pending): %v", err)
+	}
+	if p := pendingEntries[0]; !p.Pending || p.Status != nil || p.DurationMs != nil || p.Failed {
+		t.Errorf("pending entry = %+v, want Pending true and no status/duration/failed", p)
+	}
+
+	// Corner 3: a network-level failure — Failed true, an error string, no status.
+	failedRow := netRecord{
+		ID: "r3", Method: "GET", URL: "https://app.example/broken",
+		NetFailed: true, Error: "net::ERR_CONNECTION_RESET", Finished: true,
+	}.render(NetOpts{}, netBody{})
+	assertKeysHaveNetEntryTags(t, tags, failedRow)
+	failedEntries, err := encode.DecodeNetEntries([]any{failedRow})
+	if err != nil {
+		t.Fatalf("DecodeNetEntries (failed): %v", err)
+	}
+	if f := failedEntries[0]; !f.Failed || f.Error == nil || *f.Error != "net::ERR_CONNECTION_RESET" || f.Status != nil {
+		t.Errorf("failed entry = %+v, want Failed true, the error text, and no status", f)
+	}
+
+	// Corner 4: a delivered response whose body could not be fetched, a
+	// truncated request body, and a request body that was not text — the
+	// three body-side flags render only sets under --body.
+	bodyRow := netRecord{
+		ID: "r4", Method: "POST", URL: "https://app.example/upload",
+		HasStatus: true, Status: 200, Finished: true,
+		RequestBodyBinary: true, RequestBodyTruncated: true,
+	}.render(NetOpts{Body: true}, netBody{Available: false})
+	assertKeysHaveNetEntryTags(t, tags, bodyRow)
+	bodyEntries, err := encode.DecodeNetEntries([]any{bodyRow})
+	if err != nil {
+		t.Fatalf("DecodeNetEntries (body flags): %v", err)
+	}
+	if b := bodyEntries[0]; !b.BodyUnavailable || !b.BodyTruncated || !b.RequestBodyUnavailable {
+		t.Errorf("body-flags entry = %+v, want BodyUnavailable, BodyTruncated and RequestBodyUnavailable all true", b)
 	}
 }
 
@@ -1134,6 +1298,7 @@ func TestNetCapturesACompletedXHR(t *testing.T) {
 	_, page := netFixtures(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
+	before := time.Now() // VS-12: started_at must fall inside this test's wall-clock window.
 
 	id := netLiveTab(ctx, t, b, page)
 	if _, err := b.Pointer(ctx, id, "#ok", PointerOpts{Action: PointerClick}); err != nil {
@@ -1167,6 +1332,29 @@ func TestNetCapturesACompletedXHR(t *testing.T) {
 	}
 	if got["failed"] != false {
 		t.Errorf("failed = %v, want false for a 200", got["failed"])
+	}
+	// VS-12 (RFC-0017): started_at is the one additive field on every row, an
+	// absolute instant beside started_ms's relative one.
+	startedAt, _ := got["started_at"].(string)
+	parsed, err := time.Parse("2006-01-02T15:04:05.000Z07:00", startedAt)
+	if err != nil {
+		t.Fatalf("started_at %q does not parse as RFC 3339 UTC: %v", startedAt, err)
+	}
+	if parsed.Location() != time.UTC {
+		t.Errorf("started_at %q did not parse into UTC", startedAt)
+	}
+	// The window is wide, not one second: netTime derives from CDP's
+	// MonotonicTime, which cdproto cross-references against the HOST's
+	// detected boot time (see cdp.MonotonicTimeEpoch) rather than a
+	// sleep-aware continuous clock. On a machine that slept between boot and
+	// now, that detected boot time is itself skewed from wall-clock reality —
+	// observed tens of minutes off on a long-uptime sandbox — which is a
+	// chromedp/cdproto characteristic this RFC's plumbing cannot correct for.
+	// A wide bound still catches a genuinely broken conversion (wrong units,
+	// the zero Unix epoch, a hardcoded date) without being flaky here.
+	after := time.Now()
+	if parsed.Before(before.Add(-24*time.Hour)) || parsed.After(after.Add(time.Minute)) {
+		t.Errorf("started_at = %v, want roughly inside the test's window [%v, %v]", parsed, before, after)
 	}
 }
 

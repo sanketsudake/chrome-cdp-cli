@@ -15,7 +15,9 @@ import (
 
 	"github.com/BurntSushi/toml"
 
+	"github.com/sanketsudake/chrome-cdp-cli/internal/browser"
 	"github.com/sanketsudake/chrome-cdp-cli/internal/chrome"
+	"github.com/sanketsudake/chrome-cdp-cli/internal/state"
 )
 
 // Defaults are the effective global-flag defaults after the config file and
@@ -32,11 +34,32 @@ type Defaults struct {
 	Wait           string
 	Target         string
 	Port           int
-	ProfileDir     string
-	NoLaunch       bool
-	NoDaemon       bool
-	JSON           bool
-	NoColor        bool
+	// Endpoint is an explicit debug endpoint (ws:// or http://) that wins over
+	// Port and the DevToolsActivePort file (config key endpoint, env
+	// CHROME_CDP_ENDPOINT). See browser.FindEndpoint.
+	Endpoint string
+	// Session namespaces the sticky current tab (config key session, env
+	// CHROME_CDP_SESSION), so several agents can share one Chrome without
+	// stealing each other's current tab. It does NOT namespace the daemon
+	// socket: the connection and its console/net event buffers are shared
+	// across sessions by design. See state.ValidateSession for the grammar.
+	Session string
+	// BrowserBin is a non-Chrome binary the managed-launch fallback execs
+	// instead of Chrome (config key browser_bin, env CHROME_CDP_BROWSER_BIN).
+	// There is no --browser-bin flag: a managed-launch fallback is already the
+	// exception rather than the normal path, so this is env/config only, the
+	// same way CHROME_CDP_PROFILE is.
+	//
+	// Deliberately not the shorter env name one might reach for first: the
+	// shipped Claude skill (skills/drive-chrome-cdp/SKILL.md) already
+	// documents that shorter name as the path to the chrome-cdp binary
+	// itself — a distinct meaning this knob must not collide with.
+	BrowserBin string
+	ProfileDir string
+	NoLaunch   bool
+	NoDaemon   bool
+	JSON       bool
+	NoColor    bool
 
 	// Policy is the optional [policy] table (RFC-0012). No CHROME_CDP_* variable
 	// sets any of its keys: a safety boundary whose CONTENTS an inherited
@@ -126,6 +149,9 @@ type file struct {
 	Wait           *string `toml:"wait"`
 	Target         *string `toml:"target"`
 	Port           *int    `toml:"port"`
+	Endpoint       *string `toml:"endpoint"`
+	Session        *string `toml:"session"`
+	BrowserBin     *string `toml:"browser_bin"`
 	ProfileDir     *string `toml:"profile_dir"`
 	NoLaunch       *bool   `toml:"no_launch"`
 	NoDaemon       *bool   `toml:"no_daemon"`
@@ -280,6 +306,31 @@ func applyFile(d *Defaults, path string) error {
 	if f.Port != nil {
 		d.Port = *f.Port
 	}
+	if f.Endpoint != nil {
+		// A bad scheme here is a warning-shaped mistake, not a reason to brick
+		// the CLI, matching every other malformed scalar key in this file
+		// (consent_timeout, the *_buffer ints): the lower-precedence value is
+		// left in place rather than surfacing as a fatal config error. It is
+		// validated here, not left for the CLI's flag-level check, because
+		// that check runs for EVERY command (including ones that never touch
+		// Chrome) and would otherwise turn one bad line in config.toml into a
+		// usage failure across the whole CLI — contradicting "a malformed
+		// config is a warning on stderr, not a fatal error."
+		if err := browser.ValidateEndpoint(*f.Endpoint); err == nil {
+			d.Endpoint = *f.Endpoint
+		}
+	}
+	if f.Session != nil {
+		// Same reasoning as Endpoint just above: a malformed session name is
+		// dropped, not fatal, and validated here rather than left for the
+		// CLI's flag-level check, which runs for EVERY command.
+		if err := state.ValidateSession(*f.Session); err == nil {
+			d.Session = *f.Session
+		}
+	}
+	if f.BrowserBin != nil {
+		d.BrowserBin = *f.BrowserBin
+	}
 	if f.ProfileDir != nil {
 		d.ProfileDir = *f.ProfileDir
 	}
@@ -423,6 +474,23 @@ func applyEnv(d *Defaults, getenv func(string) string) {
 		if n, err := strconv.Atoi(v); err == nil {
 			d.Port = n
 		}
+	}
+	if v := getenv("CHROME_CDP_ENDPOINT"); v != "" {
+		// Same reasoning as applyFile: an invalid scheme is dropped, not
+		// fatal — matching every other malformed env override in this
+		// function (setInt/setBool leave the prior value alone too).
+		if err := browser.ValidateEndpoint(v); err == nil {
+			d.Endpoint = v
+		}
+	}
+	if v := getenv("CHROME_CDP_SESSION"); v != "" {
+		// Same reasoning as CHROME_CDP_ENDPOINT above: dropped, not fatal.
+		if err := state.ValidateSession(v); err == nil {
+			d.Session = v
+		}
+	}
+	if v := getenv("CHROME_CDP_BROWSER_BIN"); v != "" {
+		d.BrowserBin = v
 	}
 	if v := getenv("CHROME_CDP_PROFILE"); v != "" {
 		d.ProfileDir = v

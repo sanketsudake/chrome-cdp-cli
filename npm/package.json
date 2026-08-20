@@ -1,0 +1,28 @@
+{
+  "name": "@sanketsudake/chrome-cdp",
+  "version": "0.0.0",
+  "description": "Drive your already-running local Chrome from the command line over CDP. This package is a shim that downloads the matching prebuilt chrome-cdp binary.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/sanketsudake/chrome-cdp-cli.git"
+  },
+  "bin": {
+    "chrome-cdp": "bin/chrome-cdp.js"
+  },
+  "files": [
+    "bin/chrome-cdp.js",
+    "install.js",
+    "README.md"
+  ],
+  "scripts": {
+    "postinstall": "node install.js",
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

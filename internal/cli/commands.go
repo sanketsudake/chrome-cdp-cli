@@ -1,19 +1,19 @@
 package cli
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
 
+	"github.com/sanketsudake/chrome-cdp-cli/internal/browser"
 	"github.com/sanketsudake/chrome-cdp-cli/internal/chrome"
 	"github.com/sanketsudake/chrome-cdp-cli/internal/result"
+	"github.com/sanketsudake/chrome-cdp-cli/internal/state"
 )
 
 // Version is set at build time via -ldflags.
@@ -33,7 +33,7 @@ func (a *App) newRoot() *cobra.Command {
 		Version:       Version, // enables `--version`; the `version` subcommand prints it bare
 		SilenceUsage:  true,
 		SilenceErrors: true,
-		PersistentPreRun: func(cmd *cobra.Command, _ []string) {
+		PersistentPreRunE: func(cmd *cobra.Command, _ []string) error {
 			if a.start.IsZero() {
 				a.start = time.Now()
 			}
@@ -47,6 +47,25 @@ func (a *App) newRoot() *cobra.Command {
 			// runs AFTER parsing, so whatever the argv said about --policy-off
 			// or --allow, the server's own frozen values win. See mcpLock.
 			a.mcpLock.restore(a)
+			// --endpoint is validated here, ahead of EVERY command (doctor
+			// included): a malformed one is usage/exit 2 with Chrome never
+			// touched, the same guarantee every other flag validation in this
+			// tree gives. browser.ValidateEndpoint is the one scheme check
+			// FindEndpoint itself uses, so a garbage --endpoint is refused the
+			// same way whether it is caught here or inside FindEndpoint.
+			if err := browser.ValidateEndpoint(a.endpoint); err != nil {
+				a.emitErr(a.verbPath, result.CodeUsage, err.Error(), nil)
+				return err
+			}
+			// --session gets the same treatment, in the same hook, for the same
+			// reason: a malformed session namespace is usage/exit 2 with Chrome
+			// never touched, rather than surfacing later as a confusing sticky-
+			// target failure.
+			if err := state.ValidateSession(a.session); err != nil {
+				a.emitErr(a.verbPath, result.CodeUsage, err.Error(), nil)
+				return err
+			}
+			return nil
 		},
 	}
 	// d holds the effective flag defaults (built-in, overlaid by the config
@@ -61,6 +80,8 @@ func (a *App) newRoot() *cobra.Command {
 	pf.BoolVar(&a.noDaemon, "no-daemon", d.NoDaemon, "connect directly instead of via the shared daemon")
 	pf.StringVar(&a.profileDir, "profile-dir", d.ProfileDir, "managed-launch Chrome profile dir (else $CHROME_CDP_PROFILE or ~/.cache/chrome-cdp/profile)")
 	pf.IntVar(&a.port, "port", d.Port, "explicit Chrome debug port to attach to / launch with (0 = auto)")
+	pf.StringVar(&a.endpoint, "endpoint", d.Endpoint, "explicit Chrome debug endpoint: ws://host:port/devtools/browser/<id> or http://host:port (wins over --port and the DevToolsActivePort file; no wss:// or https:// — TLS endpoints are not supported)")
+	pf.StringVar(&a.session, "session", d.Session, "name a sticky-target namespace so several agents can share one Chrome without stealing each other's current tab (or CHROME_CDP_SESSION)")
 	pf.StringVar(&a.byFlag, "by", d.By, "selector syntax: css|id|search|jspath|css-all|name|ref|cell|label (name = ARIA accessible name; ref = snap e<id>; cell = grid input by [row|]column header; label = form control by visible label text)")
 	pf.StringVar(&a.waitFlag, "wait", d.Wait, "selector wait condition: visible|ready|enabled")
 	pf.StringVar(&a.roleFlag, "role", "", "with --by name: constrain to an ARIA role (button|link|textbox|…)")
@@ -87,9 +108,9 @@ func (a *App) newRoot() *cobra.Command {
 		a.cmdClick(), a.cmdHover(), a.cmdDblClick(), a.cmdRClick(), a.cmdDrag(), a.cmdKey(),
 		a.cmdTripleClick(), a.cmdType(), a.cmdFill(), a.cmdSelect(), a.cmdUpload(), a.cmdGrid(), a.cmdScroll(), a.cmdAttr(),
 		a.cmdScreenshot(), a.cmdPDF(),
-		a.cmdCookie(), a.cmdHeaders(), a.cmdEmulate(), a.cmdFrame(), a.cmdWait(),
-		a.cmdConsole(), a.cmdNet(), a.cmdRecord(), a.cmdRaw(),
-		a.cmdWindow(), a.cmdSession(), a.cmdRecipe(), a.cmdMCP(), a.cmdDoctor(), a.cmdDaemon(), a.cmdPolicy(), a.cmdExitCodes(), a.cmdVersion(),
+		a.cmdCookie(), a.cmdStorage(), a.cmdHeaders(), a.cmdEmulate(), a.cmdFrame(), a.cmdWait(),
+		a.cmdConsole(), a.cmdNet(), a.cmdRecord(), a.cmdRaw(), a.cmdDialog(),
+		a.cmdWindow(), a.cmdSession(), a.cmdRecipe(), a.cmdMCP(), a.cmdDoctor(), a.cmdDaemon(), a.cmdPolicy(), a.cmdExitCodes(), a.cmdVersion(), a.cmdSkill(),
 	)
 	return root
 }
@@ -135,6 +156,12 @@ func (a *App) classifyWithTabHint(b chrome.Browser, id string, err error) (strin
 	// --back` at the start of a history says so instead of timing out.
 	if chrome.IsNoHistory(err) {
 		return result.CodeTargetNotFound, err.Error(), map[string]any{"no_history": true}
+	}
+	// A storage area that does not exist (data:, about:blank, a sandboxed
+	// document) is the same shape of failure: the invocation is well-formed
+	// and the tab is fine, but the thing asked about is not there (RFC-0019).
+	if chrome.IsOpaqueOrigin(err) {
+		return result.CodeTargetNotFound, err.Error(), map[string]any{"opaque_origin": true}
 	}
 	code := classifyActionErr(err)
 	if code != result.CodeTargetTimeout || !a.ariaAddressing() {
@@ -201,7 +228,7 @@ func (a *App) cmdList() *cobra.Command {
 				}
 				rows = append(rows, a.redactTab(tabRow{Idx: i + 1, ID: t.ID, Title: t.Title, URL: t.URL}))
 			}
-			a.emitOK("list", nil, map[string]any{"tabs": rows})
+			a.emitOK("list", nil, map[string]any{"tabs": rows, "current_session": a.session})
 			return nil
 		},
 	}
@@ -231,7 +258,7 @@ func (a *App) cmdUse() *cobra.Command {
 				a.emitErr("use", "generic", "cannot persist the current tab: "+err.Error(), nil)
 				return nil
 			}
-			a.emitOK("use", tgt, map[string]any{"current": tgt.ID})
+			a.emitOK("use", tgt, map[string]any{"current": tgt.ID, "session": a.session})
 			return nil
 		},
 	}
@@ -354,8 +381,26 @@ func (a *App) cmdValue() *cobra.Command {
 	return c
 }
 
+// runnableGroup gives a verb group a RunE that emits one `usage` envelope, so
+// a bare group or a typoed subcommand (`dialog acept`, `cookie foo`) is exit 2
+// with a parseable envelope. A non-runnable group is cobra's default and
+// prints help to stdout with exit 0 — which breaks the one-envelope and
+// exit-code contract at exactly the point a typo is likeliest. Every group
+// goes through this helper so the contract holds uniformly; each application
+// costs one Exempt row in internal/policy/policy.go (the group itself never
+// touches a tab), which TestEveryCommandIsClassified enforces.
+func (a *App) runnableGroup(c *cobra.Command, family, msg string) *cobra.Command {
+	c.Args = cobra.ArbitraryArgs
+	c.RunE = func(*cobra.Command, []string) error {
+		a.emitErr(family, result.CodeUsage, msg, nil)
+		return nil
+	}
+	return c
+}
+
 func (a *App) cmdCookie() *cobra.Command {
-	cookie := &cobra.Command{Use: "cookie", Short: "Read and write cookies"}
+	cookie := a.runnableGroup(&cobra.Command{Use: "cookie", Short: "Read and write cookies"},
+		"cookie", "cookie needs an action (list|set|rm|clear)")
 
 	cookieSet := func() *cobra.Command {
 		var domain, path string
@@ -395,7 +440,8 @@ func (a *App) cmdCookie() *cobra.Command {
 }
 
 func (a *App) cmdAttr() *cobra.Command {
-	attr := &cobra.Command{Use: "attr", Short: "Read/write element attributes"}
+	attr := a.runnableGroup(&cobra.Command{Use: "attr", Short: "Read/write element attributes"},
+		"attr", "attr needs an action (get|list|set|rm)")
 	attr.AddCommand(
 		&cobra.Command{
 			Use: "get <selector> <name>", Short: "Get an attribute", Args: cobra.ExactArgs(2),
@@ -426,7 +472,8 @@ func (a *App) cmdAttr() *cobra.Command {
 }
 
 func (a *App) cmdHeaders() *cobra.Command {
-	headers := &cobra.Command{Use: "headers", Short: "Extra HTTP request headers"}
+	headers := a.runnableGroup(&cobra.Command{Use: "headers", Short: "Extra HTTP request headers"},
+		"headers", "headers needs an action (set)")
 	headers.AddCommand(&cobra.Command{
 		Use: "set <k=v>...", Short: "Set extra request headers", Args: cobra.MinimumNArgs(1),
 		RunE: func(_ *cobra.Command, args []string) error {
@@ -449,7 +496,8 @@ func (a *App) cmdHeaders() *cobra.Command {
 }
 
 func (a *App) cmdEmulate() *cobra.Command {
-	emu := &cobra.Command{Use: "emulate", Short: "Emulate viewport / geolocation"}
+	emu := a.runnableGroup(&cobra.Command{Use: "emulate", Short: "Emulate viewport / geolocation"},
+		"emulate", "emulate needs an action (viewport|geo|reset)")
 	emu.AddCommand(
 		&cobra.Command{
 			Use: "viewport <width> <height>", Short: "Emulate a viewport size", Args: cobra.ExactArgs(2),
@@ -553,7 +601,8 @@ func netRequestQualified(cmd *cobra.Command) bool {
 }
 
 func (a *App) cmdFrame() *cobra.Command {
-	frame := &cobra.Command{Use: "frame", Short: "Inspect frames"}
+	frame := a.runnableGroup(&cobra.Command{Use: "frame", Short: "Inspect frames"},
+		"frame", "frame needs an action (list)")
 	frame.AddCommand(&cobra.Command{
 		Use: "list", Short: "List the frame tree of the target tab",
 		RunE: a.targetAction("frame", func(ctx context.Context, b chrome.Browser, id string, _ []string) (any, error) {
@@ -878,7 +927,8 @@ func withDaemonVersionSkew(res map[string]any) map[string]any {
 }
 
 func (a *App) cmdDaemon() *cobra.Command {
-	daemon := &cobra.Command{Use: "daemon", Short: "Manage the background CDP connection"}
+	daemon := a.runnableGroup(&cobra.Command{Use: "daemon", Short: "Manage the background CDP connection"},
+		"daemon", "daemon needs an action (start|stop|status)")
 	emit := func(res map[string]any, err error) {
 		if err != nil {
 			a.emitErr("daemon", result.CodeDaemon, err.Error(), nil)
@@ -923,93 +973,6 @@ func (a *App) cmdDaemon() *cobra.Command {
 		},
 	)
 	return daemon
-}
-
-func (a *App) cmdSession() *cobra.Command {
-	// The recording flags are locals on this command, like every other flag:
-	// the loop below re-enters the whole command tree per line, and each of
-	// those re-entries rebuilds `session` with fresh locals of its own.
-	var rf sessionRecordFlags
-	c := &cobra.Command{
-		Use:   "session",
-		Short: "Batch mode: read NDJSON argv commands on stdin, run each over one held connection, emit NDJSON results",
-		Long: "Read one command per stdin line as a JSON array of argv, run it against a\n" +
-			"single held Chrome connection (no per-command process spawn or reconnect),\n" +
-			"and print each result as one JSON line. Comment lines (#) and blank lines are\n" +
-			"skipped. Combine with `snap`'s element refs and `--by ref` to act on nodes\n" +
-			"without re-resolving them:\n\n" +
-			"  printf '%s\\n' '[\"use\",\"url:workday\"]' '[\"snap\"]' '[\"click\",\"e42\",\"--by\",\"ref\"]' | chrome-cdp session\n\n" +
-			"--record wraps the whole batch in a recording (RFC-0011) and writes it when\n" +
-			"stdin is drained — including when a step failed, which is when a recording is\n" +
-			"worth the most. It emits one extra result line describing the file.",
-		Args: cobra.NoArgs,
-		RunE: func(cmd *cobra.Command, _ []string) error {
-			// `session` is Exempt — it touches no tab itself and every line it
-			// re-enters is checked on its own — but verbs_denied is checked
-			// ahead of the class precisely so an operator can name it, and
-			// "read commands from stdin and run them" is an obvious thing to
-			// want off. Without this call site the checker refused it correctly
-			// and nothing ever asked, so the rule was accepted and inert.
-			if perr := a.checkPolicy(a.policyVerb(), ""); perr != nil {
-				a.emitErr("session", perr.Code, perr.Message, perr.Details)
-				return nil
-			}
-			// Validated before anything connects, so a misspelled --record path
-			// is exit 2 with Chrome untouched and stdin unread.
-			rec, rerr := a.newSessionRecorder(cmd, rf)
-			if rerr != nil {
-				a.emitErr("session", rerr.Code, rerr.Message, rerr.Details)
-				return nil
-			}
-			// Each result line is a JSON envelope (NDJSON) regardless of the global
-			// --json default. inSession marks the re-entrant runs below, so a
-			// streaming verb rejects itself rather than interleaving many lines
-			// into a batch that promises one envelope per command.
-			a.defaults.JSON = true
-			a.inSession = true
-			r := a.in
-			if r == nil {
-				r = os.Stdin
-			}
-			sc := bufio.NewScanner(r)
-			sc.Buffer(make([]byte, 0, 64*1024), 8*1024*1024) // tolerate long lines
-			for sc.Scan() {
-				line := strings.TrimSpace(sc.Text())
-				if line == "" || strings.HasPrefix(line, "#") {
-					continue
-				}
-				var argv []string
-				if err := json.Unmarshal([]byte(line), &argv); err != nil {
-					a.emitErr("session", result.CodeUsage, "each line must be a JSON array of argv strings: "+err.Error(), nil)
-					continue
-				}
-				if len(argv) == 0 {
-					continue
-				}
-				// The recording starts as soon as a target exists. A batch whose
-				// first line is `use` has none yet, so this retries rather than
-				// refusing to record the run at all.
-				rec.ensureStarted()
-				// Reuse the full command tree per line; the browser connection is
-				// cached on the App, so only the first line pays the connect cost.
-				a.Execute(argv...)
-			}
-			if err := sc.Err(); err != nil {
-				rec.finish()
-				a.emitErr("session", result.CodeGeneric, err.Error(), nil)
-				return nil
-			}
-			// Stopping is the LAST thing, after every line ran, so a batch that
-			// failed half way still has the failure on film.
-			rec.finish()
-			// The session itself succeeded (stdin drained cleanly); per-line success
-			// or failure is carried in each NDJSON envelope, not the process exit.
-			a.exitCode = result.ExitOK
-			return nil
-		},
-	}
-	rf.register(c)
-	return c
 }
 
 func (a *App) cmdExitCodes() *cobra.Command {

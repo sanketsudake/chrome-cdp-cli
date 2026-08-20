@@ -307,6 +307,12 @@ func (c *CDP) forget(id string) {
 	// a window to collect the frames from a tab that has just closed.
 	c.consoleBuf().Forget(id)
 	c.netBuf().Forget(id)
+
+	// The retained dialog (RFC-0018) is per-tab state too: without this, a
+	// tab destroyed while a dialog was still open (or torn down between the
+	// opening and closed events) leaves a stale entry in c.dialogs that
+	// nothing ever clears.
+	c.clearDialog(id)
 }
 
 // watchClosedTabs releases what this connection holds for a tab the BROWSER

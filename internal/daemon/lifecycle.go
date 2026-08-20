@@ -9,8 +9,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/sanketsudake/chrome-cdp-cli/internal/browser"
@@ -25,6 +25,11 @@ func SocketPath(key string) string {
 	if base == "" {
 		if s := os.Getenv("XDG_STATE_HOME"); s != "" {
 			base = s
+		} else if runtime.GOOS == "windows" {
+			// No XDG dirs and no ~/.local/state convention on Windows; Go's net
+			// package supports AF_UNIX sockets on Windows 10 1803+, so the socket
+			// itself is fine — it just needs a directory that exists there.
+			base, _ = os.UserCacheDir()
 		} else {
 			home, _ := os.UserHomeDir()
 			base = filepath.Join(home, ".local", "state")
@@ -266,7 +271,7 @@ func (p *daemonProc) gone() bool {
 var spawnDaemon = func(exePath, sockPath string, env []string) (*daemonProc, error) {
 	cmd := exec.Command(exePath, "__daemon", sockPath)
 	cmd.Env = env
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true} // detach into its own session
+	cmd.SysProcAttr = detachAttr() // detach into its own session
 	if err := cmd.Start(); err != nil {
 		return nil, &chrome.ConnectError{Code: result.CodeDaemon, Message: "cannot start daemon: " + err.Error()}
 	}
@@ -301,17 +306,17 @@ func lockSpawn(ctx context.Context, sockPath string) (func(), error) {
 		return nil, &chrome.ConnectError{Code: result.CodeDaemon, Message: "cannot open the daemon spawn lock: " + err.Error()}
 	}
 	unlock := func() {
-		_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+		flockUnlock(f)
 		_ = f.Close()
 	}
 	fail := func(err error) (func(), error) {
 		_ = f.Close()
 		return nil, &chrome.ConnectError{Code: result.CodeDaemon, Message: "cannot take the daemon spawn lock: " + err.Error()}
 	}
-	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err == nil {
-		return unlock, nil
-	} else if !errors.Is(err, syscall.EWOULDBLOCK) {
+	if locked, err := flockTry(f); err != nil {
 		return fail(err)
+	} else if locked {
+		return unlock, nil
 	}
 	notice(lockWaitNotice)
 
@@ -325,7 +330,7 @@ func lockSpawn(ctx context.Context, sockPath string) (func(), error) {
 	done := make(chan error)
 	abandoned := make(chan struct{})
 	go func() {
-		err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX)
+		err := flockBlock(f)
 		select {
 		case done <- err:
 		case <-abandoned: // nobody is waiting any more: give the lock straight back

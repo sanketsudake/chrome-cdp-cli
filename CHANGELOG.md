@@ -1,0 +1,56 @@
+# Changelog
+
+All notable changes to this project are documented in this file.
+
+The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/).
+
+## [Unreleased]
+
+PR: [#31](https://github.com/sanketsudake/chrome-cdp-cli/pull/31).
+
+### Added
+
+- `--endpoint <url>` — attach to an explicit `ws://` or `http://` debug endpoint, wired through `CHROME_CDP_ENDPOINT` / the `endpoint` config key and the daemon; a malformed value is dropped like other config keys and a scheme-only or host-less flag value is `usage`/exit 2; an unreachable explicit endpoint is a `connection` error, never a managed launch; TLS schemes are refused; the flag is carried into `mcp`, `recipe run` and `session` lines.
+- Chromium-family browser detection — Chrome, Chromium, Brave, Edge, Vivaldi, and Arc `DevToolsActivePort` files are found automatically; `CHROME_CDP_BROWSER_BIN` (`browser_bin` config key) launches a different browser for the managed fallback.
+- Windows release target — `windows/amd64` and `windows/arm64` zip archives, and the short test suite now runs on `windows-latest` in CI.
+- `chrome-cdp skill` verb — serves the embedded `drive-chrome-cdp` agent skill (`--full` for the complete text, a short stub otherwise) so an agent can fetch the skill without a separate install step.
+  Two scenario skills (`check-logged-in`, `fill-grid-and-confirm`) and their evals ship alongside it.
+- `--session <name>` / `CHROME_CDP_SESSION` — namespaces the sticky current tab, so several agents can share one Chrome without stealing each other's tab (see [Several agents, one Chrome](docs/cli-reference.md#several-agents-one-chrome)).
+  Connection flags (`--endpoint`, `--port`, `--profile-dir`, `--session` itself) are frozen into `session`'s per-line defaults for the whole batch, so a stdin line with none of its own doesn't silently reset to the config default mid-batch.
+- `screenshot --annotate` — numbered reference markers with a legend in the envelope ([RFC-0016](docs/rfc/0016-screenshot-annotate.md)).
+- `net --har` — exports retained requests as a HAR 1.2 file ([RFC-0017](docs/rfc/0017-har-export.md)).
+- `dialog status|accept|dismiss` — act on a native dialog already on screen ([RFC-0018](docs/rfc/0018-dialog-verb.md)).
+- `storage local|session` — read, write, and clear `localStorage`/`sessionStorage` ([RFC-0019](docs/rfc/0019-web-storage.md)).
+- npm shim `@sanketsudake/chrome-cdp` — `npx @sanketsudake/chrome-cdp` / `npm i -g` downloads the matching release binary, with strict version validation, a download timeout, staged-file and temp-file cleanup on every path, and a documented trust model.
+- README positioning section and explicit non-goals, contrasting `chrome-cdp` with agent-browser, chrome-devtools-mcp, and Playwright-style tools.
+
+### Fixed
+
+- A bare verb group or a typoed subcommand (`dialog acept`, `cookie foo`, `storage local typo`) now emits one `usage` envelope with exit 2 instead of cobra's help with exit 0, so the envelope and exit-code contract holds on every group.
+- `session`, `recipe run` and `mcp` now freeze the same connection-flag list into their re-entrant defaults, so a global `--timeout` is no longer dropped per `session` line and a global `--consent-timeout` is no longer dropped per recipe step or MCP tool call.
+
+## [0.2.2] - 2026-08-16
+
+### Fixed
+
+- `--by cell` ranks candidates by grid, re-resolves replaced nodes, and names the cover; `key` reports `focused_id` ([#30](https://github.com/sanketsudake/chrome-cdp-cli/pull/30)).
+
+## [0.2.1] - 2026-07-28
+
+### Fixed
+
+- Grid-cell addressing, an empty-selector usage error, and stale-daemon visibility ([#29](https://github.com/sanketsudake/chrome-cdp-cli/pull/29)).
+- The RFC 6455 accept-key GUID, so any attach can connect ([#26](https://github.com/sanketsudake/chrome-cdp-cli/pull/26)).
+
+### Docs
+
+- `text`, `type`, `select`, and `open` guidance in the `drive-chrome-cdp` skill, corrected from a live run ([#28](https://github.com/sanketsudake/chrome-cdp-cli/pull/28)).
+
+## [0.2.0] - 2026-07-28
+
+Baseline tagged release; see [Releases](https://github.com/sanketsudake/chrome-cdp-cli/releases) for the full history up to this point.
+
+[Unreleased]: https://github.com/sanketsudake/chrome-cdp-cli/compare/v0.2.2...HEAD
+[0.2.2]: https://github.com/sanketsudake/chrome-cdp-cli/compare/v0.2.1...v0.2.2
+[0.2.1]: https://github.com/sanketsudake/chrome-cdp-cli/compare/v0.2.0...v0.2.1
+[0.2.0]: https://github.com/sanketsudake/chrome-cdp-cli/releases/tag/v0.2.0

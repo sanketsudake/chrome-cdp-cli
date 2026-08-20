@@ -51,12 +51,14 @@ These apply to every command.
 | `--nth <n>` | — | with `--by name`: pick the Nth (1-based) match |
 | `--match <mode>` | `exact` | with `--by name`: `exact` \| `contains` \| `regex` |
 | `--in-row <text>` | — | with `--by name`: scope to the table row whose text contains this |
-| `--on-dialog <policy>` | — | on click/type/fill: `accept` \| `dismiss` a native dialog raised during the action |
+| `--on-dialog <policy>` | — | on click/type/fill: `accept` \| `dismiss` a native dialog raised during the action (a dialog already up is [`dialog`](#native-dialogs), not this) |
 | `--pierce` | off | reach into shadow DOM / iframes (via DevTools search) |
 | `--no-daemon` | off | connect directly instead of via the shared daemon |
 | `--no-launch` | off | don't auto-launch a fallback Chrome |
 | `--port <n>` | auto | explicit Chrome debug port |
+| `--endpoint <url>` | — | explicit debug endpoint, `ws://host:port/devtools/browser/<id>` or `http://host:port` (wins over `--port` and the `DevToolsActivePort` file; see [Explicit endpoint](#explicit-endpoint)) |
 | `--profile-dir <dir>` | default | managed-launch Chrome profile dir |
+| `--session <name>` | — | namespace the sticky current tab, so several agents can share one Chrome without stealing each other's tab (see [Several agents, one Chrome](#several-agents-one-chrome)) |
 | `--no-color` | off | plain output (also honors `$NO_COLOR`) |
 | `-q, --quiet` | off | suppress non-essential output |
 | `-v, --verbose` | off | verbose diagnostics on stderr |
@@ -80,6 +82,25 @@ A command acts on one tab, chosen (highest precedence first) by `--target`, then
 chrome-cdp use url:github     # set the sticky tab once…
 chrome-cdp snap               # …then omit --target on later commands
 ```
+
+### Several agents, one Chrome
+
+`--session <name>` (config key `session`, env `CHROME_CDP_SESSION`) namespaces the sticky current tab, so several agents driving the same Chrome each keep their own "current tab" instead of stealing each other's.
+Set it once and every command in that shell inherits it:
+
+```sh
+export CHROME_CDP_SESSION=<task>   # before the first command
+chrome-cdp use url:github          # sets THIS session's sticky tab, not any other's
+```
+
+A session name must match `^[A-Za-z0-9._-]{1,64}$`; a malformed `--session` is `usage`/exit 2 before Chrome is touched, and a malformed `CHROME_CDP_SESSION` or config `session` is dropped the same way a malformed `endpoint` is.
+`list` reports the active session name as `current_session` (empty when none), and `use` reports it as `session`, so an agent can tell which namespace a command ran under from the envelope alone.
+
+The daemon socket is **not** per session: every session on the same endpoint shares one connection and its console/net event buffers by design, so `console`/`net` capture across sessions the same way they always have.
+Only the sticky current tab is namespaced.
+
+A sticky tab that was closed is not silently swapped for another tab — it resolves to `target_not_found`, the same `tab_gone` behaviour the `agent-browser` tool documents.
+Run `use` again to point the session at a live tab.
 
 ## Addressing elements
 
@@ -498,6 +519,38 @@ chrome-cdp wait --request "/api/save" --status 2xx # confirm the write actually 
 `--idle` and `--request` answer different questions.
 `--idle` is "the page settled"; `--request` is "this specific call finished with this outcome", which is the sharper tool on a page whose polling or long-lived stream never lets the network go quiet.
 
+### Native dialogs
+
+A native `alert`/`confirm`/`prompt`/`beforeunload` blocks the tab's renderer for as long as it is up: every `eval`, DOM read and screenshot hangs until it closes.
+`dialog` inspects and closes one that is **already on screen** — the recovery for an unguarded `click` that opened a `confirm()` and timed out — which `--on-dialog` cannot help with, because it only handles a dialog the action it decorates itself opens.
+
+```sh
+chrome-cdp dialog status                      # {"open":true,"type":"confirm","message":"Delete 3 items?",…}
+chrome-cdp dialog accept                      # confirm() -> true; the blocked click completes
+chrome-cdp dialog accept "Quarterly report"   # prompt() -> "Quarterly report"
+chrome-cdp dialog dismiss                     # confirm() -> false / prompt() -> null / beforeunload stays
+```
+
+| Subcommand | Args | Purpose |
+|------------|------|---------|
+| `dialog status` | none | report the dialog open on the target tab, or `open: false` |
+| `dialog accept [text]` | at most one | close it as OK would; `text` answers a `prompt()` (`""` when omitted — **not** the prompt's default) and is ignored for the other types |
+| `dialog dismiss` | none | close it as Cancel would |
+
+`status` answers from an event the connection **retained when the dialog opened**, without sending the browser any CDP traffic; `accept`/`dismiss` issue the one command that still works while the renderer is blocked, `Page.handleJavaScriptDialog`.
+**Both work while the page is blocked** — status because it never talks to the renderer, and accept/dismiss because that one command is exactly the unblocker, so a `dialog accept` in another terminal completes even while a wedged `click` is still waiting out its own deadline in the first.
+
+The retention is the design, and it bounds what `dialog` can see: a dialog is only visible to CDP if a connection with the `Page` domain enabled was attached to the tab **when it opened**.
+With the daemon (the default), a tab is watched from the first command that touches it, so the normal flow — navigate, click, timeout, `dialog accept` — is covered throughout.
+The first `dialog status` on a tab the daemon has never touched cannot know about an earlier dialog and says so once, with a `note`; every call after that is fully watched.
+
+**`--no-daemon` has only partial coverage**, the same shape as [`console`](#console): every invocation is a fresh attach, so `dialog status` always answers `open: false` with the note and `dialog accept`/`dismiss` always refuse with `target_not_found` — unless the commands run inside one [`session`](#batch-mode), where the connection lives across lines and a dialog opened by an earlier line is retained for a later one.
+
+`dialog status` with nothing open is **not an error**: exit 0, `open: false` — so "check, then act" needs no error handling for the normal case.
+`dialog accept`/`dismiss` with nothing retained is `target_not_found` (exit 4) with `error.dialog: "none"` — well-formed, but the thing to act on is not there, so re-read the state rather than fixing the command.
+`dialog status` result: `open`, and when `open` is true also `type` (`alert`\|`confirm`\|`prompt`\|`beforeunload`), `message`, `default_prompt`, `frame_url` (the frame that opened it — an iframe's dialog is not the tab's own URL), `opened_at`.
+`dialog accept`/`dismiss` result: `handled: true`, `action`, `type`, `message`, and — for a `prompt` accepted with text — `text`, or `text_ignored: true` when text was given to a dialog with no input.
+
 ### Console
 
 `console` reads what the page said: `console.*` output and uncaught exceptions, with their stack.
@@ -566,6 +619,7 @@ Like `console`, capture starts when the connection **attaches to a tab**, not wh
 | `--clear` | off | drop the buffered requests after reading |
 | `--follow` | off | stream completed requests as NDJSON |
 | `--fail-on-match` | off | exit 1 if any request matched |
+| `--har <path>` | — | write the matching requests to `<path>` as HAR 1.2 and print a summary instead of the listing |
 
 ```sh
 chrome-cdp net --xhr --limit 20                          # recent API calls
@@ -581,7 +635,7 @@ The result carries `requests`, `count` (after filtering), `buffered`, `dropped`,
 It is scoped to the same `--url` / `--method` / `--type` / `--since` filter as the listing, so a permanently open SSE stream or long poll does not make every read look unfinished forever.
 `--status` and `--failed` are deliberately *not* applied to it: a request still in flight has no status, so applying them would make `pending` a constant zero for exactly the reads that ask about an outcome.
 
-Each request carries `id`, `method`, `url`, `type`, `status`, `status_text`, `started_ms` (milliseconds since capture began on this tab), `duration_ms`, `request_size`, `response_size`, `from_cache`, `failed`, and `error`.
+Each request carries `id`, `method`, `url`, `type`, `status`, `status_text`, `started_ms` (milliseconds since capture began on this tab), `started_at` (the same instant as an RFC 3339 UTC timestamp with millisecond precision, `null` when the record has no start), `duration_ms`, `request_size`, `response_size`, `from_cache`, `failed`, and `error`.
 `status`, `duration_ms`, and `error` are `null` when they do not exist yet; `failed` means a non-2xx status **or** a network-level failure, so a delivered 500 and a DNS failure both show up under `--failed`.
 
 **Redaction is on by default.**
@@ -626,6 +680,18 @@ It cannot combine with `--fail-on-match`, and it is a usage error inside `sessio
 A window in which nothing completed produces **no output at all** and exits 0, exactly as with `console --follow`, and it does not block other commands against the same daemon.
 
 **`--no-daemon` has only partial history**, exactly as with `console`: enabling the domain surfaces the handful of resources Chrome still holds for the page, never the session, so the read carries a `note` rather than passing a short list off as the whole story.
+
+**`--har <path>`** writes the same filtered read to `<path>` as an [HTTP Archive 1.2](http://www.softwareishard.com/blog/har-12-spec/) file, for handing evidence to a backend team, a vendor, or DevTools/Charles/Fiddler, instead of pasting JSON nobody's tool reads.
+It runs exactly the read `net` would otherwise print — same `--url` / `--method` / `--status` / `--type` / `--xhr` / `--failed` / `--since` / `--limit` / `--clear` grammar — and forces headers on regardless of `--headers`; add `--body` for request/response payloads ("Save all as HAR with content", in DevTools' own terms).
+Redaction is unchanged: the HAR can contain nothing the listing would not have printed under the same flags, so `--no-redact` is the only way a live credential reaches the file.
+The file is written `0600`, not the `0644` `screenshot`/`pdf` use, because a HAR records the user's logged-in session and, with `--no-redact`, may hold live tokens verbatim; an existing file at the path is overwritten.
+
+Instead of the listing, the result is a summary: `{path, bytes, entries, redacted, with_content, truncated_bodies, pending, buffered, dropped, truncated, note?}`.
+`entries` equals what the listing's `count` would have been; `truncated_bodies` counts entries whose request or response body was cut at `net_max_body`, and is `0` without `--body`; `pending`/`buffered`/`dropped`/`truncated`/`note` carry the same meaning the listing gives them.
+`--har ''` and `--har` combined with `--follow` are `usage` / exit 2; a path naming an existing directory, or whose parent directory does not exist or is not a directory, is `generic` / exit 1 — both checked before Chrome is contacted.
+With `--clear` the buffer is dropped inside the read itself before the file is written, so this pre-connect check also probes the destination is actually writable (not just that it exists), the same way `record stop -o` does, rather than risk losing the buffer to a late write failure.
+`--har` composes with `--fail-on-match`: the file is written first, then the assertion is judged on the same count, so a tripped assertion never costs you the export.
+It works inside `session` and a recipe step exactly like an ordinary `net` line — one envelope, the summary — and is not exposed to the MCP `network` tool, because a path on the CLI's disk is not something an MCP client on the other side of the protocol can use.
 
 Bad `--status` / `--type` / `--url` regex / `--since` values are `usage` / exit 2, validated before anything connects to Chrome.
 
@@ -816,7 +882,7 @@ Names are prefixed `chrome_cdp_` so they stay unambiguous in clients that flatte
 
 | Tool | Wraps | Notes |
 |------|-------|-------|
-| `chrome_cdp_tabs` | `list`, `open`, `use`, `close`, `activate` | one `action` argument |
+| `chrome_cdp_tabs` | `list`, `open`, `use`, `close`, `activate`, `window info`/`size`, `dialog status`/`accept`/`dismiss` | one `action` argument; `--read-only` keeps `dialog_status` and drops `dialog_accept`/`dialog_dismiss` |
 | `chrome_cdp_navigate` | `nav`, including back/forward/reload | |
 | `chrome_cdp_snapshot` | `snap` | the primary read |
 | `chrome_cdp_read` | `text`, `html`, `value`, `grid` | one `kind` argument |
@@ -834,6 +900,7 @@ Names are prefixed `chrome_cdp_` so they stay unambiguous in clients that flatte
 | `chrome_cdp_evaluate` | `eval` | powerful and unconstrained; needs `--allow-eval` |
 | `chrome_cdp_batch` | `session` | several tools over one round trip |
 | `chrome_cdp_raw_cdp` | `raw` | `--tools full` (or named in `--tools`), plus `--allow-eval` |
+| `chrome_cdp_storage` | `storage local\|session list\|get\|set\|rm\|clear` | one `action` + `scope` argument; `--tools full` (or named in `--tools`); `--read-only` keeps `list`/`get` and drops `set`/`rm`/`clear` |
 
 Each tool's arguments mirror the CLI flags they wrap, in `snake_case` (`in_row` for `--in-row`), and the element-addressing arguments (`by`, `role`, `nth`, `match`, `in_row`, `wait`, `pierce`) are documented in every schema that takes them — the accessible-name addressing is this tool's advantage on real applications, and an agent only gets it if the schema says so.
 The streaming forms (`console --follow`, `net --follow`) are not exposed: they would break the one-result-per-call contract.
@@ -872,6 +939,7 @@ Both write to `./<command>-<timestamp>.<ext>` by default — with a `-1`, `-2`, 
 | `--quality <n>` | `80` | 0–100; **jpeg/webp only** — passing it with `png` is a usage error, not a silent no-op |
 | `--scale <f>` | `1` | output scale factor, 0.1–3, applied in the renderer so text stays crisp |
 | `--padding <px>` | `0` | expand an element capture, clamped to the page so an element at an edge keeps a non-negative origin |
+| `--annotate` | off | number every actionable element in the captured area and list them in `result.annotations`; on a backgrounded tab the labels are skipped (`annotated: false`) — run `activate` first |
 
 `--selector`, `--full-page` and `--region` select different modes and are mutually exclusive.
 
@@ -880,6 +948,7 @@ chrome-cdp screenshot --selector "#invoice-table" --padding 8 -o invoice.png
 chrome-cdp screenshot --full-page -o report.png
 chrome-cdp screenshot --format jpeg --quality 60 --scale 0.5 -o small.jpg
 chrome-cdp screenshot --selector "Summary card" --by name --role region
+chrome-cdp screenshot --annotate -o labelled.png
 ```
 
 The result reports `path`, `bytes`, `width`, `height`, `format`, `scale`, `mode` (`viewport` \| `element` \| `full_page` \| `region`) and the resolved `clip` in page coordinates.
@@ -887,6 +956,19 @@ The result reports `path`, `bytes`, `width`, `height`, `format`, `scale`, `mode`
 
 Full-page capture does **not** force lazy-loaded content to load: images below the fold that appear on scroll may come out blank.
 Scroll through the page first (`scroll --dy …`, then `wait --idle`) when that matters.
+
+**`--annotate` (RFC-0016).**
+
+It draws a numbered label `[N]` at the centre of every *actionable* element in the captured area — the things a person clicks, types into, or toggles, not every node `snap` would print — and appends a legend to the result: `annotations: [{n, ref, role, name, center, states?, occluded?}]`, in label order, `n` matching the number drawn on the image.
+`center` is the element's centre in viewport CSS pixels at capture time, the same contract `find` reports and `--at` accepts; for a `--full-page` capture a below-the-fold centre is outside the viewport, so use `--by ref` there instead.
+`ref` is an `e<id>` that `--by ref` accepts, so a legend entry is a live address, not just a picture.
+
+The result also carries `annotated` (`true` when at least one label put pixels on the image) and `truncated` (`true` when more than 200 actionable nodes existed — the label cap).
+On a backgrounded tab, or a capture with nothing actionable in it, the plain image still comes back: `annotated` is `false` and `reason` names why (`tab_hidden` \| `tree_unavailable` \| `no_actionable_nodes`); the command still exits 0.
+`--annotate` composes with `--selector`, `--region` and `--full-page` — only elements inside the resolved clip are labelled and listed.
+
+`--annotate --format webp` and `--annotate -o -` are both usage errors raised before Chrome is contacted: the labels are drawn in Go (no standard-library webp encoder), and the legend lives in the envelope, which `-o -` does not emit.
+`--annotate --format jpeg` is fine — the capture is taken losslessly and encoded to jpeg once, after drawing.
 
 **pdf**
 
@@ -1008,9 +1090,55 @@ Agents: `record` is deliberately outside the default MCP tool set — an agent s
 | Command | Does |
 |---------|------|
 | `cookie list\|set\|rm\|clear` | read and write cookies for the tab |
+| `storage local\|session list\|get\|set\|rm\|clear` | read and write the tab's `localStorage` / `sessionStorage` |
 | `headers set <k=v> …` | set extra request headers |
 | `emulate viewport\|geo\|reset` | override viewport size / geolocation, or clear overrides |
 | `frame list` | list the tab's frame tree |
+
+### Web storage
+
+`storage` reads and writes the DOM Storage area of the tab's **top frame** — `localStorage` under `local`, `sessionStorage` under `session` — over the DevTools `DOMStorage` domain.
+Nothing runs in the page's JavaScript context, so it works on a hidden tab and is unaffected by a page that has shadowed `window.localStorage`.
+It is shaped like `cookie` on purpose: subcommands rather than flags, positional key and value, `storage` as the envelope's `command`.
+
+```sh
+chrome-cdp storage local list                             # keys + redacted values
+chrome-cdp storage local get theme                         # {"value":"dark","present":true}
+chrome-cdp storage local set onboarding_done 1
+chrome-cdp storage session rm draft
+chrome-cdp storage local clear
+chrome-cdp storage local list --no-redact --max-value 0    # everything, verbatim
+```
+
+| Subcommand | Args | Purpose |
+|------------|------|---------|
+| `storage local\|session list` | none | every key in the area, values redacted and size-capped |
+| `storage local\|session get <key>` | exactly one | one value, raw and uncut; `present: false` when the key is absent |
+| `storage local\|session set <key> <value>` | exactly two | create or overwrite one key |
+| `storage local\|session rm <key>` | exactly one | remove one key; removing an absent key succeeds silently |
+| `storage local\|session clear` | none | remove every key in the area |
+
+| Flag (on `list` only) | Default | Meaning |
+|------------------------|---------|---------|
+| `--no-redact` | off | do **not** redact credential-shaped keys and values |
+| `--max-value <bytes>` | `4096` | cut each listed value at this many bytes and mark it `truncated: true`; `0` means no cap; a negative value is `usage` |
+
+**`list` redacts by default.**
+This CLI drives your real, logged-in Chrome, so `localStorage`/`sessionStorage` hold live session tokens as a matter of course — Supabase, Firebase, MSAL and redux-persist all keep them there.
+`list` withholds a value wholesale when the **key** is credential-shaped, and otherwise redacts credential-shaped fields inside the value, using the same predicates and the same `<redacted>` placeholder [`net`](#network) applies to headers, URL parameters and bodies.
+Redaction runs **before** the size cap, so a token that would straddle `--max-value` is fully withheld rather than partially visible.
+`get <key>` has no `--no-redact` and no cap: naming the key **is** the explicit ask, so it always returns the raw, uncut value.
+`--no-redact` is `list`'s explicit opt-out.
+
+**The area that does not exist is `target_not_found`, not a crash.**
+A `data:` page, a fresh `about:blank` tab, or a sandboxed document has no identifiable security origin, so it has no web storage at all.
+`storage` checks this before issuing any `DOMStorage` command and fails with `error.code: "target_not_found"` (exit 4) and `error.opaque_origin: true`, naming the page's URL in the message.
+
+`get` of an absent key and `rm` of an absent key are both **not errors**: `get` reports `present: false` with `value: ""`, `rm` reports `removed: true`, both exit 0.
+`set`, `rm`, and `clear` are always `set: true` / `removed: true` / `cleared: true` on success — the failure case is an error envelope, never a `false`.
+`clear` removes every key in the area and takes no confirmation flag; bound it with `read_only` or `verbs_denied = ["storage local clear"]` the same way as `cookie clear`.
+
+`chrome_cdp_storage` is exposed over MCP **only under `--tools full`, or named explicitly in `--tools`**: reading the area a session token lives in is a capability a user opts into, not a default.
 
 ### Escape hatch
 
@@ -1031,7 +1159,16 @@ chrome-cdp raw Browser.getVersion --browser                  # browser-level met
 | `policy init` | write a starter [`[policy]`](#policy) table allow-listing the current tab's origin (`--wildcard`, `--print`, `-o`) |
 | `exit-codes` | print the exit-code table |
 | `version` | print the version |
+| `skill [--full]\|list\|get <name>` | print an embedded agent skill: drive-chrome-cdp plus the scenario skills built on it |
 | `completion bash\|zsh\|fish\|powershell` | shell completion script |
+
+`skill` serves the agent skills baked into this binary, so the doc an agent reads always matches the CLI version it drives — a vendored copy can drift, this can't.
+With no subcommand it prints the drive-chrome-cdp core loop; `--full` adds every drive-chrome-cdp reference.
+`skill list` names every embedded skill (`drive-chrome-cdp`, `check-logged-in`, `fill-grid-and-confirm`, …) and the drive-chrome-cdp references.
+`skill get <name>` resolves `<name>` in this order: a drive-chrome-cdp reference (`core`, `widgets`, …), else a skill name (`check-logged-in`), else the explicit `<skill>/<reference>` form (`drive-chrome-cdp/core`); anything else is a `usage` error (exit 2).
+It never connects to Chrome.
+In human mode each form writes the raw markdown to stdout, no envelope; `skill list` prints the skill names (drive-chrome-cdp first), a blank line, then the reference names.
+With `--json`: bare `skill`/`skill --full` wrap content as `{"name":"drive-chrome-cdp","references":[…],"content":"…"}`; `skill get <name>` wraps it as `{"name":"<skill>","reference":"<ref, or empty for a whole skill>","content":"…"}`; `skill list` returns `{"name":"drive-chrome-cdp","skills":[…],"references":[…]}` (no `content`).
 
 ## Connection model
 
@@ -1056,6 +1193,44 @@ If no debug-enabled Chrome is found, it launches a managed Chrome on a dedicated
 
 A background **daemon** holds the connection, so the consent prompt appears once per session rather than once per command.
 It starts lazily on first use and idles out after 30 minutes; manage it with `daemon start|stop|status`, or bypass it with `--no-daemon`.
+
+### Which browsers
+
+`chrome-cdp` is not Chrome-specific: it looks for a `DevToolsActivePort` file from any Chromium-family browser, in this order (first match wins), and attaches to whichever one wrote it.
+
+| Browser | macOS | Linux | Windows (under `%LOCALAPPDATA%`) |
+|---------|-------|-------|-----------------------------------|
+| Chrome | `~/Library/Application Support/Google/Chrome/DevToolsActivePort` | `~/.config/google-chrome/DevToolsActivePort` | `Google\Chrome\User Data\DevToolsActivePort` |
+| Chromium | `~/Library/Application Support/Chromium/DevToolsActivePort` | `~/.config/chromium/DevToolsActivePort` | `Chromium\User Data\DevToolsActivePort` |
+| Brave | `~/Library/Application Support/BraveSoftware/Brave-Browser/DevToolsActivePort` | `~/.config/BraveSoftware/Brave-Browser/DevToolsActivePort` | `BraveSoftware\Brave-Browser\User Data\DevToolsActivePort` |
+| Edge | `~/Library/Application Support/Microsoft Edge/DevToolsActivePort` | `~/.config/microsoft-edge/DevToolsActivePort` | `Microsoft\Edge\User Data\DevToolsActivePort` |
+| Vivaldi | `~/Library/Application Support/Vivaldi/DevToolsActivePort` | `~/.config/vivaldi/DevToolsActivePort` | `Vivaldi\User Data\DevToolsActivePort` |
+| Arc | `~/Library/Application Support/Arc/User Data/DevToolsActivePort` | — | — |
+
+Arc has no Linux build and does not ship this profile layout on Windows, so it is macOS-only here.
+Every one of them skips the consent prompt entirely when launched with `--remote-debugging-port=9222`.
+On macOS: `open -a "Google Chrome" --args --remote-debugging-port=9222`, `open -a Chromium --args --remote-debugging-port=9222`, `open -a "Brave Browser" --args --remote-debugging-port=9222`, `open -a "Microsoft Edge" --args --remote-debugging-port=9222`, `open -a Vivaldi --args --remote-debugging-port=9222`, or `open -a Arc --args --remote-debugging-port=9222`.
+On Linux: `google-chrome --remote-debugging-port=9222`, `chromium --remote-debugging-port=9222`, `brave-browser --remote-debugging-port=9222`, `microsoft-edge --remote-debugging-port=9222`, or `vivaldi --remote-debugging-port=9222`.
+If none of these is already debug-enabled, the managed-launch fallback execs Chrome by default; set `CHROME_CDP_BROWSER_BIN` (config key `browser_bin`) to a different binary's path to have it launch that browser instead.
+
+### Explicit endpoint
+
+`--endpoint <url>` (config key `endpoint`, env `CHROME_CDP_ENDPOINT`) names the debug endpoint directly, bypassing both `--port` and the `DevToolsActivePort` file.
+It takes a `ws://` or `http://` URL; anything else is a usage error before any connection is attempted.
+`wss://` and `https://` are refused too, not just undocumented: the upgrade probe dials plaintext TCP, so a TLS endpoint can never complete a handshake through it — forward the port locally (e.g. `ssh -L`) and pass the resulting `ws://` or `http://` URL instead.
+
+This is how you reach a Chrome that `chrome-cdp` cannot discover on its own — one running in a container, over an SSH tunnel, or on another machine with its debug port forwarded.
+
+The two schemes matter for different reasons:
+
+- Pass the **`ws://` URL from the `DevToolsActivePort` file** (`ws://host:port/devtools/browser/<id>`) for a Chrome reached via `chrome://inspect/#remote-debugging`.
+  That path serves a 404 on `/json/*`, so there is no HTTP endpoint to hand it instead — only the literal WebSocket URL works.
+- Pass **`http://host:port`** for a Chrome launched with `--remote-debugging-port`.
+  That flag serves `/json/version`, so `chrome-cdp --endpoint http://127.0.0.1:9222 doctor` resolves the browser-level WebSocket the same way `--port` does.
+  For a remote `http://` endpoint, use an IP address or `localhost` as the host: Chrome rejects `/json/*` requests whose `Host` header names anything else.
+
+An explicit `--endpoint` also keys the daemon socket and sticky-target state (by its own host:port), so two Chromes reached through different endpoints never share either.
+An unreachable `--endpoint` never falls back to launching, or instructing you to enable, some other local Chrome: it fails with `connection_failed` naming the endpoint, since falling back would silently act on a different browser than the one you named.
 
 ### The consent prompt
 
@@ -1093,12 +1268,12 @@ A daemon that is merely *running* is not an answer: it holds its socket for its 
 Otherwise it says on stderr that it is about to connect, then probes (`via: "probe"`).
 `--no-probe` reports only what the port file says, clearly marked `state: "unverified"`.
 
-`doctor` honours `--port` like every other verb: `doctor --port 9333` diagnoses the Chrome on that port, not whichever one the `DevToolsActivePort` file names.
+`doctor` honours `--port` and `--endpoint` like every other verb: `doctor --port 9333` diagnoses the Chrome on that port, and `doctor --endpoint ws://host:port/devtools/browser/<id>` diagnoses that endpoint specifically, not whichever one the `DevToolsActivePort` file names.
 
 A `ready` verdict reached by probing says so: the probe's own connection is closed once it has its answer, so on the toggle path the next command is a fresh attach and can prompt again.
 Run `chrome-cdp daemon start` to be asked once per session instead.
 
-The result carries `state`, `via`, `probed`, and the endpoint it looked at (`endpoint`, plus `port_file` and `ws` where they apply).
+The result carries `state`, `via`, `probed`, and the endpoint it looked at (`endpoint`, plus `port_file` and `ws` where they apply), plus `endpoint_source` (`flag` \| `port` \| `port-file`, when known) and `browser_bin` (when `CHROME_CDP_BROWSER_BIN`/`browser_bin` is set).
 The daemon-backed answer adds `running`, `connected`, `socket`, and `target_count` — a **count**, not the tab list: `doctor --json` is the first thing many callers run, and open tab titles and URLs are not an answer to "can I connect?".
 
 ## Policy
@@ -1187,8 +1362,8 @@ Use `--policy-off` to run while you fix it.
 
 | Verb class | Checked against |
 |-----------|-----------------|
-| Acting (`click`, `type`, `fill`, `select`, `scroll`, `key`, pointer verbs, `upload`, `attr set/rm`, `cookie set/rm/clear`, `headers`, `emulate`, `eval`, `raw`) | `allow`/`deny`, `read_only`, `verbs_denied` |
-| Reading (`snap`, `text`, `html`, `value`, `grid`, `screenshot`, `pdf`, `frame`, `wait`, `attr get/list`, `cookie list`) | `allow`/`deny`, `verbs_denied` |
+| Acting (`click`, `type`, `fill`, `select`, `scroll`, `key`, pointer verbs, `upload`, `attr set/rm`, `cookie set/rm/clear`, `headers`, `emulate`, `eval`, `raw`, `dialog accept`/`dismiss`, `storage local/session set/rm/clear`) | `allow`/`deny`, `read_only`, `verbs_denied` |
+| Reading (`snap`, `text`, `html`, `value`, `grid`, `screenshot`, `pdf`, `frame`, `wait`, `attr get/list`, `cookie list`, `dialog status`, `storage local/session list/get`) | `allow`/`deny`, `verbs_denied` |
 | Navigating (`nav <url>`, `open`) | the **destination** origin, before navigating |
 | Tabs and meta (`list`, `use`, `close`, `activate`, `version`, `session`, `recipe run`, …) | `verbs_denied` only; no origin check, and every envelope's `target`, and every tab `list` or an ambiguous `close` enumerates, is reduced to a bare origin with no full URL and no title when the policy does not cover it |
 
@@ -1265,6 +1440,9 @@ timeout = "10s"
 consent_timeout = "2m" # how long to wait for Chrome's consent prompt (1s-10m; 0 means the 120s default)
 by = "search"          # default selector syntax
 target = "url:github"  # default tab when neither --target nor `use` is set
+endpoint = "ws://127.0.0.1:9222/devtools/browser/<id>" # explicit debug endpoint; see Explicit endpoint
+session = "task-a"     # namespace the sticky current tab; see Several agents, one Chrome
+browser_bin = "/usr/bin/chromium" # binary the managed-launch fallback execs instead of Chrome; env CHROME_CDP_BROWSER_BIN; see Which browsers
 ```
 
 A malformed config is a warning on stderr, not a fatal error — the CLI still runs on the built-ins.

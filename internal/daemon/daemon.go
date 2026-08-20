@@ -150,10 +150,37 @@ func (s *server) handle(conn net.Conn) {
 		finishStream(conn, serr)
 		return
 	}
+	// DialogStatus/DialogHandle exist to unblock a tab another call has
+	// wedged — an unguarded click whose Input.dispatchMouseEvent is waiting on
+	// a native dialog holds s.mu for up to its deadline, and a `dialog accept`
+	// queued behind that mutex could never reach the command that unblocks it.
+	// Bypassing the mutex here is safe for the same reason the stream path is
+	// (see isStreamMethod): DialogStatus touches no CDP and only reads a map
+	// under its own mutex, DialogHandle issues exactly the one CDP command
+	// withDialog already issues from a goroutine concurrently with a running
+	// action, and the attach either may trigger is serialised by the CDP
+	// object's own mutex — chromedp targets are safe for concurrent use.
+	if bypassesDispatchMutex(req.Method) {
+		res, err := s.dispatch(ctx, req.Method, req.Args)
+		reply(conn, res, err)
+		return
+	}
 	s.mu.Lock()
 	res, err := s.dispatch(ctx, req.Method, req.Args)
 	s.mu.Unlock()
 	reply(conn, res, err)
+}
+
+// bypassesDispatchMutex reports whether a method must answer even while a slow
+// action holds s.mu, the way __stop already does above. It is DialogStatus and
+// DialogHandle (RFC-0018) — see the comment in handle for why bypassing the
+// mutex is safe for exactly these two.
+func bypassesDispatchMutex(method string) bool {
+	switch method {
+	case "DialogStatus", "DialogHandle":
+		return true
+	}
+	return false
 }
 
 // defaultStreamPing is how often a live stream reports itself to the idle timer.
@@ -376,6 +403,10 @@ func (s *server) dispatch(ctx context.Context, method string, args []json.RawMes
 		return b.Net(ctx, argStr(args, 0), argNet(args, 1))
 	case "NetWait":
 		return b.NetWait(ctx, argStr(args, 0), argNetCond(args, 1))
+	case "DialogStatus":
+		return b.DialogStatus(ctx, argStr(args, 0))
+	case "DialogHandle":
+		return b.DialogHandle(ctx, argStr(args, 0), argBool(args, 1), argStr(args, 2))
 	case "NetStream":
 		// Reachable over the RPC, but via streamDispatch — a unary call has
 		// nowhere to put the emitted values.
@@ -406,6 +437,16 @@ func (s *server) dispatch(ctx context.Context, method string, args []json.RawMes
 		return b.CookieDelete(ctx, argStr(args, 0), argStr(args, 1))
 	case "CookieClear":
 		return b.CookieClear(ctx, argStr(args, 0))
+	case "StorageList":
+		return b.StorageList(ctx, argStr(args, 0), argStr(args, 1), argStorageList(args, 2))
+	case "StorageGet":
+		return b.StorageGet(ctx, argStr(args, 0), argStr(args, 1), argStr(args, 2))
+	case "StorageSet":
+		return b.StorageSet(ctx, argStr(args, 0), argStr(args, 1), argStr(args, 2), argStr(args, 3))
+	case "StorageRemove":
+		return b.StorageRemove(ctx, argStr(args, 0), argStr(args, 1), argStr(args, 2))
+	case "StorageClear":
+		return b.StorageClear(ctx, argStr(args, 0), argStr(args, 1))
 	case "Raw":
 		return b.Raw(ctx, argStr(args, 0), argStr(args, 1), argRaw(args, 2))
 	default:
@@ -483,6 +524,9 @@ func argMap(a []json.RawMessage, i int) map[string]string      { return arg[map[
 func argConsole(a []json.RawMessage, i int) chrome.ConsoleOpts { return arg[chrome.ConsoleOpts](a, i) }
 func argNet(a []json.RawMessage, i int) chrome.NetOpts         { return arg[chrome.NetOpts](a, i) }
 func argNetCond(a []json.RawMessage, i int) chrome.NetCond     { return arg[chrome.NetCond](a, i) }
+func argStorageList(a []json.RawMessage, i int) chrome.StorageListOpts {
+	return arg[chrome.StorageListOpts](a, i)
+}
 
 func argRaw(a []json.RawMessage, i int) json.RawMessage {
 	if i < len(a) {
@@ -831,6 +875,14 @@ func (r *remoteBrowser) NetWait(ctx context.Context, id string, cond chrome.NetC
 	var out map[string]any
 	return out, r.c.call(ctx, "NetWait", &out, id, cond)
 }
+func (r *remoteBrowser) DialogStatus(ctx context.Context, id string) (map[string]any, error) {
+	var out map[string]any
+	return out, r.c.call(ctx, "DialogStatus", &out, id)
+}
+func (r *remoteBrowser) DialogHandle(ctx context.Context, id string, accept bool, text string) (map[string]any, error) {
+	var out map[string]any
+	return out, r.c.call(ctx, "DialogHandle", &out, id, accept, text)
+}
 func (r *remoteBrowser) PDF(ctx context.Context, id string, opts chrome.PDFOpts) ([]byte, map[string]any, error) {
 	var out captureResult
 	err := r.c.call(ctx, "PDF", &out, id, opts)
@@ -851,6 +903,26 @@ func (r *remoteBrowser) CookieDelete(ctx context.Context, id, name string) (map[
 func (r *remoteBrowser) CookieClear(ctx context.Context, id string) (map[string]any, error) {
 	var out map[string]any
 	return out, r.c.call(ctx, "CookieClear", &out, id)
+}
+func (r *remoteBrowser) StorageList(ctx context.Context, id, scope string, opts chrome.StorageListOpts) (map[string]any, error) {
+	var out map[string]any
+	return out, r.c.call(ctx, "StorageList", &out, id, scope, opts)
+}
+func (r *remoteBrowser) StorageGet(ctx context.Context, id, scope, key string) (map[string]any, error) {
+	var out map[string]any
+	return out, r.c.call(ctx, "StorageGet", &out, id, scope, key)
+}
+func (r *remoteBrowser) StorageSet(ctx context.Context, id, scope, key, value string) (map[string]any, error) {
+	var out map[string]any
+	return out, r.c.call(ctx, "StorageSet", &out, id, scope, key, value)
+}
+func (r *remoteBrowser) StorageRemove(ctx context.Context, id, scope, key string) (map[string]any, error) {
+	var out map[string]any
+	return out, r.c.call(ctx, "StorageRemove", &out, id, scope, key)
+}
+func (r *remoteBrowser) StorageClear(ctx context.Context, id, scope string) (map[string]any, error) {
+	var out map[string]any
+	return out, r.c.call(ctx, "StorageClear", &out, id, scope)
 }
 func (r *remoteBrowser) Raw(ctx context.Context, id, method string, params json.RawMessage) (any, error) {
 	var out any

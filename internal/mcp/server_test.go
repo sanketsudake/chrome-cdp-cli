@@ -194,6 +194,108 @@ func TestFullSetAddsRawCDP(t *testing.T) {
 	}
 }
 
+// TestStorageToolIsFullOnly is RFC-0019 VS-16: chrome_cdp_storage is absent
+// from the default tool set (reading the area a session token lives in is a
+// capability a user opts into) and present under --tools full.
+func TestStorageToolIsFullOnly(t *testing.T) {
+	t.Parallel()
+	sess := connect(t, &fakeRunner{}, Options{})
+	res, err := sess.ListTools(ctxT(t), nil)
+	if err != nil {
+		t.Fatalf("tools/list: %v", err)
+	}
+	if hasTool(res.Tools, prefix+"storage") {
+		t.Error("chrome_cdp_storage must not be in the default tool set")
+	}
+
+	fullSess := connect(t, &fakeRunner{}, Options{Tools: SetFull})
+	fullRes, err := fullSess.ListTools(ctxT(t), nil)
+	if err != nil {
+		t.Fatalf("tools/list (full): %v", err)
+	}
+	if !hasTool(fullRes.Tools, prefix+"storage") {
+		t.Error("--tools full does not expose chrome_cdp_storage")
+	}
+}
+
+// TestReadOnlyKeepsStorageListAndGet is RFC-0019 VS-16: under
+// --tools full --read-only, the storage tool's action enum narrows to
+// list/get and set/rm/clear are refused rather than the whole tool
+// disappearing.
+func TestReadOnlyKeepsStorageListAndGet(t *testing.T) {
+	t.Parallel()
+	r := &fakeRunner{}
+	sess := connect(t, r, Options{Tools: SetFull, ReadOnly: true})
+	res, err := sess.ListTools(ctxT(t), nil)
+	if err != nil {
+		t.Fatalf("tools/list: %v", err)
+	}
+	var tool *sdk.Tool
+	for _, tl := range res.Tools {
+		if tl.Name == prefix+"storage" {
+			tool = tl
+		}
+	}
+	if tool == nil {
+		t.Fatal("--tools full --read-only dropped chrome_cdp_storage entirely; it should keep list/get")
+	}
+	enum := actionEnum(t, tool)
+	for _, want := range []string{"list", "get"} {
+		if !contains(enum, want) {
+			t.Errorf("--read-only dropped storage action=%s: %v", want, enum)
+		}
+	}
+	for _, mutating := range []string{"set", "rm", "clear"} {
+		if contains(enum, mutating) {
+			t.Errorf("--read-only still offers storage action=%s: %v", mutating, enum)
+		}
+	}
+
+	out := callTool(t, sess, prefix+"storage", map[string]any{"action": "set", "scope": "local", "key": "k", "value": "v"})
+	if !out.IsError {
+		t.Fatal("a --read-only server ran storage action=set")
+	}
+	if got := structured(t, out); got["code"] != "usage" {
+		t.Errorf("error = %v, want usage", got)
+	}
+	if r.count() != 0 {
+		t.Errorf("the set reached the CLI anyway: %v", r.calls)
+	}
+}
+
+// TestStorageToolBuildsScopedVerb is RFC-0019 VS-16: a call's `scope` and
+// `action` become the real "storage <scope> <action>" verb (not the
+// `actions` map's `local` representative), key/value ride as positionals
+// after the flags, and get with no key is usage before anything runs.
+func TestStorageToolBuildsScopedVerb(t *testing.T) {
+	t.Parallel()
+	r := &fakeRunner{}
+	sess := connect(t, r, Options{Tools: SetFull})
+
+	out := callTool(t, sess, prefix+"storage", map[string]any{"action": "set", "scope": "session", "key": "k", "value": "v"})
+	if out.IsError {
+		t.Fatalf("storage set: %v", textOf(out))
+	}
+	argv := r.argv(0)
+	if !containsSeq(argv, "storage", "session", "set") {
+		t.Errorf("argv = %v, want it to contain \"storage session set\"", argv)
+	}
+	if !containsSeq(argv, "--", "k", "v") {
+		t.Errorf("argv = %v, want key/value as positionals after --", argv)
+	}
+
+	out2 := callTool(t, sess, prefix+"storage", map[string]any{"action": "get", "scope": "local"})
+	if !out2.IsError {
+		t.Fatal("storage get with no key should be usage, not a call")
+	}
+	if got := structured(t, out2); got["code"] != "usage" {
+		t.Errorf("error = %v, want usage", got)
+	}
+	if r.count() != 1 {
+		t.Errorf("the malformed get reached the CLI anyway: %v", r.calls)
+	}
+}
+
 func hasTool(tools []*sdk.Tool, name string) bool {
 	for _, t := range tools {
 		if t.Name == name {
@@ -294,6 +396,7 @@ func TestArgumentValidation(t *testing.T) {
 		{"unknown action", prefix + "tabs", map[string]any{"action": "explode"}, "is not one of"},
 		{"drag option on hover", prefix + "pointer", map[string]any{"action": "hover", "selector": "#x", "steps": 3}, "applies to action"},
 		{"value without selector", prefix + "read", map[string]any{"kind": "value"}, "needs `selector`"},
+		{"text on dialog_status", prefix + "tabs", map[string]any{"action": "dialog_status", "text": "x"}, "applies to"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -351,6 +454,17 @@ func TestReadOnlyHidesMutatingTools(t *testing.T) {
 		for _, want := range []string{"list", "use", "activate"} {
 			if !contains(enum, want) {
 				t.Errorf("--read-only dropped tabs action=%s: %v", want, enum)
+			}
+		}
+		// RFC-0018 VS-15: dialog_status observes, so --read-only keeps it;
+		// dialog_accept/dialog_dismiss change what the page's script sees
+		// next, so they go the way action=open does.
+		if !contains(enum, "dialog_status") {
+			t.Errorf("--read-only dropped tabs action=dialog_status: %v", enum)
+		}
+		for _, mutating := range []string{"dialog_accept", "dialog_dismiss"} {
+			if contains(enum, mutating) {
+				t.Errorf("--read-only still offers tabs action=%s: %v", mutating, enum)
 			}
 		}
 	}
@@ -641,6 +755,47 @@ func TestArgvMirrorsTheCLISpelling(t *testing.T) {
 			got := append([]string{verb}, pos...)
 			if strings.Join(got, "\x00") != strings.Join(c.want, "\x00") {
 				t.Fatalf("argv = %v, want the verb %q and the positionals %v after `--`", argv, c.want[0], c.want[1:])
+			}
+		})
+	}
+}
+
+// TestTabsToolBuildsDialogVerbs is RFC-0018 VS-15 (build half): dialog_status,
+// dialog_accept (with its text answering a prompt) and dialog_dismiss fold
+// into the tabs tool's two-word verb spelling, which splitAtDash's
+// single-word check cannot see — so this asserts on the full argv instead.
+func TestTabsToolBuildsDialogVerbs(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		args map[string]any
+		// seqs are contiguous runs argv must contain, checked independently —
+		// the verb and the positional are not adjacent once --json is spliced
+		// between them by argvFor.
+		seqs [][]string
+	}{
+		{"dialog_status", map[string]any{"action": "dialog_status"}, [][]string{{"dialog", "status"}}},
+		{"dialog_accept with text", map[string]any{"action": "dialog_accept", "text": "bob"},
+			[][]string{{"dialog", "accept"}, {"--", "bob"}}},
+		{"dialog_accept without text", map[string]any{"action": "dialog_accept"}, [][]string{{"dialog", "accept"}}},
+		{"dialog_dismiss", map[string]any{"action": "dialog_dismiss"}, [][]string{{"dialog", "dismiss"}}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			r := &fakeRunner{}
+			sess := connect(t, r, Options{Tools: SetFull})
+			if out := callTool(t, sess, prefix+"tabs", c.args); out.IsError {
+				t.Fatalf("call failed: %v", structured(t, out))
+			}
+			argv := r.argv(0)
+			if argv[0] != "dialog" {
+				t.Errorf("argv = %v, want it to start with \"dialog\"", argv)
+			}
+			for _, seq := range c.seqs {
+				if !containsSeq(argv, seq...) {
+					t.Errorf("argv = %v, want it to contain %v", argv, seq)
+				}
 			}
 		})
 	}

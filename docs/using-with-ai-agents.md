@@ -68,3 +68,4 @@ chrome-cdp click --by name "Submit" --role button --wait-text "received" --json
 ## Skills
 
 An [Agent Skill](https://docs.claude.com/en/docs/claude-code/skills) that teaches these patterns end-to-end ships in [`skills/drive-chrome-cdp`](../skills/drive-chrome-cdp/SKILL.md) — point your harness at it to give an agent the whole loop, addressing model, and etiquette in one reference.
+`chrome-cdp skill --full` always matches the installed version; the vendored `skills/drive-chrome-cdp/` tree is the same text.
