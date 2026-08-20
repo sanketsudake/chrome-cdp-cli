@@ -18,6 +18,14 @@ const REPO = "sanketsudake/chrome-cdp-cli";
 const OS_MAP = { darwin: "darwin", linux: "linux", win32: "windows" };
 const ARCH_MAP = { x64: "amd64", arm64: "arm64" };
 
+// Every module-level `const` MUST be declared above the `require.main` block
+// below, which starts main() while this file is still evaluating. A const
+// declared after it is in the temporal dead zone when main() reaches it: 0.3.0
+// shipped with FETCH_TIMEOUT_MS down beside fetchBuffer and every npm install
+// died with "Cannot access 'FETCH_TIMEOUT_MS' before initialization" — invisible
+// to the tests, which `require` this file and so finish evaluating it first.
+const FETCH_TIMEOUT_MS = 60_000;
+
 const FALLBACK_LINES = [
   "Install failed. Try one of these instead:",
   "  brew install sanketsudake/tap/chrome-cdp",
@@ -222,8 +230,6 @@ function findBinary(dir, name) {
   }
   return null;
 }
-
-const FETCH_TIMEOUT_MS = 60_000;
 
 /**
  * Fetch a URL into a Buffer, following up to 5 redirects. Aborts and

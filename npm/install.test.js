@@ -7,6 +7,7 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const net = require("node:net");
+const { spawnSync } = require("node:child_process");
 
 const {
   assetName,
@@ -205,5 +206,42 @@ test("releaseURL: shape", () => {
   assert.equal(
     releaseURL("0.2.2", "chrome-cdp_0.2.2_linux_amd64.tar.gz"),
     "https://github.com/sanketsudake/chrome-cdp-cli/releases/download/v0.2.2/chrome-cdp_0.2.2_linux_amd64.tar.gz",
+  );
+});
+
+// The postinstall path — `node install.js`, not `require("./install.js")` — is
+// the one real users take, and it is the one the tests above cannot reach:
+// requiring this file evaluates it to the end before any export is called, so a
+// module-level `const` declared below the `require.main` block looks fine here
+// and still explodes for every installer. 0.3.0 shipped exactly that bug
+// ("Cannot access 'FETCH_TIMEOUT_MS' before initialization") with 24 green
+// tests. These two run the file as a script instead.
+
+// Guards that the file is executable as a script at all — a syntax error or a
+// throw during evaluation. It cannot reach fetchBuffer (SKIP_DOWNLOAD returns
+// first), so the const-ordering test below is what actually pins the 0.3.0 bug.
+test("install.js runs as a script", () => {
+  const res = spawnSync(process.execPath, [path.join(__dirname, "install.js")], {
+    encoding: "utf8",
+    env: { ...process.env, CHROME_CDP_SKIP_DOWNLOAD: "1" },
+  });
+  const out = `${res.stdout}${res.stderr}`;
+  assert.doesNotMatch(out, /before initialization|ReferenceError/, out);
+  assert.equal(res.status, 0, out);
+});
+
+test("no module-level const is declared after the require.main block", () => {
+  const src = fs.readFileSync(path.join(__dirname, "install.js"), "utf8");
+  const lines = src.split("\n");
+  const entry = lines.findIndex((l) => l.startsWith("if (require.main === module)"));
+  assert.ok(entry > 0, "the require.main entry-point block moved or was renamed");
+  const late = lines
+    .slice(entry)
+    .map((l, i) => [entry + i + 1, l])
+    .filter(([, l]) => /^const .*=/.test(l));
+  assert.deepEqual(
+    late,
+    [],
+    `module-level const(s) after the entry point are in the temporal dead zone when main() runs: ${JSON.stringify(late)}`,
   );
 });
