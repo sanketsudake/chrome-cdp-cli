@@ -154,6 +154,14 @@ func ValidateEndpoint(s string) error {
 	if !hasScheme(s, "ws://", "http://") {
 		return fmt.Errorf("--endpoint %q: expected a ws:// or http:// URL", s)
 	}
+	// The scheme alone is not an endpoint: EndpointKey keys the daemon socket
+	// and sticky state by the URL's host:port, and a value it cannot key would
+	// silently fall through to the port-file Chrome's key while the dial
+	// target stays the malformed URL — a daemon bound to one Chrome's socket
+	// trying to reach another. Refuse it here, as usage, before any of that.
+	if _, ok := HostPort(s); !ok {
+		return fmt.Errorf("--endpoint %q: missing host (expected ws://host:port/... or http://host:port)", s)
+	}
 	return nil
 }
 

@@ -27,6 +27,7 @@ PR: [#31](https://github.com/sanketsudake/chrome-cdp-cli/pull/31).
 ### Fixed
 
 - A bare verb group or a typoed subcommand (`dialog acept`, `cookie foo`, `storage local typo`) now emits one `usage` envelope with exit 2 instead of cobra's help with exit 0, so the envelope and exit-code contract holds on every group.
+- A scheme-only `--endpoint` (`ws://`, `http://`) is now `usage`/exit 2 instead of being dialed while the daemon socket and sticky state silently keyed to the default Chrome.
 
 ## [0.2.2] - 2026-08-16
 

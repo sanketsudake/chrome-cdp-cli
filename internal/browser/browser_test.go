@@ -225,6 +225,9 @@ func TestValidateEndpoint(t *testing.T) {
 		{"wss rejected as TLS, not a generic bad scheme", "wss://example.com:9222/devtools/browser/abc", true, "TLS endpoints are not supported"},
 		{"https rejected as TLS, not a generic bad scheme", "https://example.com:9222", true, "TLS endpoints are not supported"},
 		{"schemeless garbage rejected", "9222", true, "expected a ws:// or http:// URL"},
+		{"scheme-only ws rejected", "ws://", true, "missing host"},
+		{"scheme-only http rejected", "http://", true, "missing host"},
+		{"scheme and path but no host rejected", "ws:///devtools/browser/abc", true, "missing host"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
