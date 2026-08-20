@@ -35,7 +35,7 @@ func (a *App) cmdRecipe() *cobra.Command {
 			"recipe committed to a repo beats a personal one of the same name.",
 	}
 	c.AddCommand(a.cmdRecipeList(), a.cmdRecipeShow(), a.cmdRecipeNew(), a.cmdRecipeRun())
-	return c
+	return a.runnableGroup(c, "recipe", "recipe needs an action (list|show|new|run)")
 }
 
 // recipeDirs builds the search path: project-local, then the user config dir,

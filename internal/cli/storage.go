@@ -15,13 +15,10 @@ import (
 // shaped like `cookie` (cmdCookie in commands.go) — subcommands rather than
 // flags, positional key and value, the family name as the envelope's command.
 //
-// The group itself is RUNNABLE, with a RunE that emits `usage` for a bad or
-// missing scope, so `storage`, `storage local list` and the like are exit 2
-// before Chrome is ever touched. A non-runnable group is cobra's default and
-// prints help to stdout with exit 0 (what `cookie foo` still does today) —
-// which breaks the one-envelope and exit-code contract at exactly the point a
-// typo is likeliest, so this group costs one "storage": Exempt policy row to
-// close that hole (see internal/policy/policy.go).
+// The group and both scope subgroups are runnable via runnableGroup (see
+// commands.go), so `storage`, `storage badscope` and `storage local typo` are
+// all `usage`/exit 2 before Chrome is ever touched, instead of cobra's
+// help-and-exit-0 for a non-runnable group.
 func (a *App) cmdStorage() *cobra.Command {
 	storage := &cobra.Command{
 		Use:   "storage",
@@ -39,22 +36,18 @@ func (a *App) cmdStorage() *cobra.Command {
 			"  chrome-cdp storage local set onboarding_done 1\n" +
 			"  chrome-cdp storage session rm draft\n" +
 			"  chrome-cdp storage local clear",
-		Args: cobra.ArbitraryArgs,
-		RunE: func(_ *cobra.Command, _ []string) error {
-			a.emitErr("storage", result.CodeUsage,
-				"storage needs a scope (local|session) and an action (list|get|set|rm|clear)", nil)
-			return nil
-		},
 	}
 	storage.AddCommand(a.storageScope("local"), a.storageScope("session"))
-	return storage
+	return a.runnableGroup(storage, "storage",
+		"storage needs a scope (local|session) and an action (list|get|set|rm|clear)")
 }
 
 // storageScope builds one scope's five leaves. It is called once per scope so
 // the local and session subtrees are built from the same code and cannot
 // drift apart.
 func (a *App) storageScope(scope string) *cobra.Command {
-	c := &cobra.Command{Use: scope, Short: "Read and write " + scope + "Storage"}
+	c := a.runnableGroup(&cobra.Command{Use: scope, Short: "Read and write " + scope + "Storage"},
+		"storage", "storage "+scope+" needs an action (list|get|set|rm|clear)")
 
 	c.AddCommand(
 		a.storageListCmd(scope),

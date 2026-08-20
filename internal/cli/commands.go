@@ -383,8 +383,26 @@ func (a *App) cmdValue() *cobra.Command {
 	return c
 }
 
+// runnableGroup gives a verb group a RunE that emits one `usage` envelope, so
+// a bare group or a typoed subcommand (`dialog acept`, `cookie foo`) is exit 2
+// with a parseable envelope. A non-runnable group is cobra's default and
+// prints help to stdout with exit 0 — which breaks the one-envelope and
+// exit-code contract at exactly the point a typo is likeliest. Every group
+// goes through this helper so the contract holds uniformly; each application
+// costs one Exempt row in internal/policy/policy.go (the group itself never
+// touches a tab), which TestEveryCommandIsClassified enforces.
+func (a *App) runnableGroup(c *cobra.Command, family, msg string) *cobra.Command {
+	c.Args = cobra.ArbitraryArgs
+	c.RunE = func(*cobra.Command, []string) error {
+		a.emitErr(family, result.CodeUsage, msg, nil)
+		return nil
+	}
+	return c
+}
+
 func (a *App) cmdCookie() *cobra.Command {
-	cookie := &cobra.Command{Use: "cookie", Short: "Read and write cookies"}
+	cookie := a.runnableGroup(&cobra.Command{Use: "cookie", Short: "Read and write cookies"},
+		"cookie", "cookie needs an action (list|set|rm|clear)")
 
 	cookieSet := func() *cobra.Command {
 		var domain, path string
@@ -424,7 +442,8 @@ func (a *App) cmdCookie() *cobra.Command {
 }
 
 func (a *App) cmdAttr() *cobra.Command {
-	attr := &cobra.Command{Use: "attr", Short: "Read/write element attributes"}
+	attr := a.runnableGroup(&cobra.Command{Use: "attr", Short: "Read/write element attributes"},
+		"attr", "attr needs an action (get|list|set|rm)")
 	attr.AddCommand(
 		&cobra.Command{
 			Use: "get <selector> <name>", Short: "Get an attribute", Args: cobra.ExactArgs(2),
@@ -455,7 +474,8 @@ func (a *App) cmdAttr() *cobra.Command {
 }
 
 func (a *App) cmdHeaders() *cobra.Command {
-	headers := &cobra.Command{Use: "headers", Short: "Extra HTTP request headers"}
+	headers := a.runnableGroup(&cobra.Command{Use: "headers", Short: "Extra HTTP request headers"},
+		"headers", "headers needs an action (set)")
 	headers.AddCommand(&cobra.Command{
 		Use: "set <k=v>...", Short: "Set extra request headers", Args: cobra.MinimumNArgs(1),
 		RunE: func(_ *cobra.Command, args []string) error {
@@ -478,7 +498,8 @@ func (a *App) cmdHeaders() *cobra.Command {
 }
 
 func (a *App) cmdEmulate() *cobra.Command {
-	emu := &cobra.Command{Use: "emulate", Short: "Emulate viewport / geolocation"}
+	emu := a.runnableGroup(&cobra.Command{Use: "emulate", Short: "Emulate viewport / geolocation"},
+		"emulate", "emulate needs an action (viewport|geo|reset)")
 	emu.AddCommand(
 		&cobra.Command{
 			Use: "viewport <width> <height>", Short: "Emulate a viewport size", Args: cobra.ExactArgs(2),
@@ -582,7 +603,8 @@ func netRequestQualified(cmd *cobra.Command) bool {
 }
 
 func (a *App) cmdFrame() *cobra.Command {
-	frame := &cobra.Command{Use: "frame", Short: "Inspect frames"}
+	frame := a.runnableGroup(&cobra.Command{Use: "frame", Short: "Inspect frames"},
+		"frame", "frame needs an action (list)")
 	frame.AddCommand(&cobra.Command{
 		Use: "list", Short: "List the frame tree of the target tab",
 		RunE: a.targetAction("frame", func(ctx context.Context, b chrome.Browser, id string, _ []string) (any, error) {
@@ -907,7 +929,8 @@ func withDaemonVersionSkew(res map[string]any) map[string]any {
 }
 
 func (a *App) cmdDaemon() *cobra.Command {
-	daemon := &cobra.Command{Use: "daemon", Short: "Manage the background CDP connection"}
+	daemon := a.runnableGroup(&cobra.Command{Use: "daemon", Short: "Manage the background CDP connection"},
+		"daemon", "daemon needs an action (start|stop|status)")
 	emit := func(res map[string]any, err error) {
 		if err != nil {
 			a.emitErr("daemon", result.CodeDaemon, err.Error(), nil)

@@ -77,6 +77,66 @@ func runnableCommands(root *cobra.Command) []string {
 	return out
 }
 
+// TestEveryGroupIsRunnable is the guard on runnableGroup's coverage: a verb
+// group cobra leaves non-runnable prints help to stdout and exits 0, breaking
+// the one-envelope and exit-code contract on the likeliest typo. The root is
+// exempt (bare `chrome-cdp` printing help is the CLI convention), as are
+// cobra's own help/completion trees.
+func TestEveryGroupIsRunnable(t *testing.T) {
+	t.Parallel()
+	app := New(&fakeBrowser{}, &bytes.Buffer{}, &bytes.Buffer{})
+	root := app.newRoot()
+
+	var walk func(c *cobra.Command)
+	walk = func(c *cobra.Command) {
+		if c.Name() == "help" || c.Name() == "completion" {
+			return
+		}
+		if c != root && len(c.Commands()) > 0 && !c.Runnable() {
+			t.Errorf("group %q has subcommands but no RunE — wrap it in runnableGroup "+
+				"so a bare or typoed invocation is a usage envelope (exit 2), not help (exit 0)",
+				c.CommandPath())
+		}
+		for _, sub := range c.Commands() {
+			walk(sub)
+		}
+	}
+	walk(root)
+}
+
+// TestGroupTypoIsUsage pins the behavior TestEveryGroupIsRunnable guards
+// structurally: bare groups and typoed subcommands emit one usage envelope
+// with exit 2, never cobra's help with exit 0.
+func TestGroupTypoIsUsage(t *testing.T) {
+	t.Parallel()
+	cases := [][]string{
+		{"dialog"}, {"dialog", "acept"},
+		{"cookie", "foo"},
+		{"attr"},
+		{"headers", "get"},
+		{"emulate", "device"},
+		{"frame", "tree"},
+		{"daemon", "restart"},
+		{"policy", "show"},
+		{"record", "begin"},
+		{"recipe"},
+		{"window", "move"},
+		{"storage", "local", "typo"}, {"storage", "session"},
+	}
+	for _, args := range cases {
+		t.Run(strings.Join(args, " "), func(t *testing.T) {
+			t.Parallel()
+			env, _, code := run(t, noCall(t), append(append([]string{}, args...), "--json")...)
+			if code != 2 {
+				t.Fatalf("exit = %d, want 2: %v", code, env)
+			}
+			if env["error"].(map[string]any)["code"] != "usage" {
+				t.Errorf("code = %v, want usage", env["error"])
+			}
+		})
+	}
+}
+
 // refusalBrowser serves a tab list and fails the test if the CLI acts on it.
 //
 // Asserting the exit code alone would pass for a command that refused AND acted

@@ -476,7 +476,7 @@ func expandPaths(ps []string) []string {
 func (a *App) cmdPolicy() *cobra.Command {
 	p := &cobra.Command{Use: "policy", Short: "Bound what the CLI may drive (see docs/cli-reference.md#policy)"}
 	p.AddCommand(a.cmdPolicyInit())
-	return p
+	return a.runnableGroup(p, "policy", "policy needs an action (init)")
 }
 
 func (a *App) cmdPolicyInit() *cobra.Command {

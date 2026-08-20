@@ -24,6 +24,10 @@ PR: [#31](https://github.com/sanketsudake/chrome-cdp-cli/pull/31).
 - npm shim `@sanketsudake/chrome-cdp` — `npx @sanketsudake/chrome-cdp` / `npm i -g` downloads the matching release binary, with version validation and temp-file cleanup on every path.
 - README positioning section and explicit non-goals, contrasting `chrome-cdp` with agent-browser, chrome-devtools-mcp, and Playwright-style tools.
 
+### Fixed
+
+- A bare verb group or a typoed subcommand (`dialog acept`, `cookie foo`, `storage local typo`) now emits one `usage` envelope with exit 2 instead of cobra's help with exit 0, so the envelope and exit-code contract holds on every group.
+
 ## [0.2.2] - 2026-08-16
 
 ### Fixed

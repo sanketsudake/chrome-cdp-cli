@@ -38,7 +38,7 @@ func (a *App) cmdDialog() *cobra.Command {
 			"  chrome-cdp dialog dismiss                     # confirm() -> false / prompt() -> null",
 	}
 	c.AddCommand(a.cmdDialogStatus(), a.cmdDialogAccept(), a.cmdDialogDismiss())
-	return c
+	return a.runnableGroup(c, "dialog", "dialog needs an action (status|accept|dismiss)")
 }
 
 func (a *App) cmdDialogStatus() *cobra.Command {

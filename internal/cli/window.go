@@ -38,7 +38,7 @@ func (a *App) cmdWindow() *cobra.Command {
 			"manager may clamp a request to the screen.",
 	}
 	c.AddCommand(a.cmdWindowInfo(), a.cmdWindowSize())
-	return c
+	return a.runnableGroup(c, "window", "window needs an action (info|size)")
 }
 
 func (a *App) cmdWindowInfo() *cobra.Command {

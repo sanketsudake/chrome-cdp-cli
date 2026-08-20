@@ -63,7 +63,7 @@ func (a *App) cmdRecord() *cobra.Command {
 			"on; a multi-tab recording is not supported.\n\n" + recordPrivacyNote,
 	}
 	c.AddCommand(a.cmdRecordStart(), a.cmdRecordStop(), a.cmdRecordStatus(), a.cmdRecordCancel())
-	return c
+	return a.runnableGroup(c, "record", "record needs an action (start|stop|status|cancel)")
 }
 
 func (a *App) cmdRecordStart() *cobra.Command {

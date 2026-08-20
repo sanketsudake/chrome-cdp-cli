@@ -110,11 +110,25 @@ var verbClass = map[string]Class{
 	// `policy init` writes the policy; it must stay reachable even when the
 	// configured policy would refuse everything, or a bad policy traps the user.
 	"policy init": Exempt,
-	// `storage` itself is the RUNNABLE group command (RFC-0019): it never
-	// reaches Chrome, only emitting `usage` for a bad or missing scope so that
-	// case is exit 2 instead of cobra's default help-and-exit-0 for a
-	// non-runnable group. The ten leaves below are what actually touch a tab.
-	"storage": Exempt,
+	// Verb-group commands are all RUNNABLE (cli.runnableGroup): the group
+	// itself never reaches Chrome, only emitting `usage` for a bad or missing
+	// subcommand so that case is exit 2 instead of cobra's default
+	// help-and-exit-0 for a non-runnable group. The leaves are what actually
+	// touch a tab and carry the real classes.
+	"storage":         Exempt,
+	"storage local":   Exempt,
+	"storage session": Exempt,
+	"dialog":          Exempt,
+	"cookie":          Exempt,
+	"attr":            Exempt,
+	"headers":         Exempt,
+	"emulate":         Exempt,
+	"frame":           Exempt,
+	"daemon":          Exempt,
+	"policy":          Exempt,
+	"record":          Exempt,
+	"recipe":          Exempt,
+	"window":          Exempt,
 
 	// Reading.
 	"snap":  Reading,
