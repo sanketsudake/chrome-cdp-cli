@@ -6,6 +6,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-08-20
+
 PR: [#31](https://github.com/sanketsudake/chrome-cdp-cli/pull/31).
 
 ### Added
@@ -50,7 +52,8 @@ PR: [#31](https://github.com/sanketsudake/chrome-cdp-cli/pull/31).
 
 Baseline tagged release; see [Releases](https://github.com/sanketsudake/chrome-cdp-cli/releases) for the full history up to this point.
 
-[Unreleased]: https://github.com/sanketsudake/chrome-cdp-cli/compare/v0.2.2...HEAD
+[Unreleased]: https://github.com/sanketsudake/chrome-cdp-cli/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/sanketsudake/chrome-cdp-cli/compare/v0.2.2...v0.3.0
 [0.2.2]: https://github.com/sanketsudake/chrome-cdp-cli/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/sanketsudake/chrome-cdp-cli/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/sanketsudake/chrome-cdp-cli/releases/tag/v0.2.0
