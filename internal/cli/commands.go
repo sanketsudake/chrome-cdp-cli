@@ -1025,23 +1025,11 @@ func (a *App) cmdSession() *cobra.Command {
 			// the defaults are BORROWED, not changed, the same way runPlan
 			// borrows and restores them.
 			//
-			// Selector semantics (--by, --role, …) are deliberately NOT frozen:
-			// they belong in each line's own argv, where a reader of the batch
-			// can see them, not in a value hidden on the App.
-			savedDefaults := a.defaults
-			defer func() { a.defaults = savedDefaults }()
-			a.defaults.Endpoint = a.endpoint
-			a.defaults.Port = a.port
-			a.defaults.ProfileDir = a.profileDir
-			a.defaults.NoLaunch = a.noLaunch
-			a.defaults.NoDaemon = a.noDaemon
-			a.defaults.ConsentTimeout = a.consentTimeout
-			a.defaults.Session = a.session
-			// Each result line is a JSON envelope (NDJSON) regardless of the global
-			// --json default. inSession marks the re-entrant runs below, so a
-			// streaming verb rejects itself rather than interleaving many lines
-			// into a batch that promises one envelope per command.
-			a.defaults.JSON = true
+			restore := a.freezeConnDefaults()
+			defer restore()
+			// inSession marks the re-entrant runs below, so a streaming verb
+			// rejects itself rather than interleaving many lines into a batch
+			// that promises one envelope per command.
 			a.inSession = true
 			r := a.in
 			if r == nil {

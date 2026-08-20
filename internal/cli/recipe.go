@@ -517,34 +517,20 @@ func (a *App) runPlan(plan *recipe.Plan) {
 	// state cached on App outlives the invocation that set it, so a recipe run
 	// as a `session` line used to hand its --timeout, --port and --json to
 	// every later line in that session.
-	savedDefaults := a.defaults
-	defer func() {
-		a.inRecipe, a.inSession = false, wasInSession
-		a.defaults = savedDefaults
-	}()
-
-	start := a.start
-	// Flags are re-registered per Execute, so anything the user set on the
-	// `recipe run` invocation has to be folded into the defaults to survive
-	// into each step. Only the connection and timeout flags are propagated:
-	// selector semantics (--by, --role, …) belong in the step's own argv, where
-	// a reader of the recipe can see them.
 	//
 	// --timeout is per STEP, the same way it is per line in `session`: each
 	// step is one command and gets the whole budget. That is deliberate --
 	// a whole-run budget would make `recipe run` and `recipe run --dry-run |
 	// session` behave differently, and their equivalence is the structural
 	// guard on "a recipe is a `session` script with a header".
+	restore := a.freezeConnDefaults()
+	defer func() {
+		a.inRecipe, a.inSession = false, wasInSession
+		restore()
+	}()
+
+	start := a.start
 	quiet := a.quiet
-	a.defaults.Timeout = a.timeout
-	a.defaults.NoLaunch = a.noLaunch
-	a.defaults.NoDaemon = a.noDaemon
-	a.defaults.ProfileDir = a.profileDir
-	a.defaults.Port = a.port
-	a.defaults.Endpoint = a.endpoint
-	a.defaults.Session = a.session
-	// Per-step output is NDJSON, exactly the stream `session` produces.
-	a.defaults.JSON = true
 
 	completed := 0
 	var failed map[string]any

@@ -28,6 +28,7 @@ PR: [#31](https://github.com/sanketsudake/chrome-cdp-cli/pull/31).
 
 - A bare verb group or a typoed subcommand (`dialog acept`, `cookie foo`, `storage local typo`) now emits one `usage` envelope with exit 2 instead of cobra's help with exit 0, so the envelope and exit-code contract holds on every group.
 - A scheme-only `--endpoint` (`ws://`, `http://`) is now `usage`/exit 2 instead of being dialed while the daemon socket and sticky state silently keyed to the default Chrome.
+- `session`, `recipe run` and `mcp` now freeze the same connection-flag list into their re-entrant defaults, so a global `--timeout` is no longer dropped per `session` line and a global `--consent-timeout` is no longer dropped per recipe step or MCP tool call.
 
 ## [0.2.2] - 2026-08-16
 

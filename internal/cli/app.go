@@ -181,6 +181,45 @@ func (a *App) connOpts() ConnOpts {
 	}
 }
 
+// freezeConnDefaults folds the connection-shaped flags this invocation was
+// actually given into a.defaults, so re-entrant Execute calls (session lines,
+// recipe steps, MCP tool calls) re-parse against them instead of silently
+// resetting to the config defaults. It is the ONE list of what
+// "connection-shaped" means; session, recipe run and mcp all call it, so the
+// next such flag is one edit here instead of three that can drift (Timeout
+// and ConsentTimeout each used to be frozen at some sites and not others).
+//
+// Timeout and ConsentTimeout freeze only when positive: zero means the flags
+// were never parsed (a caller that built the runner directly), and the
+// built-in default should stand rather than become an instantly-expired
+// deadline on every call — an explicit `--consent-timeout 0s` is normalised
+// by ClampConsentTimeout in connOpts either way.
+//
+// Selector semantics (--by, --role, …) are deliberately NOT frozen: they
+// belong in each line's own argv, where a reader of the batch can see them.
+// Re-entrant output is one JSON envelope per line/step/call, so JSON is
+// always frozen on.
+//
+// The caller owns the defaults' lifetime: session and recipe run BORROW them
+// (defer the returned restore), mcp keeps the freeze for the server's life.
+func (a *App) freezeConnDefaults() (restore func()) {
+	saved := a.defaults
+	if a.timeout > 0 {
+		a.defaults.Timeout = a.timeout
+	}
+	if a.consentTimeout > 0 {
+		a.defaults.ConsentTimeout = a.consentTimeout
+	}
+	a.defaults.Endpoint = a.endpoint
+	a.defaults.Port = a.port
+	a.defaults.ProfileDir = a.profileDir
+	a.defaults.NoLaunch = a.noLaunch
+	a.defaults.NoDaemon = a.noDaemon
+	a.defaults.Session = a.session
+	a.defaults.JSON = true
+	return func() { a.defaults = saved }
+}
+
 // WithConnector wires a lazy Browser connector (used by main()); it is invoked
 // only when a command actually needs Chrome.
 func (a *App) WithConnector(fn func(ctx context.Context, o ConnOpts) (chrome.Browser, error)) *App {
