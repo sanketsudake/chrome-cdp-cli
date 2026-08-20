@@ -23,11 +23,10 @@ jobs:
           go-version-file: go.mod
           cache: true
 
-      # Skipped on windows: the runner's git checks files out CRLF (no
-      # .gitattributes forcing LF here) and gofmt -l would flag the entire
-      # tree on line endings alone, not real formatting — a false red. The
-      # same bytes are already checked on ubuntu/macos, so this adds no
-      # coverage windows-side.
+      # Skipped on windows: gofmt's output is platform-independent and the
+      # same bytes are already checked on ubuntu/macos, so running it a third
+      # time adds no coverage. (.gitattributes now forces an LF checkout
+      # everywhere, so this is no longer about CRLF false positives.)
       - name: gofmt
         if: runner.os != 'Windows'
         run: |
@@ -56,3 +55,25 @@ jobs:
 
       - name: Build
         run: go build ./...
+
+  # The npm shim is the install path for `npx @sanketsudake/chrome-cdp`, and
+  # its tests are the only guard on the postinstall script. They used to run
+  # in the release job alone — immediately before `npm publish` — so a
+  # regression stayed invisible through review and surfaced mid-release:
+  # 0.3.0 shipped a postinstall that died on every install while the Go CI
+  # above was green. Running them here makes an installer break a red PR.
+  #
+  # ubuntu-only on purpose: these are pure-function and subprocess tests that
+  # take the platform as a parameter (assetName covers win32), so a matrix
+  # would re-run identical assertions.
+  npm:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Test the npm installer shim
+        run: cd npm && node --test

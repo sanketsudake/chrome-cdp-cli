@@ -31,26 +31,61 @@ jobs:
           # add `--skip=homebrew` to args above to release binaries only.
           HOMEBREW_TAP_GITHUB_TOKEN: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}
 
+  # Publishes @sanketsudake/chrome-cdp via TRUSTED PUBLISHING (OIDC): npm
+  # verifies this workflow's GitHub identity instead of accepting a long-lived
+  # token. That needs a one-time setup on npmjs.com — package Settings ->
+  # Trusted Publisher, all fields case-sensitive and exact:
+  #
+  #   Organization or user: sanketsudake
+  #   Repository:           chrome-cdp-cli
+  #   Workflow filename:    release.yml      (filename only, no path)
+  #   Allowed actions:      npm publish
+  #
+  # Renaming this file, the repo, or the owner breaks publishing until the
+  # trusted publisher is updated to match.
+  #
+  # Why bother: npm is retiring 2FA-bypass granular access tokens for direct
+  # publishing (phase 2, ~January 2027), and OIDC removes the standing
+  # publish credential from the repo altogether.
   npm:
     needs: goreleaser
     runs-on: ubuntu-latest
     # Gated on a repository variable (not `secrets.NPM_TOKEN != ''`, which is
-    # not valid in an `if:`) so a fork or a repo without NPM_TOKEN configured
-    # doesn't fail the release. Set the `NPM_PUBLISH` repository variable to
-    # "true" once NPM_TOKEN holds a granular automation token scoped to the
-    # `@sanketsudake` npm org/user.
+    # not valid in an `if:`) so a fork, or this repo before the trusted
+    # publisher is configured, doesn't fail the release. Set the NPM_PUBLISH
+    # repository variable to "true" to arm the publish.
     if: vars.NPM_PUBLISH == 'true'
     permissions:
       contents: read
+      # Required for OIDC: this is what lets npm verify the workflow identity.
       id-token: write
     steps:
       - uses: actions/checkout@v4
 
+      # Trusted publishing needs Node >= 22.14.0 AND npm >= 11.5.1. Node 24
+      # satisfies the runtime floor, but the bundled npm varies by patch
+      # release, so the CLI is pinned explicitly below rather than assumed —
+      # an npm too old to speak OIDC does not error, it silently falls back
+      # to token auth, which is exactly the failure that would go unnoticed.
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 24
           registry-url: https://registry.npmjs.org
 
+      - name: Ensure an npm that supports trusted publishing
+        run: |
+          npm install -g npm@^11.5.1
+          echo "npm $(npm --version) / node $(node --version)"
+
+      # NODE_AUTH_TOKEN stays as a fallback: the npm CLI prefers OIDC whenever
+      # it detects it and only falls back to the token, so the first release
+      # after the trusted publisher is configured proves OIDC works without
+      # risking a failed publish. Once a release has published via OIDC (the
+      # log says so), delete the NPM_TOKEN secret and drop this env block.
+      #
+      # --provenance is likewise kept for that fallback path; under trusted
+      # publishing provenance is generated automatically and the flag is a
+      # no-op.
       - run: cd npm && npm version "${GITHUB_REF_NAME#v}" --no-git-tag-version && npm test && npm publish --provenance --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
