@@ -10,7 +10,7 @@ PR: [#31](https://github.com/sanketsudake/chrome-cdp-cli/pull/31).
 
 ### Added
 
-- `--endpoint <url>` — attach to an explicit `ws://` or `http://` debug endpoint, wired through `CHROME_CDP_ENDPOINT` / the `endpoint` config key and the daemon; a malformed value is dropped like other config keys; an unreachable explicit endpoint is a `connection` error, never a managed launch; TLS schemes are refused; the flag is carried into `mcp`, `recipe run` and `session` lines.
+- `--endpoint <url>` — attach to an explicit `ws://` or `http://` debug endpoint, wired through `CHROME_CDP_ENDPOINT` / the `endpoint` config key and the daemon; a malformed value is dropped like other config keys and a scheme-only or host-less flag value is `usage`/exit 2; an unreachable explicit endpoint is a `connection` error, never a managed launch; TLS schemes are refused; the flag is carried into `mcp`, `recipe run` and `session` lines.
 - Chromium-family browser detection — Chrome, Chromium, Brave, Edge, Vivaldi, and Arc `DevToolsActivePort` files are found automatically; `CHROME_CDP_BROWSER_BIN` (`browser_bin` config key) launches a different browser for the managed fallback.
 - Windows release target — `windows/amd64` and `windows/arm64` zip archives, and the short test suite now runs on `windows-latest` in CI.
 - `chrome-cdp skill` verb — serves the embedded `drive-chrome-cdp` agent skill (`--full` for the complete text, a short stub otherwise) so an agent can fetch the skill without a separate install step.
@@ -27,7 +27,6 @@ PR: [#31](https://github.com/sanketsudake/chrome-cdp-cli/pull/31).
 ### Fixed
 
 - A bare verb group or a typoed subcommand (`dialog acept`, `cookie foo`, `storage local typo`) now emits one `usage` envelope with exit 2 instead of cobra's help with exit 0, so the envelope and exit-code contract holds on every group.
-- A scheme-only `--endpoint` (`ws://`, `http://`) is now `usage`/exit 2 instead of being dialed while the daemon socket and sticky state silently keyed to the default Chrome.
 - `session`, `recipe run` and `mcp` now freeze the same connection-flag list into their re-entrant defaults, so a global `--timeout` is no longer dropped per `session` line and a global `--consent-timeout` is no longer dropped per recipe step or MCP tool call.
 
 ## [0.2.2] - 2026-08-16
