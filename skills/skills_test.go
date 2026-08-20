@@ -45,7 +45,10 @@ func TestReferenceRejectsPathEscapes(t *testing.T) {
 func TestSkillsListsAllSkillDirs(t *testing.T) {
 	t.Parallel()
 	want := []string{"check-logged-in", "drive-chrome-cdp", "fill-grid-and-confirm"}
-	got := Skills()
+	got, err := Skills()
+	if err != nil {
+		t.Fatalf("Skills() error: %v", err)
+	}
 	if len(got) != len(want) {
 		t.Fatalf("Skills() = %v, want %v", got, want)
 	}

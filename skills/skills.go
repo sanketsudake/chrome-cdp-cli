@@ -47,7 +47,11 @@ func Full() ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	for _, name := range References() {
+	refs, err := References()
+	if err != nil {
+		return nil, err
+	}
+	for _, name := range refs {
 		if name == "core" {
 			continue
 		}
@@ -83,20 +87,26 @@ func Reference(name string) ([]byte, error) {
 }
 
 // References returns every reference name, sorted.
-func References() []string {
-	entries, _ := fs.ReadDir(FS, dir+"/references")
+func References() ([]string, error) {
+	entries, err := fs.ReadDir(FS, dir+"/references")
+	if err != nil {
+		return nil, fmt.Errorf("read embedded references: %w", err)
+	}
 	var names []string
 	for _, e := range entries {
 		names = append(names, strings.TrimSuffix(e.Name(), ".md"))
 	}
 	sort.Strings(names)
-	return names
+	return names, nil
 }
 
 // Skills returns the name of every embedded skill directory (one that
 // carries a SKILL.md), sorted.
-func Skills() []string {
-	entries, _ := fs.ReadDir(FS, ".")
+func Skills() ([]string, error) {
+	entries, err := fs.ReadDir(FS, ".")
+	if err != nil {
+		return nil, fmt.Errorf("read embedded skills: %w", err)
+	}
 	var names []string
 	for _, e := range entries {
 		if !e.IsDir() {
@@ -108,7 +118,7 @@ func Skills() []string {
 		names = append(names, e.Name())
 	}
 	sort.Strings(names)
-	return names
+	return names, nil
 }
 
 // Skill returns one skill's SKILL.md content by directory name.

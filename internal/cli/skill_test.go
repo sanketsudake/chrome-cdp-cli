@@ -91,7 +91,11 @@ func TestSkillListPrintsReferenceNames(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("exit = %d, want 0; stderr=%s", code, errb.String())
 	}
-	for _, want := range skills.References() {
+	refs, err := skills.References()
+	if err != nil {
+		t.Fatalf("References() error: %v", err)
+	}
+	for _, want := range refs {
 		if !strings.Contains(out.String(), want) {
 			t.Errorf("skill list output missing %q:\n%s", want, out.String())
 		}
@@ -180,7 +184,10 @@ func TestSkillListJSONListsSkillsAndReferences(t *testing.T) {
 	if !ok {
 		t.Fatalf("result.skills = %v, want an array", res["skills"])
 	}
-	wantSkills := skills.Skills()
+	wantSkills, err := skills.Skills()
+	if err != nil {
+		t.Fatalf("Skills() error: %v", err)
+	}
 	if len(skillsList) != len(wantSkills) {
 		t.Fatalf("result.skills = %v, want %v", skillsList, wantSkills)
 	}
@@ -231,7 +238,11 @@ func TestSkillListHumanShowsSkillsThenReferences(t *testing.T) {
 	}
 	skillNames := lines[:blankIdx]
 	refNames := lines[blankIdx+1:]
-	for _, want := range skills.Skills() {
+	wantSkillNames, err := skills.Skills()
+	if err != nil {
+		t.Fatalf("Skills() error: %v", err)
+	}
+	for _, want := range wantSkillNames {
 		var found bool
 		for _, got := range skillNames {
 			if got == want {
@@ -242,7 +253,11 @@ func TestSkillListHumanShowsSkillsThenReferences(t *testing.T) {
 			t.Errorf("skill list skills section missing %q: %v", want, skillNames)
 		}
 	}
-	for _, want := range skills.References() {
+	wantRefNames, err := skills.References()
+	if err != nil {
+		t.Fatalf("References() error: %v", err)
+	}
+	for _, want := range wantRefNames {
 		var found bool
 		for _, got := range refNames {
 			if got == want {

@@ -41,9 +41,14 @@ func (a *App) cmdSkill() *cobra.Command {
 				return nil
 			}
 			if a.jsonOut {
+				refs, err := skills.References()
+				if err != nil {
+					a.emitErr("skill", result.CodeGeneric, err.Error(), nil)
+					return nil
+				}
 				a.emitOK("skill", nil, map[string]any{
 					"name":       "drive-chrome-cdp",
-					"references": skills.References(),
+					"references": refs,
 					"content":    string(content),
 				})
 				return nil
@@ -69,8 +74,16 @@ func (a *App) cmdSkillList() *cobra.Command {
 		Short: "List the embedded skill and reference names",
 		Args:  cobra.NoArgs,
 		RunE: func(*cobra.Command, []string) error {
-			names := skills.Skills()
-			refs := skills.References()
+			names, err := skills.Skills()
+			if err != nil {
+				a.emitErr("skill", result.CodeGeneric, err.Error(), nil)
+				return nil
+			}
+			refs, err := skills.References()
+			if err != nil {
+				a.emitErr("skill", result.CodeGeneric, err.Error(), nil)
+				return nil
+			}
 			if a.jsonOut {
 				a.emitOK("skill", nil, map[string]any{
 					"name":       "drive-chrome-cdp",

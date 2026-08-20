@@ -39,10 +39,7 @@ const (
 var shotExt = map[string]string{"png": "png", "jpeg": "jpg", "webp": "webp"}
 
 func (a *App) cmdScreenshot() *cobra.Command {
-	var out, selector, region, format string
-	var fullPage, annotate bool
-	var quality int
-	var scale, padding float64
+	var f shotFlags
 	c := &cobra.Command{
 		Use:   "screenshot",
 		Short: "Capture the tab: the viewport, an element, a region, or the full page",
@@ -62,7 +59,7 @@ func (a *App) cmdScreenshot() *cobra.Command {
 			"first (`scroll --dy …`, `wait --idle`) when that matters.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			opts, rerr := a.shotOpts(cmd, out, selector, region, format, fullPage, annotate, quality, scale, padding)
+			opts, rerr := a.shotOpts(cmd, &f)
 			if rerr != nil {
 				a.emitErr("screenshot", rerr.Code, rerr.Message, rerr.Details)
 				return nil
@@ -80,30 +77,39 @@ func (a *App) cmdScreenshot() *cobra.Command {
 				a.emitErr("screenshot", code, msg, details)
 				return nil
 			}
-			a.emitArtifact("screenshot", tgt, data, out, shotExt[opts.Format], meta)
+			a.emitArtifact("screenshot", tgt, data, f.out, shotExt[opts.Format], meta)
 			return nil
 		},
 	}
-	f := c.Flags()
-	f.StringVarP(&out, "output", "o", "", "output path, or - for stdout (default ./screenshot-<timestamp>.<ext>)")
-	f.StringVar(&selector, "selector", "", "capture this element's box (honours --by/--role/--nth/--match/--in-row/--pierce)")
-	f.BoolVar(&fullPage, "full-page", false, "capture the whole scrollable page, beyond the fold")
-	f.StringVar(&region, "region", "", "capture an explicit page-coordinate rectangle: x,y,w,h")
-	f.StringVar(&format, "format", "png", "image format: png|jpeg|webp")
-	f.IntVar(&quality, "quality", 80, "compression quality 0-100 (jpeg/webp only; an error with png)")
-	f.Float64Var(&scale, "scale", 1, fmt.Sprintf("output scale factor, %g-%g", shotScaleMin, shotScaleMax))
-	f.Float64Var(&padding, "padding", 0, "expand an element capture by this many pixels (clamped to the page)")
-	f.BoolVar(&annotate, "annotate", false, "number every actionable element in the captured area and list them in result.annotations; "+
+	fs := c.Flags()
+	fs.StringVarP(&f.out, "output", "o", "", "output path, or - for stdout (default ./screenshot-<timestamp>.<ext>)")
+	fs.StringVar(&f.selector, "selector", "", "capture this element's box (honours --by/--role/--nth/--match/--in-row/--pierce)")
+	fs.BoolVar(&f.fullPage, "full-page", false, "capture the whole scrollable page, beyond the fold")
+	fs.StringVar(&f.region, "region", "", "capture an explicit page-coordinate rectangle: x,y,w,h")
+	fs.StringVar(&f.format, "format", "png", "image format: png|jpeg|webp")
+	fs.IntVar(&f.quality, "quality", 80, "compression quality 0-100 (jpeg/webp only; an error with png)")
+	fs.Float64Var(&f.scale, "scale", 1, fmt.Sprintf("output scale factor, %g-%g", shotScaleMin, shotScaleMax))
+	fs.Float64Var(&f.padding, "padding", 0, "expand an element capture by this many pixels (clamped to the page)")
+	fs.BoolVar(&f.annotate, "annotate", false, "number every actionable element in the captured area and list them in result.annotations; "+
 		"on a backgrounded tab the labels are skipped (annotated: false) — run `activate` first")
 	return c
+}
+
+// shotFlags collects the screenshot verb's raw flag values, so shotOpts takes
+// one argument instead of ten positionals nobody can review at the call site.
+type shotFlags struct {
+	out, selector, region, format string
+	fullPage, annotate            bool
+	quality                       int
+	scale, padding                float64
 }
 
 // shotOpts validates the screenshot flags and reduces them to driver options.
 // It runs before resolveTarget, so every rejection below happens without a
 // connection — the invariant nocall_test.go enforces.
-func (a *App) shotOpts(cmd *cobra.Command, out, selector, region, format string, fullPage, annotate bool, quality int, scale, padding float64) (chrome.ShotOpts, *result.Err) {
+func (a *App) shotOpts(cmd *cobra.Command, f *shotFlags) (chrome.ShotOpts, *result.Err) {
 	modes := 0
-	for _, on := range []bool{selector != "", fullPage, region != ""} {
+	for _, on := range []bool{f.selector != "", f.fullPage, f.region != ""} {
 		if on {
 			modes++
 		}
@@ -112,7 +118,7 @@ func (a *App) shotOpts(cmd *cobra.Command, out, selector, region, format string,
 		return chrome.ShotOpts{}, usageErr("--selector, --full-page and --region select different capture modes; pass at most one")
 	}
 
-	format = strings.ToLower(strings.TrimSpace(format))
+	format := strings.ToLower(strings.TrimSpace(f.format))
 	if _, ok := shotExt[format]; !ok {
 		return chrome.ShotOpts{}, usageErr("unknown --format %q: want png, jpeg or webp", format)
 	}
@@ -122,17 +128,17 @@ func (a *App) shotOpts(cmd *cobra.Command, out, selector, region, format string,
 			// one flag away, which it is not — png is lossless.
 			return chrome.ShotOpts{}, usageErr("--quality applies to jpeg and webp; png is lossless — drop --quality or pass --format jpeg")
 		}
-		if quality < 0 || quality > 100 {
-			return chrome.ShotOpts{}, usageErr("--quality must be between 0 and 100, got %d", quality)
+		if f.quality < 0 || f.quality > 100 {
+			return chrome.ShotOpts{}, usageErr("--quality must be between 0 and 100, got %d", f.quality)
 		}
 	}
-	if scale < shotScaleMin || scale > shotScaleMax {
-		return chrome.ShotOpts{}, usageErr("--scale must be between %g and %g, got %g", shotScaleMin, shotScaleMax, scale)
+	if f.scale < shotScaleMin || f.scale > shotScaleMax {
+		return chrome.ShotOpts{}, usageErr("--scale must be between %g and %g, got %g", shotScaleMin, shotScaleMax, f.scale)
 	}
-	if padding < 0 {
-		return chrome.ShotOpts{}, usageErr("--padding must not be negative, got %g", padding)
+	if f.padding < 0 {
+		return chrome.ShotOpts{}, usageErr("--padding must not be negative, got %g", f.padding)
 	}
-	if annotate {
+	if f.annotate {
 		// The labels are drawn in-process and the standard library cannot
 		// encode webp (imageDims already documents that it cannot decode it
 		// either) — refused before connecting, like every other bad --format
@@ -143,23 +149,23 @@ func (a *App) shotOpts(cmd *cobra.Command, out, selector, region, format string,
 		// The legend lives in the envelope and -o - emits none, only bytes — a
 		// flag whose result would be silently dropped is refused, for the same
 		// reason --quality with png is.
-		if out == "-" {
+		if f.out == "-" {
 			return chrome.ShotOpts{}, usageErr("--annotate --output - is not supported: the legend lives in the envelope, and -o - emits only bytes")
 		}
 	}
 
 	opts := chrome.ShotOpts{
-		Selector: selector,
-		FullPage: fullPage,
+		Selector: f.selector,
+		FullPage: f.fullPage,
 		Format:   format,
-		Quality:  quality,
-		Scale:    scale,
-		Padding:  padding,
-		Annotate: annotate,
+		Quality:  f.quality,
+		Scale:    f.scale,
+		Padding:  f.padding,
+		Annotate: f.annotate,
 		Query:    a.queryOpts(),
 	}
-	if region != "" {
-		r, err := parseRegion(region)
+	if f.region != "" {
+		r, err := parseRegion(f.region)
 		if err != nil {
 			return chrome.ShotOpts{}, usageErr("%s", err.Error())
 		}
