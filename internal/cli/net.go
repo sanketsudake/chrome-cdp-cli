@@ -168,6 +168,19 @@ func checkHarTarget(path string, clear bool) *result.Err {
 	if !clear {
 		return nil
 	}
+	// A writable directory is not enough when a read-only file already sits at
+	// the destination: the write would fail AFTER --clear dropped the buffer,
+	// which is the exact data loss this probe exists to prevent. Opening the
+	// existing file for writing (without truncating it) answers the real
+	// question; only when nothing is there does the directory probe apply.
+	if _, err := os.Stat(path); err == nil {
+		f, err := os.OpenFile(path, os.O_WRONLY, 0)
+		if err != nil {
+			return genericErr("cannot write the HAR to %q: %v (--clear drops the buffer before the write — retry with a writable path)", path, err)
+		}
+		_ = f.Close()
+		return nil
+	}
 	if err := probeWritable(dir, ".chrome-cdp-har-*"); err != nil {
 		return genericErr("cannot write the HAR to %q: %v (--clear drops the buffer before the write — retry with a writable path)", path, err)
 	}

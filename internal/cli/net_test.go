@@ -760,6 +760,30 @@ func TestNetHarClearProbesWritabilityBeforeConnecting(t *testing.T) {
 	}
 }
 
+// TestNetHarClearProbesExistingFileBeforeConnecting is the sibling for a
+// destination that already exists: a writable directory does not prove a
+// read-only file AT the path can be replaced, and finding that out after
+// --clear dropped the buffer is the data loss the probe exists to prevent.
+// A read-only file (unlike a chmod'd directory) is enforced on Windows too.
+func TestNetHarClearProbesExistingFileBeforeConnecting(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores file write permissions")
+	}
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "out.har")
+	if err := os.WriteFile(path, []byte("{}"), 0o444); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(path, 0o644) })
+	env, _, code := run(t, noCall(t), "net", "--target", "aa11", "--json", "--har", path, "--clear")
+	if code != 1 {
+		t.Fatalf("exit = %d, want 1 (generic)", code)
+	}
+	if env["error"].(map[string]any)["code"] != "generic" {
+		t.Errorf("error.code = %v, want generic", env["error"])
+	}
+}
+
 // TestNetHarFailOnMatchComposes: the file is written FIRST, then the
 // assertion is judged on the same count — a tripped assertion must not throw
 // away the export.
